@@ -1,0 +1,1370 @@
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+Auto-Split: A General Framework of Collaborative Edge-Cloud AI
+
+Amin Banitalebi-Dehkordi∗ Naveen Vedula∗
+Huawei Technologies Canada Co. Ltd. Vancouver, Canada
+Fei Xia
+Huawei Technologies Shenzhen, China
+ABSTRACT
+In many industry scale applications, large and resource consuming machine learning models reside in powerful cloud servers. At the same time, large amounts of input data are collected at the edge of cloud. The inference results are also communicated to users or passed to downstream tasks at the edge. The edge often consists of a large number of low-power devices. It is a big challenge to design industry products to support sophisticated deep model deployment and conduct model inference in an efficient manner so that the model accuracy remains high and the end-to-end latency is kept low. This paper describes the techniques and engineering practice behind Auto-Split, an edge-cloud collaborative prototype of Huawei Cloud. This patented technology is already validated on selected applications, is on its way for broader systematic edgecloud application integration, and is being made available for public use as an automated pipeline service for end-to-end cloud-edge collaborative intelligence deployment. To the best of our knowledge, there is no existing industry product that provides the capability of Deep Neural Network (DNN) splitting.
+CCS CONCEPTS
+• Computing methodologies → Neural networks.
+KEYWORDS
+Edge-Cloud Collaboration, Network Splitting, Neural Networks, Mixed Precision, Collaborative Intelligence, Distributed Inference.
+ACM Reference Format: Amin Banitalebi-Dehkordi, Naveen Vedula, Jian Pei, Fei Xia, Lanjun Wang, and Yong Zhang. 2021. Auto-Split: A General Framework of Collaborative Edge-Cloud AI. In Proceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD ’21), August 14–18, 2021, Virtual
+∗Both authors contributed equally. Correspondence: amin.banitalebi@huawei.com
+Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and the full citation on the first page. Copyrights for components of this work owned by others than ACM must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior specific permission and/or a fee. Request permissions from permissions@acm.org. KDD ’21, August 14–18, 2021, Virtual Event, Singapore © 2021 Association for Computing Machinery. ACM ISBN 978-1-4503-8332-5/21/08. . . $15.00 https://doi.org/10.1145/3447548.3467078
+
+Jian Pei
+School of Computing Science Simon Fraser University Vancouver, Canada
+Lanjun Wang Yong Zhang
+Huawei Technologies Canada Co. Ltd. Vancouver, Canada
+Event, Singapore. ACM, New York, NY, USA, 11 pages. https://doi.org/10. 1145/3447548.3467078
+1 INTRODUCTION
+The recent exciting advances in AI are heavily driven by two spurs, large scale deep learning models and huge amounts of data. The current AI flying wheel trains large scale deep learning models by harnessing large amounts of data, and then applies those models to tackle and harvest even larger amounts of data in more applications.
+Large scale deep models are typically hosted in cloud servers with unrelenting computational power. At the same time, data is often distributed at the edge of cloud, that is, the edge of various networks, such as smart-home cameras, authorization entry (e.g. license plate recognition camera), smart-phone and smart-watch AI applications, surveillance cameras, AI medical devices (e.g. hearing aids, and fitbits), and IoT nodes. The combination of powerful models and rich data achieve the wonderful progress of AI applications.
+However, the gap between huge amounts of data and large deep learning models remains and becomes a more and more arduous challenge for more extensive AI applications. Connecting data at the edge with deep learning models at cloud servers is far from straightforward. Through low-power devices at the edge, data is often collected, and machine learning results are often communicated to users or passed to downstream tasks. Large deep learning models cannot be loaded into those low-power devices due to the very limited computation capability. Indeed, deep learning models are becoming more and more powerful and larger and larger. The grand challenge for utilization of the latest extremely large models, such as GPT-3 [6] (350GB memory and 175B parameters in case of GPT-3), is far beyond the capacity of just those low-power devices. For those models, inference is currently conducted on cloud clusters. It is impractical to run such models only at the edge.
+Uploading data from the edge devices to cloud servers is not always desirable or even feasible for industry applications. Input data to AI applications is often generated at the edge devices. It is therefore preferable to execute AI applications on edge devices (the Edge-Only solution). Transmitting high resolution, high volume input data all to cloud servers (the Cloud-Only solution) may incur high transmission costs, and may result in high end-to-end latency. Moreover, when original data is transmitted to the cloud, additional privacy risks may be imposed.
+
+2543
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+Figure 1: Different approaches of edge-cloud collaboration
+In general, there are two types of existing industry solutions to connect large models and large amounts of data: Edge-Only and Distributed approaches (See Fig. 1). The Edge-Only solution applies model compression to force-fit an entire AI application on edge devices. This approach may suffer from serious accuracy loss [10].
+Alternatively, one may follow a distributed approach to execute the model partially on the edge and partially on the cloud. The distributed approach can be further categorized into three subgroups. First, the Cloud-Only approach conducts inference on the cloud. It may incur high data transmission costs, especially in the case of high resolution input data for high-accuracy applications. Second, the cascaded edge-cloud inference approach divides a task into multiple sub-tasks, deploys some sub-tasks on the edge and transmits the output of those tasks to the cloud where the other tasks are run. Last, a multi-exit solution deploys a lightweight model on the edge, which processes the simpler cases, and transmits the more difficult cases to a larger model in the cloud servers. The cascaded edge-cloud inference approach and the multi-exit solution are application specific, and thus are not flexible for many use-cases. Multi-exit models may also suffer from low accuracy and have non-deterministic latency. A series of products and services across the industry by different cloud providers [38] are developed, such as SageMaker Neo, PocketFlow, Distiller, PaddlePaddle, etc.
+Very recently, an edge-cloud collaborative approach has been explored, mainly from academia [27, 31, 58]. The approach exploits the fact that the data size at some intermediate layer of a deep neural network (DNN for short) is significantly smaller than that of raw input data. This approach partitions a DNN graph into edge DNN and cloud DNN, thereby reduces the transmission cost and lowers the end-to-end latency [27, 31, 58]. The edge-cloud collaborative approach is generic, can be applied to a large number of AI applications, and thus represents a promising direction for industry. To foster industry products for the edge-cloud collaborative approach, the main challenge is to develop a general framework to partition deep neural networks between the edge and the cloud so that the end-to-end latency can be minimized and the model size in the edge can be kept small. Moreover, the framework should be general and flexible so that it can be applied to many different tasks and models.
+In this paper, we describe the techniques and engineering practice behind Auto-Split, an edge-cloud collaborative prototype of Huawei Cloud. This patented technology is already validated on selected applications, such as license plate recognition systems with HiLens edge devices [8, 16, 41], is on its way for broader systematic edge-cloud application integration [18], and is being made available for public use as an automated pipeline service for end-to-end cloud-edge collaborative intelligence deployment [1]. To the best of our knowledge, there is no existing industry product that provides the capability of DNN splitting.
+Building an industry product of DNN splitting is far from trivial, though we can be inspired by some initial ideas partially from
+
+academia. The existing edge-cloud splitting techniques reported in literature still incur substantial end-to-end latency. One innovative idea in our design is the integration of edge-cloud splitting and posttraining quantization. We show that by jointly applying edge-cloud splitting along with post-training quantization to the edge DNN, the transmission costs and model sizes can be reduced further, and results in reducing the end-to-end latency by 20–80% compared to the current state of the art, QDMP [58].
+Fig. 2 shows an overview of our framework. We take a trained DNN with sample profiling data as input, and apply several environment constraints to optimize for end-to-end latency of the AI application. Auto-Split partitions the DNN into an edge DNN to be executed on the edge device and a cloud DNN for the cloud device. Auto-Split also applies post-training quantization on the edge DNN and assigns bit-widths to the edge DNN layers (works offline). Auto-Split considers the following constraints: a) edge device constraints, such as on-chip and off-chip memory, number and size of NN accelerator engines, device bandwidth, and bit-width support, b) network constraints, such as uplink bandwidth based on the network type (e.g., BLE, 3G, 5G, or WiFi), c) cloud device constraints, such as memory, bandwidth and compute capability, and d) required accuracy threshold provided by the user.
+The rest of the paper is organized as follows. We discuss related works in Section 2. Sections 3 and 4 cover our design, formulation, and the proposed solution. In Section 5, we present a systematical empirical evaluation, and a real-world use-case study of Auto-Split for the task of license plate recognition. The Appendix consists of further implementation details and ablation studies.
+2 RELATED WORKS
+Our work is related to edge cloud partitioning and model compression using mixed precision post-training quantization. We focus on distributed inference and assume that models are already trained.
+2.1 Model Compression (On-Device Inference)
+Quantization methods [11, 17, 62] compress a model by reducing the bit precision used to represent parameters and/or activations. Quantization-aware training performs bit assignment during training [19, 56, 62], while post-training quantization applies on already trained models [4, 30, 32, 59]. Quantizing all layers to a similar bit width leads to a lower compression ratio, since not all layers of a DNN are equally sensitive to quantization. Mixed precision posttraining quantization is proposed to address this issue [7, 17, 51, 52].
+There are other methods besides quantization for model compression [10, 21, 26, 36, 43]. These methods have been proposed to address the prohibitive memory footprint and inference latency of modern DNNs. They are typically orthogonal to quantization and include techniques such as distillation [26], pruning [10, 21, 24], or combination of pruning, distillation and quantization [10, 23, 43].
+2.2 Edge Cloud Partitioning
+Related to our work are progressive-inference/multi-exit models, which are essentially networks with more than one exit (output node). A light weight model is stored on the edge device and returns the result as long as the minimum accuracy threshold is met. Otherwise, intermediate features are transmitted to the cloud to execute
+
+2544
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+Figure 2: Auto-Split overview: inputs are a trained DNN and the constraints, and outputs are optimal split and bit-widths.
+
+a larger model. A growing body of work from both the research [28, 33, 34, 48, 57] and industry [29, 49] has proposed transforming a given model into a progressive inference network by introducing intermediate exits throughout its depth. So far the existing works have mainly explored hand-crafted techniques and are applicable to only a limited range of applications, and the latency of the result is non-deterministic (may route to different exits depending on the input data) [48, 61]. Moreover, they require retraining, and re-designing DNNs to implement multiple exit points [33, 48, 57].
+The most closely related works to Auto-Split are graph based DNN splitting techniques [27, 31, 50, 58]. These methods split a DNN graph into edge and cloud parts to process them in edge and cloud devices separately. They are motivated by the facts that: a) data size of some intermediate DNN layer is significantly smaller than that of raw input data, and b) transmission latency is often a bottleneck in end-to-end latency of an AI application. Therefore, in these methods, the output activations of the edge device are significantly smaller in size, compared to the DNN input data.
+Fig. 3 shows a comparison between the existing works and AutoSplit. Earlier techniques such as Neurosurgeon [31] look at primitive DNNs with chains of layers stacked one after another and cannot handle state-of-the-art DNNs which are implemented as complex directed acyclic graphs (DAGs). Other works such as DADS [27] and QDMP [58] can handle DAGs, but only for floating point DNN models. These work requires two copies of entire DNN, one stored on the edge device and the other on the cloud, so that they can dynamically partition the DNN graph depending on the network speed. Both DADS and QDMP assume that the DNN fits on the edge device which may not be true especially with the growing demand of adding more and more AI tasks to the edge device. It is also worth noting that methods such as DADS do not consider inference graph optimizations such as batchnorm folding and activation fusions. These methods apply the min-cut algorithm on an un-optimized graph, which results in an sub-optimal split [58].
+The existing works on edge cloud splitting, do not consider quantization for split layer identification. Quantization of the edge part of a DNN enlarges the search space of split solutions. For example, as shown in Fig. 3, high transmission cost of a float model at node 2, makes this node a bad split choice. However, when quantized to 4-bits, the transmission cost becomes lowest compared to other nodes and this makes it the new optimal split point.
+2.3 Related Services and Products In Industry
+The existing services and products in the industry are mostly made available by cloud providers to their customers. Examples include Amazon SageMaker Neo [38], Alibaba Astraea, CDN, ENS, and
+
+Figure 3: Different methods of edge-cloud partitioning. Neurosurgeon [31]: handles chains only. DADS [27]: min-cut on un-optimized DNN. QDMP [58]: min-cut on optimized DNN. All three use Float models. Auto-Split explores new search space with joint mixed-precision quantization of edge and split point identification. 𝐵𝑁 : Batch norm, 𝑅: Relu. See §2.2
+
+LNS [3, 14, 20], Tencent PocketFlow [42], Baidu PaddlePaddle [39], Google Anthos [2], Intel Distiller [63]. Some of these products started by targeting model compression services, but are now pursuing collaborative directions. It is also worth noting that cloud providers generally seek to build ecosystems to attract and keep their customers. Therefore, they may prefer the edge-cloud collaborative approaches over the edge-only solutions. This will also give them better protection and control over their IP.
+
+3 PROBLEM FORMULATION
+In this section, we first introduce some basic setup. Then, we formulate a nonlinear integer optimization problem for Auto-Split. This problem minimizes the overall latency under an edge device memory constraint and a user given error constraint, by jointly optimizing the split point and bid-widths for weights and activation of layers on the edge device.
+
+3.1 Basic Setup
+
+Consider a DNN with 𝑁 ∈Z layers, where Z defines a non-negative
+
+integer set. Let s𝑤 ∈Z𝑁 and s𝑎 ∈Z𝑁 be vectors of sizes for weights
+
+and activation, respectively. Then, s𝑤 and s𝑎 represent sizes for
+
+𝑖
+
+𝑖
+
+weights and activation at the 𝑖-th layer, respectively. For the given
+
+DNN, both s𝑤 and s𝑎 are fixed. Next, let b𝑤 ∈Z𝑁 and b𝑎 ∈Z𝑁 be
+
+bit-widths vectors for weights and activation, respectively. Then,
+
+𝑤
+b
+𝑖
+
+and
+
+𝑎
+b
+𝑖
+
+represent
+
+bit-widths
+
+for
+
+weights
+
+and
+
+activation
+
+at
+
+the
+
+𝑖-th layer, respectively.
+
+Let 𝐿𝑒𝑑𝑔𝑒 (·) and 𝐿𝑐𝑙𝑜𝑢𝑑 (·) be latency functions for given edge
+
+and cloud devices, respectively. For a given DNN, s𝑤 and s𝑎 are
+
+fixed. Thus, 𝐿𝑒𝑑𝑔𝑒 and 𝐿𝑐𝑙𝑜𝑢𝑑 are functions of weights and activa-
+
+tion bit-widths. We denote latency of executing the 𝑖-th layer of
+
+2545
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+the
+
+DNN
+
+on
+
+edge
+
+and
+
+cloud
+
+by
+
+L𝑒𝑑𝑔𝑒 =𝐿𝑒𝑑𝑔𝑒
+𝑖
+
+(b𝑤
+
+𝑎
+,b
+
+)
+
+𝑖𝑖
+
+and
+
+L𝑐𝑙𝑜𝑢𝑑 =
+𝑖
+
+𝐿𝑐𝑙𝑜𝑢𝑑
+
+(b𝑤
+𝑖
+
+𝑎
+,b
+𝑖
+
+)
+
+,
+
+respectively.
+
+We
+
+define
+
+a
+
+function
+
+𝐿𝑡𝑟
+
+(·)
+
+which
+
+mea-
+
+sures latency for transmitting data from edge to cloud, and then de-
+
+note the transmission latency for the 𝑖-th layer by L𝑡𝑟 =𝐿𝑡𝑟 (s𝑎×b𝑎).
+
+𝑖
+
+𝑖𝑖
+
+To measure quantization errors, we first denote 𝑤𝑖 (·) and 𝑎𝑖 (·)
+
+as weights and activation vectors for a given bit-width at the 𝑖-th
+
+layer. Without loss of generality , we assume the bit-widths for
+
+the original given DNN are 16. Then by using the mean square
+
+error function 𝑀𝑆𝐸 (·,·), we denote the quantization errors at the
+
+𝑖-th layer for
+
+weights and activation
+
+by
+
+D𝑤 =𝑀𝑆𝐸
+𝑖
+
+𝑤𝑖
+
+(16),𝑤𝑖
+
+(b𝑤
+𝑖
+
+)
+
+and
+
+D𝑎 =𝑀 𝑆 𝐸
+𝑖
+
+𝑎𝑖
+
+(16),𝑎𝑖
+
+(b𝑎
+𝑖
+
+)
+
+,
+
+respectively.
+
+Notice
+
+that
+
+MSE
+
+is
+
+a
+
+common measure for quantization error and has been widely used
+
+in related studies such as [4, 5, 13, 59]. It is also worth noting that
+
+while we follow the existing literature on using the MSE metric,
+
+other distance metrics such as cross-entropy or KL-Divergence can
+
+alternatively be utilized without changing our algorithm.
+
+3.2 Problem Formulation
+
+In this subsection, we first describe how to write Auto-Split’s objective function in terms of latency functions and then discuss how we formulate the edge memory constraint and the user given error constraint. We conclude this subsection by providing a nonlinear integer optimization problem formulation for Auto-Split.
+
+Objective function: Suppose the DNN is split at layer 𝑛∈{𝑧∈ Z|0≤𝑧≤𝑁 } , then we can define the objective function by summing all the latency parts, i.e.,
+
+𝑛
+
+𝑁
+
+L (b𝑤,b𝑎,𝑛)=
+
+L𝑒𝑑𝑔𝑒
+𝑖
+
++L𝑛𝑡𝑟
+
++
+
+L𝑐𝑙𝑜𝑢𝑑 .
+𝑖
+
+(1)
+
+𝑖 =1
+
+𝑖 =𝑛+1
+
+When 𝑛=0 (resp. 𝑛=𝑁 ), all layers of the DNN are executed on cloud
+(resp., edge). Since cloud does not have resource limitations (in
+comparison to the edge), we assume that the original bit-widths are
+used to avoid any quantization error when the DNN is executed
+on the cloud. Thus, L𝑐𝑙𝑜𝑢𝑑 for 𝑖=1,...,𝑁 are constants. Moreover,
+𝑖
+since L0𝑡𝑟 represents the time cost for transmitting raw input to the cloud, it is reasonable to assume that L0𝑡𝑟 is a constant under a given network condition. Therefore, the objective function for Cloud-Only solution L (b𝑤,b𝑎,0) is also a constant.
+To minimize L (b𝑤,b𝑎,𝑛), we can equivalently minimize
+
+L (b𝑤,b𝑎,𝑛)−L (b𝑤,b𝑎,0)
+
+𝑛
+
+𝑁
+
+𝑁
+
+=
+
+L𝑒𝑑𝑔𝑒
+𝑖
+
++L𝑛𝑡𝑟
+
++
+
+L𝑐𝑙𝑜𝑢𝑑
+𝑖
+
+−
+
+L0𝑡𝑟 +
+
+L𝑐𝑙𝑜𝑢𝑑
+𝑖
+
+𝑖 =1
+
+𝑖 =𝑛+1
+
+𝑖 =1
+
+𝑛
+
+𝑛
+
+=
+
+L𝑒𝑑𝑔𝑒
+𝑖
+
++L𝑛𝑡𝑟
+
+−
+
+L0𝑡𝑟 +
+
+L𝑐𝑙𝑜𝑢𝑑
+𝑖
+
+𝑖 =1
+
+𝑖 =1
+
+After removing the constant L0𝑡𝑟 , we write our objective function for the Auto-Split problem as
+
+𝑛
+
+𝑛
+
+L𝑒𝑑𝑔𝑒
+𝑖
+
++L𝑛𝑡𝑟
+
+−
+
+L𝑐𝑙𝑜𝑢𝑑 .
+𝑖
+
+(2)
+
+𝑖 =1
+
+𝑖 =1
+
+Memory constraint: In hardware, “read-only" memory stores
+
+the parameters (weights), and “read-write" memory stores the acti-
+
+vations [44]. The weight memory cost on the edge device can be
+
+calculated with M𝑤=
+
+𝑛 𝑖 =1
+
+(s𝑤
+𝑖
+
+×b𝑤
+𝑖
+
+).
+
+Unlike
+
+the
+
+weight
+
+memory,
+
+for activation memory only partial input activation and partial
+
+output activation need to be stored in the “read-write" memory at
+
+a time. Thus, the memory required by activation is equal to the
+
+largest working set size of the activation layers at a time. In case of
+
+a simple DNN chain, i.e., layers stacked one by one, the activation
+
+working
+
+set
+
+can
+
+be
+
+computed
+
+as
+
+M𝑎
+
+=
+𝑖
+
+max
+=1,...,𝑛
+
+(s𝑎
+𝑖
+
+×b𝑎
+𝑖
+
+).
+
+However,
+
+for
+
+complex DAGs, it can be calculated from the DAG. For example,
+
+in Fig. 4, when the depthwise layer is being processed, both the
+
+output activations of layer: 2 (convolution) and layer: 3 (pointwise
+
+convolution) need to be kept in memory. Although the output acti-
+
+vation of layer: 2 is not required for processing the depthwise layer,
+
+it needs to be stored for future layers such as layer 11 (skip con-
+
+nection). Assuming the available memory size of the edge device
+
+for executing the DNN is 𝑀, then the memory constraint for the
+
+Auto-Split problem can be written as
+
+M𝑤 +M𝑎 ≤𝑀 .
+
+(3)
+
+Error constraint: In order to maintain the accuracy of the DNN, we constrained the total quantization error by a user given error tolerance threshold 𝐸. In addition, since we assume that the original bit-widths are used for the layers executing on the cloud, we only need to sum the quantization error on the edge device. Thus, we can write the error constraint for Auto-Split problem as
+
+𝑛
+
+D𝑤+D𝑎 ≤𝐸.
+𝑖𝑖
+
+(4)
+
+𝑖 =1
+
+Formulation: To summarize, the Auto-Split problem can be formulated based on the objective function (2) along with the memory (3) and error (4) constraints
+
+𝑛
+
+𝑛
+
+min
+
+𝑤
+b
+
+𝑎
+,b
+
+∈B𝑛
+
+,𝑛
+
+L𝑒𝑑𝑔𝑒
+𝑖
+
++L𝑛𝑡𝑟
+
+−
+
+L𝑐𝑙𝑜𝑢𝑑
+𝑖
+
+𝑖 =1
+
+𝑖 =1
+
+(5a)
+
+s.t. M𝑤 +M𝑎 ≤𝑀,
+
+(5b)
+
+𝑛
+
+D𝑤+D𝑎 ≤𝐸,
+𝑖𝑖
+
+(5c)
+
+𝑖 =1
+
+where B is the candidate bit-width set. Before ending this section, we make the following four remarks about problem (5).
+
+Remark 1. For a given edge device, the candidate bit-width set B is fixed. A typical B can be B={2,4,6,8} [22].
+
+Remark 2. The latency functions are not given explicitly [15, 47, 55] in practice. Thus, simulators like [40, 45, 53] are commonly used to obtain latency [12, 54, 60].
+
+Remark 3. Since the latency functions are not explicitly defined [15, 47, 55] and the error functions are also nonlinear, problem (5) is a nonlinear integer optimization function and NP-hard to solve. However, problem (5) does have a feasible solution, i.e., 𝑛=0, which implies executing all layers of the DNN on cloud.
+
+Remark 4. In practice, it is more tractable for users to provide accuracy drop tolerance threshold 𝐴, rather than the error tolerance threshold 𝐸. In addition, for a given 𝐴, calculating the corresponding 𝐸 is still intractable. To deal this issue, we tailor our algorithm in Subsection 4.2 to make it user friendly.
+
+2546
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+Figure 4: An example of graph processing and the steps required to calculate the list of potential split points. 4a) is an example
+
+of inverted residual layer with squeeze & excitation from MnasNet. Step1: DAG optimizations for inference such as batchnorm
+
+folding
+
+and
+
+activation
+
+fusion.
+
+Step2:
+
+Set
+
+𝑎
+b
+𝑖
+
+=𝑏𝑚𝑖𝑛
+
+for
+
+all
+
+activations,
+
+create
+
+weighted
+
+graph,
+
+and
+
+find
+
+the
+
+min-cut
+
+between
+
+sub
+
+graphs. Step 3: Apply topological sorting to create transmission DAG where nodes are layers and edges are transmission costs.
+
+𝐶:Convolution 𝑃:Pointwise convolution, 𝐷:Depthwise convolution, 𝐿:Linear, 𝐺:Global pool, 𝐵𝑁 :Batch norm, 𝑅:Relu.
+
+4 AUTO-SPLIT SOLUTION
+As Auto-Split problem (5) is NP-hard, we propose a multi-step search approach to find a list of potential solutions that satisfy (5b) and then select a solution which minimizes the latency and satisfies the error constraint (5c).
+To find the list of potential solutions, we first collect a set of potential splits P, by analyzing the data size that needs to be transmitted at each layer. Next, for each splitting point 𝑛∈P, we solve two sets of optimization problems to generate a list of feasible solutions satisfying constraint (5b).
+
+4.1 Potential Split Identification
+
+As shown in Fig. 4, to identify a list of potential splitting points, we
+
+preprocess the DNN graph by three steps. First, we conduct graph
+
+optimizations [30] such as batch-norm folding and activation fusion
+
+on the original graph (Fig. 4a) to obtain an optimized graph (Fig. 4b).
+
+A potential splitting point 𝑛 should satisfy the memory limitation
+
+with lowest bit-width assignment for DNN, i.e., 𝑏𝑚𝑖𝑛 ( 𝑛𝑖=1s𝑖𝑤 +
+
+max s𝑎)≤𝑀,
+𝑖=1,...,𝑛 𝑖
+
+where
+
+𝑏𝑚𝑖𝑛
+
+is
+
+the
+
+lowest
+
+bit-width
+
+constrained
+
+by
+
+the given edge device. Second, we create a weighted DAG as shown
+
+in Fig. 4c, where nodes are layers and weights of edges are the
+
+lowest transmission costs, i.e., 𝑏𝑚𝑖𝑛s𝑎. Finally, the weighted DAG is
+
+sorted in topological order and a new transmission DAG is created
+
+as shown in Fig. 4d. Assuming the raw data transmission cost is a
+
+constant 𝑇0, then a potential split point 𝑛 should have transmission
+cost 𝑇𝑛 ≤𝑇0 (i.e., L𝑛𝑡𝑟 ≤L0𝑡𝑟 ). Otherwise, transmitting raw data to the cloud and executing DNN on the cloud is a better solution. Thus,
+
+the list of potential splitting points is given by
+
+𝑛
+
+P=
+
+𝑛∈0,1,...,𝑁
+
+|𝑇𝑛
+
+≤𝑇0,
+
+𝑏𝑚𝑖𝑛
+
+(
+
+𝑖
+
+=1
+
+𝑤
+s
+𝑖
+
++
+𝑖
+
+=m1,a..x.,𝑛s𝑖𝑎
+
+)
+
+≤𝑀
+
+.
+
+(6)
+
+4.2 Bit-Width Assignment
+In this subsection, for each 𝑛∈P, we explore all feasible solutions which satisfy the constraints of (5). As discussed in Remark 4, explicitly setting 𝐸 is intractable. Thus, to obtain feasible solutions
+
+of (5), we first solve
+
+𝑛
+
+min
+
+𝑤
+b
+
+𝑎
+,b
+
+∈B𝑛
+
+𝑖
+
+=1
+
+D 𝑤 +D𝑎
+𝑖𝑖
+
+(7a)
+
+s.t. M𝑤 +M𝑎 ≤𝑀,
+
+(7b)
+
+and then select the solutions which are below the accuracy drop
+threshold 𝐴. We observe that for a given splitting point 𝑛, the search space of (7) is exponential, i.e., |B|2𝑛. To reduce the search space,
+we decouple problem (7) into the following two problems
+
+𝑛
+
+min
+
+𝑤
+b
+
+∈B𝑛
+
+𝑖
+
+=1
+
+D𝑤
+𝑖
+
+s.t. M𝑤 ≤𝑀𝑤𝑔𝑡 ,
+
+(8)
+
+𝑛
+
+min D𝑎 s.t. M𝑎 ≤𝑀𝑎𝑐𝑡 ,
+
+𝑎
+b
+
+∈B𝑛
+
+𝑖
+
+=1
+
+𝑖
+
+(9)
+
+where
+
+𝑤𝑔𝑡
+𝑀
+
+and
+
+𝑎𝑐𝑡
+𝑀
+
+are
+
+memory
+
+budgets
+
+for
+
+weights
+
+and
+
+activa-
+
+tion, respectively, and 𝑀𝑤𝑔𝑡 +𝑀𝑎𝑐𝑡 ≤𝑀. To solve problems (8) and
+
+(9), we apply the Lagrangian method proposed in [46].
+
+To find feasible pairs of 𝑀𝑤𝑔𝑡 and 𝑀𝑎𝑐𝑡 , we do a two-dimensional
+
+grid search on 𝑀𝑤𝑔𝑡 and 𝑀𝑎𝑐𝑡 . The candidates of 𝑀𝑤𝑔𝑡 and 𝑀𝑎𝑐𝑡
+
+are
+
+given
+
+by
+
+uniformly
+
+assigning
+
+bit-widths
+
+𝑤𝑎
+b ,b
+
+in
+
+B.
+
+Then,
+
+the
+
+maximum number of feasible pairs is |B|2. Thus, we significantly
+
+reduce the search space from |B|2𝑛 to at most 2|B|𝑛+2 by decoupling
+
+(7) to (8) and (9).
+
+We summarize steps above in Algorithm 1. In the proposed
+
+algorithm, we obtain a list S of potential solutions (b𝑤,b𝑎,𝑛) for
+
+problem (5). Then, a solution which minimizes the latency and
+
+satisfies the accuracy drop constraint can be selected from the list.
+
+Before ending this section, we make a remark about Algorithm 1.
+
+Remark 5. Due to the nature of the discrete nonconvex and nonlinear optimization problem, it is not possible to precisely characterize the optimal solution of (5). However, our algorithm guaran-
+tees L (b𝑤,b𝑎,𝑛)≤min L (∅,∅,0),L (b𝑒𝑤,b𝑒𝑎,𝑁 ) , where (∅,∅,0) is the Cloud-Only solution, and (b𝑒𝑤,b𝑒𝑎,𝑁 ) is the Edge-Only solution when it is possible.
+
+2547
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+Algorithm 1: Joint DNN Splitting and Bit Assignment
+
+Result: Split & bit-widths for weights and activations
+
+S←− [(∅,∅,0)]. // Initialize with Cloud-Only solution.
+
+B←− Bit-widths supported by the edge device
+
+for k in [1, . . . , |B|] do
+
+𝑀𝑤𝑔𝑡 =
+𝑘
+
+𝑛 𝑖 =1
+
+(s𝑤
+𝑖
+
+×B[𝑘
+
+]
+
+).
+
+𝑀𝑎𝑐𝑡
+𝑘
+
+= max
+𝑖 =1,...,𝑛
+
+(s𝑎
+𝑖
+
+×B
+
+[𝑘 ] )
+
+.
+
+P←− Solve (6).
+
+for n in P do
+
+for
+
+𝑀 𝑤𝑔𝑡
+
+in
+
+𝑤𝑔𝑡
+[𝑀1 ,
+
+...,
+
+𝑤𝑔𝑡
+𝑀|B| ]
+
+do
+
+b𝑤←− Solve (8).
+
+for 𝑀𝑎𝑐𝑡 in [𝑀1𝑎𝑐𝑡 , . . . , 𝑀𝑎|B𝑐𝑡| ] do if 𝑀𝑤𝑔𝑡 +𝑀𝑎𝑐𝑡 >𝑀 then
+
+Continue.
+
+𝑎
+b
+
+←− Solve
+
+(9).
+
+if (b𝑤,b𝑎,𝑛) satisfies (5b) then S.append (b𝑤,b𝑎,𝑛) .
+Return S.
+
+4.3 Post-Solution Engineering Steps
+After obtaining the solution of (5), the remaining work for deployment is to pack the split-layer activations, transmit them to cloud, unpack in the cloud, and feed to the cloud DNN. There are some engineering details involved in these steps, such as how to pack less than 8-bits data types, transmission protocols, etc. We provide such details in the appendix.
+5 EXPERIMENTS
+In this section we present our experimental results. §5.1-§5.4 cover our simulation-based experiments. We compare Auto-Split with existing state-of-the-art distributed frameworks. We also perform ablation studies to show step by step, how Auto-Split arrives at good solutions compared to existing approaches. In addition, in §5.5 we demonstrate the usage of Auto-Split for a real-life example of license plate recognition on a low power edge device.
+5.1 Experiments Protocols
+Previous studies [15, 47, 55] have shown that tracking multiply accumulate operations (MACs) or GFLOPs does not directly correspond to measuring latency. We measure edge and cloud device latency on a cycle-accurate simulator based on SCALE-SIM [45] from ARM software (also used by [12, 54, 60]). For edge device, we simulate Eyeriss [9] and for cloud device, we simulate Tensor Processing Units (TPU). The hardware configurations for Eyeriss and TPU are taken from SCALE-SIM (see Table 1). In our simulations, lower bit precision (sub 8-bit) does not speed up the MAC operation itself, since, the existing hardware have fixed INT-8 MAC units. However, lower bit precision speeds up data movement across offchip and onchip memory, which in turn results in an overall speedup. Moreover, we build on quantization techniques [4, 37] using [63]. Appendix includes other engineering details used in our setup. It also includes an ablation study on the network bandwidth.
+
+Table 1: Hardware platforms for the simulator experiments
+
+Attribute
+
+Eyeriss [9]
+
+TPU
+
+On-chip memory
+
+192 KB
+
+28 MB
+
+Off-chip memory
+
+4 GB
+
+16 GB
+
+Bandwidth
+
+1 GB/sec
+
+13 GB/sec
+
+Performance
+
+34 GOPs
+
+96 TOPs
+
+Uplink rate
+
+3 Mbps
+
+5.2 Accuracy vs Latency Trade-off
+As seen in Sections 3 and 4, Auto-Split generates a list of candidate feasible solutions that satisfy the memory constraint (5b) and error threshold (5c) provided by the user. These solutions vary in terms of their error threshold and therefore the down-stream task accuracy. In general, good solutions are the ones with low latency and high accuracy. However, the trade-off between the two allows for a flexible selection from the feasible solutions, depending on the needs of a user. The general rule of thumb is to choose a solution with the lowest latency, which has at worst only a negligible drop in accuracy (i.e., the error threshold constraint is implicitly applied through the task accuracy). However, if the application allows for a larger drop in accuracy, that may correspond to a solution with even lower latency. It is worth noting that this flexibility is unique to Auto-Split and the other methods such as Neurosurgeon [31], QDMP [58], U8 (uniform 8-bit quantization), and CLOUD16 (CloudOnly) only provide one single solution.
+Fig. 5 shows a scatter plot of feasible solutions for ResNet-50 and Yolov3 DNNs. For ResNet-50, the X-axis shows the Top-1 ImageNet error normalized to Cloud-Only solution and for Yolo-v3, the Xaxis shows the mAP drop normalized to Cloud-Only solution. The Y-axis shows the end-to-end latency, normalized to Cloud-Only. The Design points closer to the origin are better.
+Auto-Split can select several solutions (i.e., pink dots in Fig. 5-left) based on the user error threshold as a percentage of full precision accuracy drop. For instance, in case of ResNet-50, AutoSplit can produce SPLIT solutions with end-to-end latency of 100%, 57%, 43% and 43%, if the user provides an error threshold of 0%, 1%, 5% and 10%. For an error threshold of 0%, Auto-Split selects Cloud-Only as the solution whereas in case of an error threshold of 5% and 10%, Auto-Split selects a same solution.
+The mAP drop is higher in the object detection tasks. It can be seen in Fig. 5 that uniform quantization of 2-bit (U2), 4-bit(U4), and 6-bit (U6) result in an mAP drop of more than 80%. For a user error threshold of 0%, 10%, 20%, and 50%, Auto-Split selects a solution with an end-to-end latency of 100%, 37%, 32%, and 24% respectively. For each of the error thresholds, Auto-Split provides a different split point (i.e., pink dots in Fig. 5-right). For Yolo-v3, QDMP and Neurosurgeon result in the same split point which leads to 75% end-to-end latency compared to the Cloud-Only solution.
+5.3 Overall Benchmark Comparisons
+Fig. 6 shows the latency comparison among various classification and object detection benchmarks. We compare Auto-Split, with baselines: Neurosurgeon [31], QDMP [58], U8 (uniform 8-bit quantization), and CLOUD16 (Cloud-Only). It is worth noting that for optimized execution graphs (see §2.2), DADS[27] and QDMP[58] generate a same split solution, and thus we do not report DADS
+
+2548
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+Figure 5: Accuracy vs latency trade-off for ResNet-50 (left) and Yolo-v3 (right); Towards origin is better. U2, U4, U6 and U8 indicate uniform quantization (Edge-Only). CLOUD16 indicates FP16 configuration (Cloud-Only). The green lines show error thresholds which a user can set. Auto-Split can provide different solutions based on different error thresholds (blue and pink). The pink markers show suggested solutions per error threshold.
+
+Cloud-Only
+
+Edge-Only
+
+SPLIT
+
+Figure 6: Latency (bars) vs Accuracy (points) comparison. Depending on the device constraints, DNN architecture, and network latency, the optimal solution can be achieved from Cloud-Only, Edge-Only, or SPLIT. The user error threshold for image classification workloads is 5%, and for object detection workloads is 10%.
+
+separately here (see Section 5.2 in [58]). The left axis in Fig. 6 shows the latency normalized to Cloud-Only solution which are represented by bars in the plot. Lower bars are better. The right axis shows top-1 ImageNet accuracy for classification benchmarks and mAP (IoU=0.50:0.95) from COCO 2017 benchmark for YOLO-based detection models.
+Accuracy: Since Neurosurgeon and QDMP run in full precision, their accuracies are the same as the Cloud-Only solution.
+For image classification, we selected a user error threshold of 5%. However, Auto-Split solutions are always within 0-3.5% of top-1 accuracy of the Cloud-Only solution. Auto-Split selected CloudOnly as the solution for ResNext50_32x4d, Edge-Only solutions with mixed precision for ResNet-18, Mobilenet_v2, and Mnasnet1_0. For ResNet-50 and GoogleNet Auto-Split selected SPLIT solution.
+For object detection, the user error threshold is set to 10% . Unlike Auto-Split, uniform 8-bit quantization can lose significant mAP, i.e. between 10–50%, compared to Cloud-Only. This is due to the
+
+fact that object detection models are generally more sensitive to quantization, especially if bit-widths are assigned uniformly.
+Latency: Auto-Split solutions can be: a) Cloud-Only, b) EdgeOnly, and c) SPLIT. As observed in Fig. 6, Auto-Split results in a Cloud-Only solution for ResNext50_32x4d. Edge-Only solutions are reached for ResNet-18, MobileNet-v2, and Mnasnet1_0, and for rest of the benchmarks Auto-Split results in a SPLIT solution. When Auto-Split does not suggest a Cloud-Only solution, it reduces latency between 32–92% compared to Cloud-Only solutions.
+Neurosurgeon cannot handle DAGs. Therefore, we assume a topological sorted DNN as input for Neurosurgeon, similar to [27, 58]. The optimal split point is missed even for float models due to information loss in topological sorting. As a result, compared to Neurosurgeon, Auto-Split reduces latency between 24–92%.
+DADS/QDMP can find optimal splits for float models. They are faster than Neurosurgeon by 35%. However, they do not explore the new search space opened up after quantizing edge DNNs. Compared
+
+2549
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+Table 2: Comparing QDMP𝐸 , Auto-Split, and QDMP𝐸 +U4
+
+Auto-Split
+
+QDMP𝐸
+
+QDMP𝐸 +U4
+
+Split idx MB Split idx MB
+
+MB
+
+Google.
+
+18
+
+0.4
+
+18
+
+3.5
+
+0.44
+
+Resnet-50 12
+
+0.9
+
+53
+
+50
+
+12.5
+
+Yv3-spp
+
+1
+
+1.3 52
+
+99
+
+22.2
+
+Yv3-tiny
+
+7
+
+8.8
+
+7 18.2
+
+4.44
+
+Yv3
+
+33 13.3 58 118
+
+29.6
+
+Figure 7: ResNet-50 latency & memory for Auto-Split (split
+@12) and QDMP (split @53). W8A8-T1 implies weight, ac-
+tivation, and transmission bit-widths of 8, 8, and 1, respectively. Transmission cost at split 53 is ≃3× less than split 12.
+to DADS/QDMP, Auto-Split reduces latency between 20–80%. Note that QDMP needs to save the entire model on the edge device which may not be feasible. We define QDMP𝐸 , a QDMP baseline that saves only the edge part of the DNN on the edge device.
+To sum up, Auto-Split can automatically select between CloudOnly, Edge-Only, and SPLIT solutions. For Edge-Only and SPLIT, our method suggests solutions with mixed precision bit-widths for the edge DNN layers. The results show that Auto-Split is faster than uniform 8-bit quantized DNN (U8) by 25%, QDMP by 40%, Neurosurgeon by 47%, and Cloud-Only by 70%.
+5.4 Comparison with QDMP + Quantization
+As mentioned, QDMP (and others) operates in floating point precision. In this subsection, we show that it will not be sufficient, even if the edge part of the QDMP solutions are quantized. To this end, we define QDMP𝐸 +𝑈4, a baseline of adding uniform 4-bit precision to QDMP𝐸 . Table 2 shows split index and model size for Auto-Split, QDMP𝐸 , and QDMP𝐸 +𝑈4. Note that, ZeroQ reported ResNet-50 with size of 18.7MB for 6-bit activations and mixed precision weights. Also, note that 4-bit quantization is the best that any post training quantization can achieve on a DNN and we discount the accuracy loss on the solution. In spite of discounting accuracay, Auto-Split reduces the edge DNN size by 14.7× compared to QDMP𝐸 and 3.1× compared to QDMP𝐸 +U4.
+
+Table 3: Evaluation of License Plate Recognition solutions
+
+Model
+
+Accuracy Latency Edge Size
+
+Float (on edge)
+
+88.2% Doesn’t fit 295 MB
+
+Float (to cloud)
+
+88.2%
+
+970 ms
+
+0 MB
+
+TQ (8 bit)
+
+88.4% 2840 ms 44 MB
+
+Auto-Split
+
+88.3% 630 ms 15 MB
+
+Auto-Split(large LSTM) 94%
+
+650 ms 15 MB
+
+Next we demonstrate how QDMP𝐸 can select a different split index compared to Auto-Split. Fig. 7 shows the latency and model size of ResNet-50. 1 : W16A16-T16: Weights, activations, and transmission activations are all 16 bits precision. The transmission cost at split index=53 (suggested by QDMP𝐸 ) is ≃3× less compared to that of split index=12 (suggested by Auto-Split). Overall latency of split index=53 is 81% less compared to split index=12. Similar trend can be seen when the bit-widths are reduced to 8-bit ( 2 : W8A8-T8). However, in 3 : W8A8-T1 we reduce the transmission bit-width to 1-bit (lowest possible transmission latency for any split). We notice that split index=12 is 7% faster compared to split index=53. Since, Auto-Split also considers edge memory constraints in partitioning the DNN, it can be noticed that the model size of the edge DNN in split index=12 is always orders of magnitude less compared to the split index=53. In 4 and 5 the model size is further reduced. Overall Auto-Split solutions are 7% faster and 20× smaller in edge
+DNN model size compared to a QDMP + mixed precision algorithm,
+when both models have the same bit-width for edge DNN weights,
+activations, and transmitted activations.
+5.5 Case Study
+We demonstrate the efficacy of the proposed method using a real application of license plate recognition used for authorized entry (deployed to customer sites). In appendix, we also provide a demo on another case study for the task of person and face detection.
+Consider a camera as an edge device mounted at a parking lot which authorizes the entry of certain vehicles based on the license plate registration. Inputs to this system are camera frames and outputs are the recognized license plates (as strings of characters). Auto-Split is applied offline to determine the split point assuming an 8-bit uniform quantization. Auto-Split ensures that the edge DNN fits on the device and high accuracy is maintained. The edge DNN is then passed to TensorFlow-Lite for quantization and is stored on the camera. When the camera is online, the output activations of the edge DNN are transmitted to the cloud for further processing. The edge DNN runs parts of a custom YOLOv3 model. The cloud DNN consists of the rest of this YOLO model, as well as a LSTM model for character recognition.
+The edge device (Hi3516E V200 SoC with Arm Cortex A7 CPU, 512MB Onchip, and 1GB Offchip memory) can only run TensorFlowLite (cross-compiled for it) with a C++ interface. Thus, we built an application in C++ to execute the edge part, and the rest is executed through a Python interface.
+Table 3 shows the performance over an internal proprietary license plate dataset. The Auto-Split solution has a similar accuracy to others but has lower latency. Furthremore, as the LSTM in AutoSplit runs on the cloud, we can use a larger LSTM for recognition. This improves the accuracy further with negligible latency increase.
+
+2550
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+6 CONCLUSION
+This paper investigates the feasibility of distributing the DNN in-
+ference between edge and cloud while simultaneously applying
+mixed precision quantization on the edge partition of the DNN. We
+propose to formulate the problem as an optimization in which the
+goal is to identify the split and the bit-width assignment for weights
+and activations, such that the overall latency is reduced without
+sacrificing the accuracy. This approach has some advantages over
+existing strategies such as being secure, deterministic, and flexible
+in architecture. The proposed method provides a range of options
+in the accuracy-latency trade-off which can be selected based on
+the target application requirements.
+REFERENCES
+[1] ModelArts: Deploying a Model as an Edge Service. 2021. (2021). https://support. huaweicloud.com/en- us/engineers- modelarts/modelarts_23_0069.html
+[2] Google Anthos. 2021. (2021). https://cloud.google.com/anthos [3] Alibaba Edge Computing APIs. 2021. (2021). https://www.alibabacloud.com/
+blog/327841 [4] R. Banner, Y. Nahshan, E. Hoffer, and D. Soudry. 2018. ACIQ: Analytical Clipping
+for Integer Quantization of neural networks. ArXiv abs/1810.05723 (2018). [5] R. Banner, Y. Nahshan, and D. Soudry. 2019. Post training 4-bit quantization of
+convolutional networks for rapid-deployment. In NeurIPS. [6] T. B. Brown et al. 2020. Language models are few-shot learners. arXiv preprint
+arXiv:2005.14165 (2020). [7] Y. Cai, Zh. Yao, Zh. Dong, et al. 2020. ZeroQ: A Novel Zero Shot Quantization
+Framework. 2020 IEEE/CVF CVPR (2020), 13166–13175. [8] Software-Defined Camera. 2021. (2021). https://e.huawei.com/en/products/
+intelligent- vision/cameras/software- defined- camera [9] Y.H. Chen, J. Emer, and V. Sze. 2017. Eyeriss: A Spatial Architecture for Energy-
+Efficient Dataflow for Convolutional Neural Networks. IEEE Micro (2017). [10] Y. Cheng, D. Wang, P. Zhou, and T. Zhang. 2017. A survey of model compression
+and acceleration for deep neural networks. arXiv:1710.09282 (2017). [11] J. Choi, Z. Wang, S. Venkataramani, et al. 2018. PACT: Parameterized Clipping
+Activation for Quantized Neural Networks. ArXiv abs/1805.06085 (2018). [12] Yujeong Choi and Minsoo Rhu. 2020. Prema: A predictive multi-task scheduling
+algorithm for preemptible neural processing units. In HPCA. IEEE, 220–233. [13] Y. Choukroun, E. Kravchik, and P. Kisilev. 2019. Low-bit Quantization of Neural
+Networks for Efficient Inference. 2019 IEEE/CVF ICCVW (2019), 3009–3018. [14] Alibaba Edge Computing. 2021. (2021). https://www.alibabacloud.com/blog/
+594214 [15] X. Dai, P. Zhang, B. Wu, et al. 2019. ChamNet: Towards Efficient Network Design
+Through Platform-Aware Model Adaptation. CVPR (2019), 11390–11399. [16] ModelArts Pro Model Deployment. 2021. (2021). https://support.huaweicloud.
+com/en- us/usermanual- modelartspro/modelartspro_01_0078.html [17] Zh. Dong, Zh. Yao, A. Gholami, et al. 2019. HAWQ: Hessian AWare Quantization
+of Neural Networks With Mixed-Precision. ICCV (2019), 293–302. [18] MindX Edge. 2021. (2021). https://www.huaweicloud.com/intl/en-us/ascend/
+mindxedge [19] S. Esser, J. McKinstry, et al. 2019. Learned step size quantization. arXiv preprint
+arXiv:1902.08153 (2019). [20] Zh. Fu, J. Yang, Ch. Bai, et al. 2020. Astraea: Deploy AI Services at the Edge in
+Elegant Ways. In 2020 IEEE International Conference on Edge Computing (EDGE). [21] D. Gao, X. He, Z. Zhou, et al. 2020. Rethinking Pruning for Accelerating Deep
+Inference At the Edge. In 26th ACM SIGKDD. 155–164. [22] Angelo Garofalo, Manuele Rusci, Francesco Conti, Davide Rossi, and Luca Benini.
+2020. PULP-NN: accelerating quantized neural networks on parallel ultra-lowpower RISC-V processors. Philosophical Transactions of the Royal Society A 378, 2164 (2020), 20190155. [23] S. Han, H. Mao, and W. Dally. 2016. Deep Compression: Compressing Deep Neural Network with Pruning, Trained Quantization and Huffman Coding. CoRR abs/1510.00149 (2016). [24] Y. He, X. Zhang, and J. Sun. 2017. Channel Pruning for Accelerating Very Deep Neural Networks. ICCV (2017), 1398–1406. [25] D. Hendrycks and Th. Dietterich. 2019. Benchmarking neural network robustness to common corruptions and perturbations. arXiv preprint arXiv:1903.12261 (2019). [26] G. E. Hinton, O. Vinyals, and J. Dean. 2015. Distilling the Knowledge in a Neural Network. ArXiv abs/1503.02531 (2015). [27] Ch. Hu, W. Bao, D. Wang, and F. Liu. 2019. Dynamic Adaptive DNN Surgery for Inference Acceleration on the Edge. IEEE INFOCOM (2019), 1423–1431.
+
+[28] Gao Huang, Danlu Chen, T. Li, et al. 2018. Multi-Scale Dense Networks for Resource Efficient Image Classification. In ICLR.
+[29] Intel. 2020. Intel Nervana. 2020. Nervana’s Early Exit Inference. (2020). https: //nervanasystems.github.io/distiller/algo_earlyexit.html
+[30] B. Jacob, S. Kligys, Bo Chen, et al. 2018. Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference. CVPR (2018).
+[31] Y. Kang, J. Hauswald, C. Gao, et al. 2017. Neurosurgeon: Collaborative Intelligence Between the Cloud and Mobile Edge. ASPLOS (2017).
+[32] R. Krishnamoorthi. 2018. Quantizing deep convolutional networks for efficient inference: A whitepaper. ArXiv abs/1806.08342 (2018).
+[33] Stefanos Laskaridis, Stylianos I. Venieris, et al. 2020. SPINN: synergistic progressive inference of neural networks over device and cloud. MobiCom (2020).
+[34] En Li, Liekang Zeng, , et al. 2020. Edge AI: On-Demand Accelerating Deep Neural Network Inference via Edge Computing. TWC (2020).
+[35] C. Michaelis, B. Mitzkus, R. Geirhos, et al. 2019. Benchmarking robustness in object detection: Autonomous driving when winter is coming. arXiv preprint arXiv:1907.07484 (2019).
+[36] A. Mishra and D. Marr. 2018. Apprentice: Using Knowledge Distillation Techniques To Improve Low-Precision Network Accuracy. arXiv:1711.05852 (2018).
+[37] Y. Nahshan, B. Chmiel, Ch. Baskin, et al. 2019. Loss Aware Post-training Quantization. ArXiv abs/1911.07190 (2019).
+[38] Amazon SageMaker Neo. 2021. (2021). https://aws.amazon.com/sagemaker/neo/ [39] Baidu’s PaddlePaddle. 2021. (2021). https://github.com/PaddlePaddle [40] Angshuman Parashar et al. 2019. Timeloop: A systematic approach to dnn
+accelerator evaluation. In ISPASS. [41] HiLens Platform and Edge Device. 2021. (2021). https://e.huawei.com/en/
+products/cloud- computing- dc/atlas/atlas- 200/ [42] Tencent PocketFlow. 2021. (2021). https://github.com/Tencent/PocketFlow [43] A. Polino, R. Pascanu, and Dan Alistarh. 2018. Model compression via distillation
+and quantization. ArXiv abs/1802.05668 (2018). [44] M. Rusci, A. Capotondi, and L. Benini. 2020. Memory-Driven Mixed Low Precision
+Quantization For Enabling Deep Network Inference On Microcontrollers. ArXiv abs/1905.13082 (2020). [45] A. Samajdar, Y. Zhu, P. Whatmough, et al. 2018. SCALE-Sim: Systolic CNN Accelerator. ArXiv abs/1811.02883 (2018). [46] Y. Shoham and A. Gersho. 1988. Efficient bit allocation for an arbitrary set of quantizers. IEEE Trans. Acoustics, Speech, and Signal Processing 36 (1988). [47] M. Tan, Bo Chen, R. Pang, V. Vasudevan, and Quoc V. Le. 2018. Platform-Aware Neural Architecture Search for Mobile. CVPR 2018. [48] S. Teerapittayanon, B. McDanel, and H.-T. Kung. 2016. Branchynet: Fast inference via early exiting from deep neural networks. In ICPR. IEEE, 2464–2469. [49] Tenstorrent. 2020. Tenstorrent’s Grayskull AI Chip. (2020). https://www. tenstorrent.com/technology/ [50] J. Wang, J. Zhang, W. Bao, et al. 2018. Not just privacy: Improving performance of private deep learning in mobile cloud. In 24th ACM SIGKDD. 2407–2416. [51] K. Wang, Zh. Liu, Y. Lin, J. Lin, and Song H. 2019. Haq: Hardware-aware automated quantization with mixed precision. In CVPR. 8612–8620. [52] B. Wu, Y. Wang, P. Zhang, et al. 2018. Mixed Precision Quantization of ConvNets via Differentiable Neural Architecture Search. ArXiv abs/1812.00090 (2018). [53] Y. N. Wu, J. S. Emer, and V. Sze. 2019. Accelergy: An architecture-level energy estimation methodology for accelerator designs. In ICCAD. [54] Haichuan Yang et al. 2018. Energy-constrained compression for deep neural networks via weighted sparse projection and layer input masking. arXiv preprint arXiv:1806.04321 (2018). [55] T.-J. Yang, A. Howard, B. Chen, et al. 2018. NetAdapt: Platform-Aware Neural Network Adaptation for Mobile Applications. ArXiv abs/1804.03230 (2018). [56] Dongqing Zhang, Jiaolong Yang, Dongqiangzi Ye, and Gang Hua. 2018. Lq-nets: Learned quantization for highly accurate and compact deep neural networks. In Proceedings of the European conference on computer vision (ECCV). 365–382. [57] Linfeng Zhang, Zhanhong Tan, et al. 2019. SCAN: A Scalable Neural Networks Framework Towards Compact and Efficient Models. In NeurIPS. [58] Shigeng Zhang, Yinggang Li, et al. 2020. Towards Real-time Cooperative Deep Inference over the Cloud and Edge End Devices. IMWUT (2020). [59] R. Zhao, Y. Hu, J. Dotzel, C. D. Sa, and Z. Zhang. 2019. Improving Neural Network Quantization without Retraining using Outlier Channel Splitting. In ICML 2019. [60] W. Zhe, J. Lin, M. M. Sabry Aly, S. Young, V. Chandrasekhar, and B. Girod. 2020. Towards Effective 2-bit Quantization: Pareto-optimal Bit Allocation for Deep CNNs Compression. (2020). https://openreview.net/forum?id=H1eKT1SFvH [61] H.Y. Zhou, B.B. Gao, and J. Wu. 2017. Adaptive feeding: Achieving fast and accurate detections by adaptively combining object detectors. In ICCV. [62] Sh. Zhou, Z. Ni, et al. 2016. DoReFa-Net: Training Low Bitwidth Convolutional Neural Networks with Low Bitwidth Gradients. ArXiv abs/1606.06160 (2016). [63] N. Zmora, G. Jacob, et al. 2019. Neural Network Distiller: A Python Package For DNN Compression Research. (October 2019). https://arxiv.org/abs/1910.12232
+
+2551
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+7 APPENDIX
+A ENGINEERING DETAILS
+Guidelines proposed for users of our system: a) For models with float size of < 50MB, Edge-Only is likely the optimal solution (on typical edge chips). b) Compared to input image, the activation volumes are generally large for initial layers, but small for deep layers. When a large number of initial layers receive high activation volumes > input image volume, Cloud-Only is likely the optimal solution. c) For deep but thin networks or when input is high resolution (say >= 416), SPLIT solution is likely optimal.
+Activation transmission protocol: In practice, we found that python’s xmlRPC protocol was orders of magnitude slower compared to using socket programming. The reason is xmlRPC cannot transfer binary data over network, so activations are encoded and decoded into ASCII characters. This adds an extra overhead. Thus, we used socket programming (in C++) for data transmission. Table 4 shows RPC vs socket transmission for a Yolov3 based face detection model. On a single server (31 Gbps), Auto-split takes 1.13s on RPC and 0.27 ms with socket programming. Note that in both xmlRPC or socket programming, quantized activations (say 4-bits) are still stored as “int8" data type (by padding with zeros). Thus, it requires some pre-processing before transmission for existing edge/cloud devices. Table 5 shows the API of the transmission protocol.
+Handling sub 8-bit activations for transmission: Auto-Split may provide solutions with activation layers of lower than 8-bits, e.g. 4-bits. To minimize the transmission cost one needs to: 1) either implement “int4" data type (or lower) for both edge and cloud devices, or 2) pack two 4-bit (or lower) activations into “int8" data type on the edge device, transmit over the network, and unpack into “float" data type on the cloud device. We implemented custom 4−𝑏𝑖𝑡 data type to realize low end-to-end latencies. For existing devices which do not support <8−𝑏𝑖𝑡 data type, we also implemented an API to pack/unpack to 8-bit data types. We tried to pack/unpack activations along i) “Height-Width" and ii) “Channel" dimensions. If the edge device supports python, then it is more efficient to use numpy libraries for packing multiple channels of activation (<8−𝑏𝑖𝑡) to a single 8-bit channel. Table 6 shows details of Height-Width (HW) vs Channel (C) packing & unpacking overhead of 4-bit activations before transmission (Intel(R) Xeon(R) CPU E5-2690 v4 @ 2.60GHz). For edge devices with C++ interface, SIMD units should be utilized to speed up the packing of activations.
+B ADDITIONAL ABLATIONS STUDIES
+Compression of SPLIT layer features for edge-cloud splitting: With the availability of mature data compression techniques, it is natural to consider applying data compression before transmission to cloud, as an attempt to transmit less data, to lower the latency. For Cloud-Only solutions that means applying image compression (e.g. JPEG), and for Auto-Split corresponds to applying feature compression. Note that this kind of compression depends highly on the edge device support, both in terms of hardware and software, and thus is not always available. Therefore, we study it as an ablation, rather than the default in the algorithm.
+For the Cloud-Only solutions, we studied the use of JPEG compression, as a candidate with relatively low computation overhead and good compression ratio.
+
+Table 4: Comparison of RPC vs Socket programming
+
+Benchmark Img/Act shape KB RPC/Socket
+
+Cloud-Only
+
+432,768,3
+
+972
+
+3566
+
+Auto-Split
+
+36,64,256
+
+288
+
+3981
+
+Table 5: API for activation transmission
+
+Data Type
+Bytes (int8) Float32 Float32
+List(int32) Int8
+
+Parameters
+Transmitted Activation Scale Zero-point Input image shape #Bits used for activations
+
+Table 6: Packing & unpacking overhead of 4-bit activations
+
+Benchmark Act shape KB Height-Width Channel
+
+Auto-Split 36,64,256 288 1.45 (s)
+
+0.01 (s)
+
+For the task of object detection on Yolov3, at 416×416 resolution, and PIL library for JPEG execution, we observed considerable improvements in the solutions, as shown in Table 7. However, strong compression results in severe loss of accuracy in the Cloud-Only case. For feature compression in Auto-Split we followed a similar approach and used the JPEG compression (We initially tried Huffman coding, but the overhead of compression was high and didn’t give good solutions). Results of feature compression showed that Auto-Split benefits more on compression ratio, because activations are sparse ( 20+%) and are represented by lower bits e.g. 2bits compared to 8bits (0-255) for input images. For activations we split channels into groups of three and applied JPEG compression.
+Note that the overhead of latency for compression/decompression will add another variable to the equation and may result in different splits. For JPEG compression on RaspberryPi3, we measured 28ms overhead for Cloud-Only and 9ms for Auto-Split. Moreover, compression is better to be lossless or light, otherwise it will damage the accuracy (even if it’s not clearly visible). See Fig7-10 in [35] on object detection or Table1 in [25] on classification. At a similar mAP, Auto-Split shows 47% speed-up compared to Cloud-Only-QF60. This gap is smaller compared to the non-compressed case of 58% in Fig. 6 (Gap depends on architecture/task).
+Ablation study on network speed: Table 8 shows results on YOLOv3 (416x416 resolution, and latency is normalized in each case to Cloud-Only). It is observed from Table 8 that Auto-Split mAP drops at 20Mbps. The same experiment for YOLOv3SPP (different architecture) resulted in a much better solution. So even at 20Mbps, depending on architecture, there may be good SPLIT solutions.
+Splitting object detection models: We studied two styles of object detection models: a) Yolo based: Yolov3-tiny, Yolov3, and Yolov3-spp, and b) FasterRCNN with ResNet-50 backbone. Running Auto-Split resulted in SPLIT solutions for Yolo models, but suggested the Cloud-Only solution for FasterRCNN. In this subsection, we explain the caveats of selecting the backbone network when searching for a SPLIT solution in object detection models. For a
+
+2552
+
+ADS Track Paper
+
+KDD ’21, August 14–18, 2021, Virtual Event, Singapore
+
+SPLIT solution to be feasible, the transmission cost of activations at the split point should be at least less than the input image, otherwise a Cloud-Only solution may have lower end-to-end latency.
+Most Object detection models have a backbone network which branches off to detection and recognition necks/heads. These detection and recognition heads typically collect intermediate features from the backbone network. For example, Table 9 shows the layer indices of the intermediate layers from which the output features are collected in the Feature pyramid network (FPN) for Faster RCNN and YOLO layers for Yolov3. In FasterRCNN, the FPN starts fetching intermediate features from as early as layer index=10, thus in case of a SPLIT solution these features are also required to be transmitted to the cloud, unless entire model is executed in the edge device. As we go deeper in the DNN in search of a SPLIT solution more and more extra intermediate layers need to be transmitted along with the output activation at the split point (see Figure 8). Thus, Auto-Split suggests a Cloud-Only solution for Faster RCNN.
+On the contrary, in YOLO based models there are enough number of layers to search for a SPLIT solution before the YOLO layers. For example, in YOLOv3-spp, the search space for a SPLIT solution lies between layer index 0 to 82 and Auto-Split suggested layer index=33 as the split point. Therefore, when co-designing an object detection model for distributed inference, it is crucial to start collecting intermediate features as late as possible in the DNN layers. It will be worth looking at a modified Faster RCNN model retrained with FPN network collecting features from layer index=[23,42,52] and see if the accuracy does not drop too much. Such modified model will generate SPLIT solutions.
+Selecting split points with equal activation volume: Table 10 shows the potential split points towards the end of a pretrained ResNet-50 network. After the graph optimizations are applied these layers do not have any other dependencies. The output feature map (OFM) volume is the activation volume for potential split points and the volume difference is the difference between OFM volume and input image volume. For a SPLIT to be valid one primary condition is that the volume difference should be negative.
+The end-to-end latency has three components a) edge latency, b) transmission latency and c) cloud latency. In Table 10, layers 46, 49, and 52 have the same shape and thus, same transmission volume difference. Without quantization, layer 46 will be the SPLIT solution, since cloud device is faster than the edge device, and in case of same transmission cost it is preferable to select early layers.
+With quantization however, the transmission cost will vary depending on the bit-widths assigned to each layer. The assignment of bit-widths depends on the sensitivity of each layer to compress without losing accuracy. If layer 49 can be compressed more than layer 46, then layer 49 can be selected as a SPLIT solution. The sensitivity of each layer to bit compression can be measured in different ways. Auto-Split considers quantization error of the layers. Other techniques include: Hessian of the feature vector [17] or layer sensitivity by quantizing only one layer at a time [7].
+C DEMO & CODE
+A video demonstration of Auto-Split for the task of person and face detection is available at the following link (best viewed in high resolution). This link also contains a proof-of-concept code for Auto-Split and code to generate the face/person detection demo:
+https://drive.google.com/drive/folders/1DX8tS1KeFA2QfPdlzHvaf1JCgnfDOFCN
+
+Table 7: Effect of input or feature compression on solutions.
+
+JPEG quality Compression Normalized
+
+Method
+
+factor
+
+ratio mAP latency
+
+Cloud-Only NoCompression
+
+1×
+
+0.39
+
+1.0
+
+Cloud-Only LossLess
+
+2×
+
+0.39 0.56
+
+Cloud-Only
+
+80
+
+5×
+
+0.38 0.23
+
+Cloud-Only
+
+60
+
+8×
+
+0.35 0.15
+
+Cloud-Only
+
+40
+
+10×
+
+0.29 0.13
+
+Cloud-Only
+
+20
+
+17×
+
+0.22 0.09
+
+Auto-Split LossLess
+
+15×
+
+0.35 0.08
+
+Table 8: Ablation study on network bandwidth.
+
+Network
+
+Accuracy (mAP) Normalized
+
+Model
+
+bandwidth Auto-Split/Cloud-Only latency
+
+Yolov3 1Mbps
+
+0.37/0.39
+
+0.26/1
+
+Yolov3 3Mbps
+
+0.37/0.39
+
+0.37/1
+
+Yolov3 10Mbps
+
+0.34/0.39
+
+0.83/1
+
+Yolov3 20Mbps
+
+0.25/0.39
+
+0.75/1
+
+Yolov3-SPP 20Mbps
+
+0.37/0.41
+
+0.71/1
+
+Table 9: Layer indices of the collected output activations
+
+Models
+Yolov3-tiny Yolov3
+Yolov3-spp Faster RCNN
+
+Intermediate Layer indices
+[16, 23] [82, 94, 106] [89, 101, 113] [10, 23, 42, 52]
+
+Figure 8: Split layers for FasterRCNN (left) and Yolov3 (right)
+
+Table 10: Potential splits towards the end of ResNet-50
+
+Index
+46 49 52 53 -1
+
+Layer name
+layer4.0.conv3 layer4.1.conv3 layer4.2.conv3
+fc i/p image
+
+Volume
+100,352 100,352 100,352 1,000 150,528
+
+Shape
+(2048,7,7) (2048,7,7) (2048,7,7) (1,1000) (3,224,224)
+
+Vol. Diff
+-5076 -5076 -5076 -149528
+0
+
+2553
+

@@ -1,0 +1,1214 @@
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+1
+
+SplitPlace: AI Augmented Splitting and Placement of Large-Scale Neural Networks in
+Mobile Edge Environments
+
+Shreshth Tuli, Giuliano Casale and Nicholas R. Jennings
+
+Abstract—In recent years, deep learning models have become ubiquitous in industry and academia alike. Deep neural networks can solve some of the most complex pattern-recognition problems today, but come with the price of massive compute and memory requirements. This makes the problem of deploying such large-scale neural networks challenging in resource-constrained mobile edge computing platforms, speciﬁcally in mission-critical domains like surveillance and healthcare. To solve this, a promising solution is to split resource-hungry neural networks into lightweight disjoint smaller components for pipelined distributed processing. At present, there are two main approaches to do this: semantic and layer-wise splitting. The former partitions a neural network into parallel disjoint models that produce a part of the result, whereas the latter partitions into sequential models that produce intermediate results. However, there is no intelligent algorithm that decides which splitting strategy to use and places such modular splits to edge nodes for optimal performance. To combat this, this work proposes a novel AI-driven online policy, SplitPlace, that uses Multi-Armed-Bandits to intelligently decide between layer and semantic splitting strategies based on the input task’s service deadline demands. SplitPlace places such neural network split fragments on mobile edge devices using decision-aware reinforcement learning for efﬁcient and scalable computing. Moreover, SplitPlace ﬁne-tunes its placement engine to adapt to volatile environments. Our experiments on physical mobile-edge environments with real-world workloads show that SplitPlace can signiﬁcantly improve the state-of-the-art in terms of average response time, deadline violation rate, inference accuracy, and total reward by up to 46, 69, 3 and 12 percent respectively.
+Index Terms—Mobile Edge Computing, Neural Network Splitting, Container Orchestration, Artiﬁcial Intelligence, QoS Optimization.
+!
+
+1 INTRODUCTION
+
+Modern Deep Neural Networks (DNN) are becoming the backbone of many industrial tasks and activities [2]. As the computational capabilities of devices have improved, new deep learning models have been proposed to provide improved performance [3], [4]. Moreover, many recent DNN models have been incorporated with mobile edge computing to give low latency services with improved accuracies compared to shallow networks, particularly in complex tasks like image segmentation, high frame-rate gaming and trafﬁc surveillance [5]. The performance of such neural models reﬂects directly on the reliability of application domains like self-driving cars, healthcare and manufacturing [6], [2]. However, to provide high accuracy, such neural models are becoming increasingly demanding in terms of data and compute power, resulting in many challenging problems. To accommodate these increasing demands, such massive models are often hosted as web services deployed on the public cloud [7], [8].
+Challenges. Recently, application demands have shifted from either high-accuracy or low-latency to both of these together, termed as HALL (high-accuracy and low-latency) service delivery [2]. Given the prevalence and demand of
+A preliminary version of this work was presented at the Student Research Competition in ACM SIGMETRICS Conference 2021 [1].
+• S. Tuli, G. Casale and N. R. Jennings are with the Department of Computing, Imperial College London, United Kingdom.
+• N. R. Jennings is also with Loughborough University, United Kingdom. E-mails: {s.tuli20, g.casale}@imperial.ac.uk, n.r.jennings@lboro.ac.uk.
+Manuscript received —; revised —.
+
+DNN inference, serving them on a public cloud with tight bounds of latency, throughput and cost is becoming increasingly challenging [9]. In this regard, recent paradigms like mobile edge computing seem promising. Such approaches allow a robust and low-latency deployment of Internet of Things (IoT) applications close to the edge of the network. Speciﬁcally, to solve the problem of providing HALL services, recent work proposes to integrate large-scale deep learning models with modern frameworks like edge computing [9], [10], [11]. However, even the most recent approaches either provide a low Service Level Agreement (SLA) violation mode or a high-accuracy mode [10], [9] and struggle to provide the beneﬁts of both modes at the same time.
+Another challenge of using edge computing is that mobile edge devices face severe limitations in terms of computational and memory resources as they rely on low power energy sources like batteries, solar or other energy scavenging methods [12], [13]. This is not only because of the requirement of low cost, but also the need for mobility in such nodes [5]. In such systems, it is possible to handle the processing limitations of massive DNN models by effective preemption and prolonged job execution. However, memory bottlenecks are much harder to solve [14]. In a distributed edge environment, storage spaces are typically mapped to network-attached-storage (NAS) media. Thus, prior work that runs inference on a pre-trained DNN without memory-aware optimizations leads to high network bandwidth overheads due to frequent overﬂow of memory
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+2
+
+Input Output
+Input Output
+
+Original Neural Network
+Higher Response Time Higher Accuracy
+
+Lower Response Time Lower Accuracy
+
+Layer-wise Splitting
+
+Semantic Splitting
+
+Figure 1: Overview of layer and semantic splitting strategies
+and the use of virtual memory (swap space) on NAS media, making high ﬁdelity inference using DNNs hard [15], [10]. To deploy an upgraded AI model, tech giants like Amazon, Netﬂix and Google usually consider completely revamping their infrastructures and upgrading their devices, raising many sustainability concerns [2]. This has made the integration of massive neural network models with such devices a challenging and expensive ordeal.
+Solution. A promising solution for this problem is the development of strategies that can accommodate large-scale DNNs within legacy infrastructures. However, many prior efforts in this regard [16], [17], [18] have not yet tackled the challenge of providing a holistic strategy for not only distributed learning, but also inference in such memoryconstrained environments. Recently, research ideas have been proposed like Cloud-AI, Edge-AI and Federated learning that aim to solve the problem of running enormous deep learning models on constrained edge devices by splitting them into modular fragments [17], [18]. However, in CloudAI where AI systems are deployed on cloud machines, the high communication latency leads to high average response times, making it unsuitable for latency-critical applications like healthcare, gaming and augmented reality [6], [19], [20]. Instead, Edge-AI provides low-latency service delivery, thanks to edge devices being in the same Local Area Network (LAN), where the input data from multiple edge nodes are combined to a single ﬁxed broker node for processing. Edge-AI based methods aim at scheduling deep neural networks for providing predictable inference [21], [22]. However, due to the centralized collection of data, these solutions typically suffer from high bandwidth overheads and poor service quality [17]. Federated learning depends on data distribution over multiple nodes where the model training and inference are performed in a decentralized fashion. However, this paradigm assumes that neural models with data batches can be accommodated in the system memory. This is seldom the case for common edge devices like Arduinos or Raspberry Pis [23].
+Other recent works offer lower precision models that can ﬁt within the limited memory of such devices by using methods like Model Compression or Model Pruning [24], [9], [25]. However, compressed and low-precision models lose inference accuracy, making them unsuitable for accuracy-sensitive applications like security and intrusion detection [26]. Recently, split neural network models have been proposed. They show that using semantic or layer-wise splitting, a large deep neural network can be fragmented into multiple smaller networks for dividing network parameters onto multiple nodes [27], [28], [16], [29]. The former
+
+partitions a neural network into parallel disjoint models that produce a part of the result. The latter partitions a neural network into sequential models that generate intermediate results. We illustrate the accuracy and response time tradeoffs through sample test cases in Section 2. Our experiments show that using layer and semantic splitting gives higher inference accuracies than previously proposed model compression techniques (see Section 6). However, no appropriate scheduling policies exist that can intelligently place such modular neural fragments on a distributed infrastructure to optimize both accuracy and SLA together. The placement of such split models is non-trivial considering the diverse and complex dynamism of task distribution, model usage frequencies and geographical placement of mobile edge devices [30].
+Research Contributions. This work proposes a novel neural splitting and placement policy, SplitPlace, for enhanced distributed neural network inference at the edge. SplitPlace leverages a mobile edge computing platform to achieve low latency services. It allows modular neural models to be integrated for best result accuracies that could only be provided by cloud deployments. SplitPlace is the ﬁrst splitting policy that dynamically decides between semantic and layer-wise splits to optimize both inference accuracy and the SLA violation rate. This decision is taken for each incoming task and remains unmodiﬁed until the execution of all split fragments of that task are complete. The idea behind the proposed splitting policy is to decide for each incoming task whether to use the semantic or layer-wise splitting strategy based on its SLA demands. Due to their quick adaptability, SplitPlace uses Multi-Armed-Bandits to model the decision strategy for each application type by checking if the SLA deadline is higher or lower than an estimate of the response time for a layer split decision [31]. Further, SplitPlace optimizes the placement decision of the modular neural network fragments using a split decision aware surrogate model. Compared to a preliminary extended abstract of this work [1], this paper provides a substantially expanded exposition of the working of MABs in SplitPlace. We also present techniques to dynamically adapt to non-stationary workloads and mobile environments. We present a gradient-based optimization approach for task placement decision conditioned on split decisions. Experiments on real-world application workloads on a physical edge testbed show that the SplitPlace approach outperforms the baseline approaches by reducing the SLA violation rate and improving the average inference accuracy.
+Outline. The rest of the paper presents a brief background with motivation and related work in Section 2. Sections 3 presents the system model assumptions and formulates the problem. Sections 4 and 5 give the model details of the proposed SplitPlace approach. We then validate and show the efﬁcacy of the placement policy in Section 6. Finally, Section 7 concludes the work and proposes future directions. Additional experimental results are given in the Appendix A in the supplementary text.
+2 BACKGROUND AND RELATED WORK
+As discussed in Section 1, there is a need for frameworks that can exploit the low latency of edge nodes and also high
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+3
+
+Accuracy (%) Response Time (minutes)
+
+Layer Accuracy Semantic Accuracy
+
+Layer Response Time Semantic Response Time
+
+100 75
+
+90
+
+50
+
+80
+
+25
+
+70
+
+0
+
+MNIST FashionMNIST CIFAR100
+
+Model
+
+Figure 2: Comparison of Layer and Semantic Splits.
+
+inference performance of DNNs to provide HALL services. However, complete neural models with the input batch can seldom be accommodated in the random-access-memory (RAM) of edge devices. Thus, ideas like model compression or splitting are required to make inference over large-scale neural networks plausible in such environments. Frameworks that aim at achieving this must maintain a careful balance between accuracy requirements and response times for different user tasks. For such a framework, real-time analysis of the incoming tasks is required for quick decision making of task placement. This requires robust algorithms to seamlessly integrate different paradigms and meet the user’s service level agreements.
+Semantic and Layer Splitting. In this work, we leverage the only two available splitting schemes for neural networks: layer and semantic splitting [32], [16]. An overview of these two strategies is shown in Figure 1. Semantic splitting divides the network weights into a hierarchy of multiple groups that use a different set of features (different colored models in Figure 1). Here, the neural network is split based on the data semantics, producing a tree structured model that has no connection among branches of the tree, allowing parallelization of input analysis [16]. Due to limited information sharing among the neural network fragments, the semantic splitting scheme gives lower accuracy in general. Semantic splitting requires a separate training procedure where publicly available pre-trained models cannot be used. This is because a pre-trained standard neural network can be split layer wise without affecting output semantics. For semantic splitting we would need to ﬁrst split the neural network based on data semantics and re-train the model. However, semantic splitting provides parallel task processing and hence lower inference times, more suitable for mission-critical tasks like healthcare and surveillance. Layer-wise splitting divides the network into groups of layers for sequential processing of the task input, shown as different colored models in Figure 1.
+Layer splitting is easier to deploy as pre-trained models can be just divided into multiple layer groups and distributed to different mobile edge nodes. However, layer splits require a semi-processed input to be forwarded to the subsequent edge node with the ﬁnal processed output to be sent to the user, thus increasing the overall execution time. Moreover, layer-wise splitting gives higher accuracy
+
+compared to semantic splitting. Comparison of accuracies and average response times for the two strategies is shown in Figure 2. The ﬁgure shows results for 10 edge worker nodes using popular image classiﬁcation datasets: MNIST, FashionMNIST and CIFAR100 [33], [34], [35] averaged over ResNet50-V2, MobileNetV2 and InceptionV3 neural models [9]. As is apparent from the ﬁgure, layer splits provide higher accuracy and response time, whereas semantic splits provide lower values for both. SplitPlace leverages this contrast in traits to trade-off between inference accuracy and response time based on SLA requirements of the input tasks. Despite the considerable drop in inference accuracy when using semantic splitting scheme, it is still used in the proposed SplitPlace approach as it is better than model compression or early-exit strategies for quick inference. This is acceptable in many industrial applications [36], [25] where latency and service level agreements are more important performance metrics than high-ﬁdelity result delivery. In this work, we consider a system with both SLA violation rates and inference accuracy as optimization objectives. This makes the combination of layer and semantic splitting a promising choice for such use cases.
+2.1 Related Work
+We now analyze the prior work in more detail. We divide our literature review into three major sections based on the strategy used to allow DNN inference on resourceconstrained mobile-edge devices: model compression, layer splitting and semantic splitting. Moreover, we compare prior work based on whether they are suitable for edgeonly setups (i.e., without leveraging cloud nodes), consider heterogeneous and mobile nodes and work in settings with adaptive Quality of Service (QoS). See Table 1 for an overview.
+Model Compression: Efﬁcient compression of DNN models has been a long studied problem in the literature [43]. Several works have been proposed that aim at the structural pruning of neural network parameters without signiﬁcantly impacting the model’s performance. These use approaches like tensor decomposition, network sparsiﬁcation and data quantization [43]. Such pruning and model compression approaches have also been used by the systems research community to allow inference of massive neural models on devices with limited resources [44]. Recently, architectures like BottleNet and Bottlenet++ have been proposed [37], [38] to enable DNN inference on mobile cloud environments and reduce data transmission times. BottleNet++ compresses the intermediate layer outputs before sending them to the cloud layer. It uses a model re-training approach to prevent the inference being adversely impacted by the lossy compression of data. Further, BottleNet++ classiﬁes workloads in terms of compute, memory and bandwidth bound categories and applies an appropriate model compression strategy. Other works propose to efﬁciently prune network channels in convolution neural models using reinforcement learning [39], [45]. Other efforts aim to prune the weights of the neural models to minimize their memory footprint [46]. Such methods aim at improving the accuracy per model size as a metric in contrast to the result delivery time as in BottleNet++. However, model compression does
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+4
+
+Table 1: Comparison of related works with different parameters ( means that the corresponding feature is present).
+
+Work
+[37], [38] [39] [27], [40], [36], [41] [9] [11], [42] [16], [28], [36], [25] [32] SplitPlace
+
+Edge Only
+
+Mobility
+
+Heterogeneous Environment
+
+Adaptive QoS
+
+Layer Split
+
+Semantic Split
+
+Model Compression
+
+Optimization Parameters Accuracy SLA Reward
+
+not leverage multiple compute nodes and has poor inference accuracy in general compared to semantic split execution (discussed in Section 6). Thus, SplitPlace does not use the model compression technique.
+Layer Splitting: Many other efforts aim at improving the inference time or accuracy by efﬁcient splitting of the DNN models. Some methods aim to split the networks layer-wise or vertically, viz, that the different fragments correspond to separate layer groups and hence impose the constraint of sequential execution. Most work in this category aims at segregating these network splits into distinct devices based on their computational performance [27], [40], [36], [42], [41]. In heterogeneous edge-cloud environments, it is fairly straightforward to split the network into two or three fragments each being deployed in a mobile device, edge node or a cloud server. Based on the SLA, such methods provide early-exits if the turnaround time is expected to be more than the SLA deadline. This requires a part of the inference being run at each layer of the network architecture instead of traditionally executing it on the cloud server. Other recent methods aim at exploiting the resource heterogeneity in the same network layer by splitting and placing DNNs based on user demands and edge worker capabilities [9]. Such methods can not only split DNNs, but also choose from different architectural choices to reach the maximum accuracy while agreeing to the latency constraints. Other works aim at accelerating the model run-times by appropriate scheduling of a variety of DNN models on edge-clusters [11]. The stateof-the-art method, Gillis uses a hybrid model, wherein it employs either model-compression or layer-splitting based on the application SLA demands [32]. The decision is taken using a reinforcement-learning model which continuously adapts in dynamic scenarios. As the model paritioning is also performed dynamically, the Gillis model cannot work with semantic splitting strategy that requires a new model to be trained for each partitioning scheme. It is a serverless based model serving system that automatically partitions a large model across multiple serverless functions for faster inference and reduced memory footprint per function. The Gillis method employs two model partitioning algorithms that respectively achieve latency optimal serving and costoptimal serving with service-level agreement compliance. However, this method cannot jointly optimize both latency and SLA. Moreover, it does not consider the mobility of devices or users and hence is ineffective in efﬁciently managing large DNNs in mobile edge computing environments.
+Semantic Splitting: The early efforts of semantic split-
+
+ting only split the neural network at the input layer to allow model parallelization and size reduction [29]. Some methods divide the data batch itself across multiple nodes addressing computational contention problems but not memory limitations of ﬁtting neural networks in the RAM [47]. Other methods use progressive slicing mechanisms to partition neural models into multiple components to ﬁt in heterogeneous devices [25]. Such methods produce the complete output from each split or fragment of the DNN, adversely impacting the scalability of such methods to high-dimensional output spaces such as image segmentation applications [16], [28]. Moreover, these methods require signiﬁcant crosscommunication among network splits, signiﬁcantly increasing the communication overheads. Recently, more intelligent approaches have been developed which hierarchically split neural networks such that each fragment produces a part of the output using an intelligently chosen sub-part of the input [16]. Such schemes use the ”semantic” information of the data to create the corresponding links between input and output sub-parts being given to each DNN fragment, hence the name semantic splitting. Such splitting schemes require minimal to no interaction among network fragments eliminating the communication overheads and increased latency due to stragglers. As semantic splitting can provide results quickly, albeit with reduced accuracy, SplitPlace uses it for tasks with tight deadlines (Section 4).
+3 SYSTEM MODEL AND PROBLEM FORMULATION
+In this work, we assume a scenario with a ﬁxed number of multiple heterogeneous edge nodes in a broker-worker fashion, which is a typical case in mobile-edge environments [48], [49], [38], [27]. Here, the broker node takes all resource management related decisions, such as neural network splitting and task placement. The processing of such tasks is carried out by the worker nodes. Examples of broker nodes include personal laptops, small-scale servers and low-end workstations [48]. Example of common worker nodes in edge environments include Raspberry Pis, Arduino and similar System-on-Chip (SoC) computers [2]. All tasks are received from an IoT layer that includes sensors and actuators to collect data from the users and send it to the edge broker via the gateway devices. Akin to typical edge conﬁgurations [50], the edge broker then decides which splitting strategy to use and schedules these fragments to various edge nodes based on deployment constraints like sequential execution in a layer-decision. The data to be processed comes from the IoT sensors/actuators, which with
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+5
+
+Figure 3: SplitPlace System Model
+
+the decision of which split fragment to use is forwarded by the broker to each worker node. Some worker nodes are assumed to be mobile, whereas others are considered to be ﬁxed in terms of their geographical location. In our formulation, we consider mobility only in terms of the variations in terms of the network channels and do not consider the worker nodes or users crossing different networks. We assume that the CPU, RAM, Bandwidth and Disk capacities of all nodes are known in advance, and similarly the broker can sample the resource consumption for each task in the environment at any time (see Resource Monitor in Fig. 3). As we describe later, the broker periodically measure utilizations of CPU, RAM, Bandwidth and Disk for each task in the system. The broker is trusted with this information such that it can make informed resource management decisions to optimize QoS. Moreover, we consider that tasks include a batch of inputs that need to be processed by a DNN model. Further, for each task, a service level deadline is deﬁned at the time the task is sent to the edge environment. We give an overview of the SplitPlace system model in Figure 3. We decompose the problem into deciding an optimal splitting strategy and a fragment placement for each application (motivation in Appendix A.6 and more details in Section 1).
+Workload Model. We consider a bounded discrete time control problem where we divide the timeline into equal duration intervals, with the t-th interval denoted as It. Here, t ∈ {0, . . . , Γ}, where Γ + 1 is the number of intervals in an execution. We assume a ﬁxed number of worker machines in the edge layer and denote them as H. We also consider that new tasks created at the interval It are denoted as Nt, with all active tasks being denoted as Tt (and Nt ⊆ Tt). Each task i ∈ Tt consists of a batch input bi, SLA deadline slai and a DNN application ai. The set of all possible DNN applications is denoted by A. For each new task i ∈ Nt, the edge broker takes a decision di, such that di ∈ {L, S}, with L denoting layer-wise splitting and S denoting semantic split strategy. The collection of all split decisions for active tasks in interval It is denoted as Dt = {di}i∈Nt . Based on the decision di for task i, this task is realized as an execution workﬂow in the form of containers Ci. Similar to a VM, a container is a package of virtualized software that contains all of the necessary elements to run in any environment. The set of all containers active in the interval It is denoted as Ct = ∪i∈Tt Ci. The set of all utilization metrics of CPU, RAM, Network Bandwidth and Disk for all containers and
+
+workers at the start of the interval It deﬁnes the state of the system, denoted as St. A summary of the symbols is given in Table 2.
+3.1 Split Nets Placement
+We partition the problem into two sub-problems of deciding the optimal splitting strategy for input tasks and that of placement of active containers in edge workers (see Figure 4). Considering the previously described system model, at the start of each interval It, the SplitPlace model takes the split decision di for all i ∈ Nt. Moreover, it also takes a placement decision for all active containers Ct, denoted as an adjacency matrix Pt : Ct × H. This is realized as a container allocation for new tasks and migration for active tasks in the system.
+The main idea behind the layer-wise split design is ﬁrst to divide neural networks into multiple independent splits, classify these splits in preliminary, intermediate and ﬁnal neural network layers and distribute them across different nodes based on the node capabilities and network hierarchy. This exploits the fact that communication across edge nodes in the LAN with few hop distances is very fast and has low latency and jitter [51]. Moreover, techniques like knowledge distillation can be further utilized to enhance the accuracy of the results obtained by passing the input through these different classiﬁers. However, knowledge distillation needs to be applied at the training stage, before generating the neural network splits. As there are many inputs in our assumed large-scale deployment, the execution can be performed in a pipelined fashion to further improve throughput over and above the low response time of the nodes at the edge of the network. For the semantic split, we divide the network weights into a set or a hierarchy of multiple groups that use disjoint sets of features. This is done by making assignment decisions of network parameters to edge devices at deployment time. This produces a tree-structured network that involves no connection between branched sub-trees of semantically disparate class groups. Each sub-group is then allocated to an edge node. The input is either broadcasted from the broker or forwarded in a ring-topology to all nodes with the network split corresponding to the input task. We use standard layer [32] and semantic splitting [16] methods as discussed in Section 2.
+We now outline the working of the proposed distributed deep learning architecture for edge computing environ-
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+6
+
+Table 2: Table of Main Notation
+
+Notation
+It Tt Nt H i = {bi, slai, ai} di ∈ {L, S} Ci Ct = ∪i∈Tt Ci St Pt : Ct × H Ot
+
+Description
+t-th scheduling interval Active tasks in It
+New tasks received at the start of It Set of workers in the edge layer
+Task as a collection input batch, SLA deadline and application type Splitting decision for input task i
+Container realization of task i based on decision di Set of all active containers in the interval It State of the system at the start of It
+Placement decision of Ct to H as an adjacency matrix Objective score for interval It
+
+Workload 1 Workload 2 Workload 3
+
+Host 1 Host 2 Host 3 Host 4 Host 5 Host 6 Host 7 Host 8 Host 9
+
+Decision
+
+Placement
+
+Figure 4: SplitPlace decision and placement problems.
+
+ments. Figure 3 shows a schematic view of its working. As shown, there is a shared repository of neural network parameters which is distributed by the broker to multiple edge nodes. The layer and semantic splits are realized as Docker container images that are shared by the broker to the worker nodes at the start of each execution trace. The placement of tasks is realized as spinning up a Docker container using the corresponding image on the worker. As the process of sharing container images is a one-time event, transferring all semantic and layer split fragments does not impose a high overhead on network bandwidth at runtime. This sharing of containers for each splitting strategy and dataset type are transferred to the worker nodes is performed at the start of the run. At run-time, only the decision of which split fragment to be used is communicated to the worker nodes, which executes a container from the corresponding image. The placement of task on each worker is based on the resource availability, computation required to be performed in each section and the capabilities of the nodes (obtained by the Resource Monitor). For intensive computations with large storage requirements (Gated Recurrent Units or LSTMs) or splits with high dimension size of input/output (typically the ﬁnal layers), the splits are sent to high-resource edge workers. The management of allocation and migration of
+
+neural network splits is done by the Container Orchestrator. Other attention based sub-layer extensions can be deployed in either edge or cloud node based on application requirements, node constraints and user demands. Based on the described model assumptions, we now formulate the problem of taking splitting and placement decisions to optimize the QoS parameters. Implementation speciﬁc details on how the results of layer-splits are forwarded and outputs of semantic splits combined across edge nodes are given in Section 5.
+
+3.2 Problem Formulation
+The aim of the model is to optimize an objective score Ot (to be maximized), which quantiﬁes the QoS parameters of the interval It, such as accuracy, SLA violation rate, energy consumption and average response time. This is typically in the form of a convex combination of energy consumption, response time, SLO violation rates, etc. [50], [52]. The constraints in this formulation include the following. Firstly, the container decomposition for a new task i ∈ Nt should be based on di. Secondly, containers corresponding to the layersplit decisions {Ci|di = L} should be scheduled as per the linear chain of precedence constraints. This means that a container later in the neural inference pipeline should be scheduled only after the complete execution of the previous containers in the pipeline. This is because the output of an initial layer in an inference pipeline of a neural network is required before we can schedule a latter layer in the pipeline. Thirdly, the placement matrix Pt : Ct × H should adhere to the allocation constraints, i.e., it should not allocate/migrate a container to a worker where the worker does not have sufﬁcient resources available to accommodate the container. Thus, the problem can be formulated as
+
+T
+
+maximize
+Pt ,Dt
+
+Ot
+t
+
+subject to ∀ t, ∀ i ∈ Nt, Ci containers created
+
+(1)
+
+based on splitting decision di,
+
+∀ t, Pt is feasible, ∀ di = L, Ci follow precedence chain.
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+7
+
+Figure 5: MAB decision workﬂow.
+
+4 SPLITPLACE POLICY
+We now describe the SplitPlace decision and placement policy. For the ﬁrst sub-problem of deciding optimal splitting strategy, we employ a Multi-Armed Bandit model to dynamically enforce the decision using external reward signals1. Our solution for the second sub-problem of split placement uses a reinforcement-learning based approach that speciﬁcally utilizes a surrogate model to optimize the placement decision (agnostic to the speciﬁc implementation)2. This two-stage approach is suboptimal since the response time of the splitting decision depends on the placement decision. In case of large variation in terms of the computational resources, it is worth exploring joint optimization of both decisions. However, in our large-scale edge settings, this segregation helps us to make the problem tractable as we describe next.
+The motivation behind this segregation is two-fold. First, having a single reinforcement-learning (RL) model that takes both splitting and placement decisions makes the state-space explode exponentially, causing memory bottlenecks in resource-constrained edge devices [55]. Having a simple RL model does not allow it to scale well with several devices in modern IoT settings (see Section 6 with 50 edge devices the and Gillis RL baseline). One of the solutions that we explore in this work is to simplify this complex problem by decomposing it into split decision making and task placement. Second, the response time of an application depends primarily on the splitting choice, layer or semantic, making it a crucial factor for SLA deadline based decision making. To minimize the SLA violation rates we only use the response time based context for our Multi-Armed bandit model. Other parameters like CPU or RAM utilization have high variability in a volatile setting and are not ideal choices for deciding which splitting strategy to opt. Instead, the inference accuracy is another key factor in taking this decision. Thus, SLA violation and inference accuracy are apt objectives for the ﬁrst sub-problem. Further, the energy consumption and average response time largely depend
+1. Compared to other methods like A/B testing and Hill Climbing search [53], Multi-Armed Bandits allow quick convergence in scenarios when different cases need to be modelled separately, which is the case in our setup. Thus, we use Mult-Armed Bandits for deciding the optimal splitting strategy for an input task.
+2. In contrast to Monte Carlo or Evolutionary methods, Reinforcement learning allows placement to be goal-directed, i.e., aims at optimizing QoS using it as a signal, and allows the model to adapt to changing environments [54]. Hence, we use a RL model, speciﬁcally using a surrogate model due for its scalability, to decide the optimal task placement of network splits.
+
+on the task placement, making them an ideal objective for optimization in the task placement sub-problem.
+4.1 Multi-Armed Bandit Decision Module
+Multi-Armed Bandit, in short MAB, is a policy formulation where a state-less agent is expected to take one of many decisions with each decision leading to a different reward. The objective of such an agent is to maximize the expected long-term reward [31]. However, in our case, the most important factor to consider when making a decision of whether to use layer or semantic splits for a task is its SLA deadline.
+4.1.1 Estimating Response Time of Layer-Splits
+The idea behind the proposed SplitPlace approach is to maintain MABs for two different contexts: 1) when SLA is greater than the estimate of the response time for a layer decision, 2) when SLA is less than this estimate. The motivation behind these two contexts is that in case of the SLA deadline being lower than the execution time of layer split, a ”layer” decision would be more likely to violate the SLA as result delivery would be after the deadline. However, the exact time it takes to completely execute all containers corresponding to the layer split decision is apriori unknown. Thus, for every application type, we maintain estimates of the response time, i.e, the total time it takes to execute all containers corresponding to this decision.
+Let us denote the tasks leaving the system at the end of It as Et. Now, for each task i ∈ Et, we denote response time and inference performance using ri and pi. We denote the layer response time estimate for application a ∈ A as Ra. To quickly adapt to non-stationary scenarios, for instance due to the mobility of edge nodes in the system, we update our estimates using new data-points as exponential moving averages using the multiplier φ ∈ [0, 1] for the most recent response time observation. Moving averages presents a low computational cost and consequently low latency compared to more sophisticated smoothing functions.
+Ra ← φ · ri + (1 − φ) · Ra, ∀i ∈ Et ∧ di = L, ∀a ∈ A. (2)
+Compared to simple moving average, the above equation gives higher weights to the latest response times, allowing the model to quickly respond to recent changes in environment and workload characteristics.
+4.1.2 Context based MAB Model
+Now, for any input task i ∈ Nt, we divide it into two cases: slai ≥ Rai and slai < Rai . Considering that the response
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+8
+
+time of a semantic-split decision would likely be lower than the layer-split decision, in the ﬁrst case both decisions would most likely not lead to an SLA violation (high SLA setting). However, in the second case, a layer-split decision would likely lead to an SLA violation but not the semantic-split decision (low SLA setting). To tackle the problem for these different contexts, we maintain two independent MAB models denoted as M ABh and M ABl. The former represents a MAB model for the high-SLA setting and the latter for the low-SLA setting.
+For each context and decision d ∈ {L, S}, we deﬁne reward metrics as
+
+Oh,d = Ol,d =
+
+i∈Et
+
+(1(ri
+2·
+
+≤ slai) + pi) · 1(slai i∈Et 1(slai ≥ Rai ∧
+
+≥ di
+
+Rai ∧ = d)
+
+di
+
+=
+
+d) ,
+
+(3)
+
+i∈Et
+
+(1(ri
+2·
+
+≤ slai) + pi) · 1(slai i∈Et 1(slai < Rai ∧
+
+< di
+
+Rai ∧ = d)
+
+di
+
+=
+
+d) .
+
+(4)
+
+The ﬁrst term of the numerator, i.e., 1(ri ≤ slai) quan-
+tiﬁes SLA violation reward (one if not violated and zero otherwise). The second term, i.e., pi corresponds to the inference accuracy of the task. These two objectives have been motivated at the start of Section 4. Thus, each MAB model gets the reward function for its decisions allowing independent training of the two. The weights of the two metrics, i.e., accuracy and SLA violation can be set by the user to modify the relative importance between the metrics as per application requirements. In our experiments, the weight parameters of both metrics are set to be equal based on grid-search, maximizing the average reward.
+Now, for each decision context c ∈ {h, l} and d ∈ {L, S}, we maintain a decision count N c,d and a reward estimate Qc,d which is updated using the reward functions Oh,d or Ol,d as follows
+
+Qc,d ← Qc,d+γ(Oc,d−Qc,d), ∀d ∈ {L, S}, ∀c ∈ {h, l}. (5)
+
+where γ is the decay parameter. Thus, each reward-estimate is updated by the corresponding reward metric.
+For both these MAB models, we use a parameter-free feedback-based -greedy learning approach that is known to be versatile in adapting to diverse workload characteristics [56]. Unlike other strategies, this is known to scale asymptotically as the long-term Q estimates become exact under mild conditions [57, § 2.2]. To train the model, we take the contextual decision
+
+
+
+ random decision,
+
+
+
+   di =
+
+arg maxd∈{L,S} Qh,d,
+
+with prob. otherwise
+
+,
+
+ random decision,
+
+
+
+  
+
+arg maxd∈{L,S} Ql,d,
+
+with prob. otherwise
+
+,
+
+slai ≥ Rai .
+slai < Rai
+(6)
+
+Here, the probability decays using the reward feedback,
+
+starting from 1. We maintain a reward threshold ρ that is
+
+initialized as a small positive constant k < 1, and use aver-
+
+age
+
+reward
+
+OM AB
+
+=
+
+1 4
+
+c∈{h,l}
+
+d∈{L,D} Oc,d to update
+
+and ρ using the rules
+
+decay( ), OMAB > ρ
+
+←
+
+,
+
+(7)
+
+,
+
+otherwise
+
+increment(ρ), OMAB > ρ
+
+ρ←
+
+.
+
+(8)
+
+ρ,
+
+otherwise
+
+Here decay( ) = (1 − k) · and increment(ρ) = (1 + k) · ρ. Note that OMAB > ρ refers to the current value of ρ prior to the update. The k value controls the rate of convergence of the model. The value controls the exploration of the model at training time allowing the model to visit more states and obtain precise estimates of layer-split response times.
+However, at test time we already have precise estimates of the response times; thus exploration is only required to adapt in volatile scenarios. For this, -greedy is not a suitable approach as decreasing with time would prevent exploration as time progresses. Instead, we use an UpperConﬁdence-Bound (UCB) exploration strategy that is more suitable as it takes decision counts also into account [58], [59]. Thus, at test time, we take a deterministic decision using the rule
+
+ di = arg maxd∈{L,S} Qh,d + c
+arg maxd∈{L,S} Ql,d + c
+
+, log t
+N h,d
+, log t
+N l,d
+
+slai ≥ Rai , (9) slai < Rai
+
+where t is the scheduling interval count and c is the exploration factor. An overview of the complete split-decision making workﬂow is shown in Figure 5. We now discuss the RL based placement module. It is worth noting that both components are independent of each other and can be improved separately in future; however, our experiments show that the MAB decision module accounts for most of the performance gains (see Section 6).
+
+4.2 Reinforcement Learning based Placement Module
+
+Once we have the splitting decision for each input task
+
+i ∈ Nt, we now can create containers using pre-trained layer and semantic split neural networks corresponding to
+
+the application ai. This can be done ofﬂine on a resource rich system, where the split models can be trained using existing
+
+datasets. Once we have trained models, we can generate
+
+container images corresponding to each split fragment and
+
+distribute to all worker nodes [60]. Then we need to place
+
+containers, translating to the worker node initializing a
+
+container for the corresponding image, of all active tasks
+
+Ct to workers H. To do this, we use a learning model
+which predicts the placement matrix Pt using the state of the system St, decisions Dt = di∀i ∈ Tt and a reward signal OP . To deﬁne OP , we deﬁne the following metrics [50]:
+
+1) Average Energy Consumption (AEC) is deﬁned for any
+
+interval It as the mean energy consumption of all edge workers in the system.
+
+2) Average Response Time (ART) is deﬁned for any interval
+
+It as mean response time (in scheduling intervals) of all leaving tasks Et.
+
+The choice of these two objectives for the placement sub-
+
+problem has been motivated at the start of Section 4. Using these metrics, for any interval It, OP is deﬁned as
+
+OP = OMAB − α · AECt − β · ARTt.
+
+(10)
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+9
+
+Algorithm 1 SplitPlace Decision and Placement Module
+
+Require: Pre-trained MAB models M ABh, M ABl
+
+Discounting factor γ ∈ (0, 1)
+
+1: procedure SPLITPLACE(scheduling interval It)
+
+2: Get new tasks Nt
+
+3: Get leaving tasks Et 4: Calculate Oc,d ∀c ∈ {h, l}, d ∈ {L, S} using (3) and (4) 5: Update gain estimates Qc,d ∀c, d using (5) 6: Update decision counts N c,d ∀c, d
+
+7: for i ∈ Nt do
+
+8:
+
+i = {bi, slai, ai}
+
+
+
+9:
+
+di ← arg maxd∈{L,S} Qh,d + c
+
+, log t
+N h,d
+
+slai ≥ Rai
+
+arg maxd∈{L,S} Ql,d + c
+
+, log t
+N l,d
+
+slai < Rai
+
+10:
+
+Dt ← {di}i∈Nt
+
+11: Get St from resource-monitor
+
+12: Pt ← DASO([St, Pt−1, Dt])
+
+13:
+
+OM AB
+
+←
+
+1 4
+
+c∈{h,l}
+
+d∈{L,D} Oc,d
+
+14: Fine-tune DASO using OP calculated using (10)
+
+15: return Pt
+
+Q update Count update
+UCB based decision
+Current State Placement Decision
+
+Here, α and β (such that α + β = 1) are hyper-parameters that can be set by users as per the application requirements. Higher α aims to optimize energy consumption at the cost of higher response times, whereas low α aims to reduce average response time. Thus, a RL model f , parameterized by θ takes a decision Pi, where the model uses the reward estimate as the output of the function f ([St, Pt, Dt]; θ), where the parameters θ are updated based on the reward signal OP . We call this learning approach “decision-aware” as part of the input is the split-decision taken by the MAB model.
+Clearly, the proposed formulation is agnostic to the underlying implementation of the learning approach. Thus, any policy like Q-learning or Actor-Critic Learning could be used in the SplitPlace model [57]. However, recently developed techniques like GOBI [50] use gradient-based optimization of the reward to quickly converge to a localmaximum of the objective function. GOBI uses a neuralnetwork based surrogate model to estimate the reward from a given input state, which is then used to update the state by calculating the gradients of the reward estimates with respect to the input. Moreover, advances like momentum, annealing and restarts allow such models to quickly reach a global optima [50].
+DASO placement module. In the proposed framework, we use decision-aware surrogate based optimization method (termed as DASO) to place containers in a distributed mobile edge environment. This is motivated from prior neural network based surrogate optimization methods [50]. Here, we consider a Fully-Connected-Network (FCN) model f (x; θ) that takes an x as a tuple of input state St, split-decision Dt and placement decision Pt, and outputs an estimate of the QoS objective score Ot. This is because FCNs are agnostic to the structure of the input and hence a suitable choice for modeling dependencies between QoS metrics and model inputs like resource utilization and placement decision [49], [50]. Exploration of other styles
+
+of neural models, such as graph neural networks that can take the network topology graph as an input are part of future work. Now, using existing execution trace dataset, Λ = {[St, Pt, Dt], Ot}b, the FCN model is trained to optimize its network parameters θ such that the Mean-SquareError (MSE) loss
+
+L(f (x; θ), y)
+
+=
+
+1 b
+
+bt=0(y − f (x; θ))2, where (x, y) ∈ Λ.
+
+(11)
+
+is minimized as in [50]. To do this, we use AdamW opti-
+
+mizer [61] and update θ up till convergence. This allows the
+
+surrogate model f to predict an QoS objective score for a
+
+given system state St, split-decisions Dt and task placement
+
+Pt. Once the surrogate model is trained, starting from the
+
+placement decision from the previous interval Pt = Pt−1,
+
+we leverage it to optimize the placement decision using the
+
+following rule
+
+Pt ← Pt − η · ∇Pt f ([St, Pt, Dt]; θ),
+
+(12)
+
+for a given state and decision pair St, Dt. Here, η is the learning rate of the model. The above equation is iterated till convergence, i.e., the L2 norm between the placement matrices of two consecutive iterations is lower than a threshold value. Thus, at the start of each interval It, using the output of the MAB decision module, the DASO model gives us a placement decision Pt.
+
+4.3 SplitPlace Algorithm
+An overview of the SplitPlace approach is given in Algorithm 1. Using pre-trained MAB models, i.e., Q-estimates Qc,d and decision counts N c,d, the model decides the optimal splitting decision using the UCB metric (line 9). To adapt the model in non-stationary scenarios, we dynamically update the Q-estimates and decision counts (lines 5 and 6). Using the current state and the split-decisions of all active tasks, we use the DASO approach to take a placement
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+10
+
+Table 3: Edge Worker characteristics of Azure Edge Environment.
+
+Name
+
+Qty
+
+Core count
+
+MIPS
+
+RAM
+
+RAM
+
+Ping Network
+
+Disk
+
+Bandwidth time Bandwidth Bandwidth
+
+Cost Model
+
+Worker Nodes
+
+B2ms 20
+
+2
+
+4029 4295 MB 372 MB/s 2 ms 1000 MB/s 13.4 MB/s 0.0944 $/hr
+
+E2asv4 10
+
+2
+
+4019 4172 MB 412 MB/s 2 ms 1000 MB/s 10.3 MB/s 0.148 $/hr
+
+B4ms 10
+
+4
+
+8102 7962 MB 360 MB/s 3 ms 2500 MB/s 10.6 MB/s 0.189 $/hr
+
+E4asv4 10
+
+4
+
+7962 7962 MB 476 MB/s 3 ms 2500 MB/s 11.64 MB/s 0.296 $/hr
+
+Broker Node
+
+L8sv2
+
+1
+
+8
+
+16182 17012 MB 945 MB/s 1 ms 4000 MB/s 17.6 MB/s 0.724 $/hr
+
+decision for the active containers (line 12). Again, we ﬁnetune the DASO’s surrogate model using the reward metric to adapt to changes in the environment, for instance the changes in the latency of mobile edge nodes and their consequent effect on the reward metrics (line 14). However, the placement decision must conform to the allocation constraints as described in Section 3.2. To relax the constraint of having only feasible placement decisions, in SplitPlace we allocate or migrate only those containers for which it is possible. Those containers that could not be allocated in a scheduling interval are placed to nodes corresponding to the highest output of the neural network f . If no worker placement is feasible the task is added to a wait queue, which are considered again for allocation in the next interval.
+5 IMPLEMENTATION
+To implement and evaluate the SplitPlace policy, we need a framework that we can use to deploy containerized neural network split fragments on an edge computing environment. One such framework is COSCO [50]. It enables the development and deployment of integrated edge-cloud environments with structured communication and platform independent execution of applications. It connects various IoT sensors, which can be healthcare sensors with gateway devices, to send data and tasks to edge computing nodes, including edge or cloud workers. The resource management and task initiation is undertaken on edge nodes in the broker layer. The framework uses HTTP RESTful APIs for communication and seamlessly integrates a Flask based web-environment to deploy and manage containers in a distributed setup [62].
+We use only the edge-layer deployment in the framework and use the Docker container engine to containerize and execute the split-neural networks in various edge workers [60]. We uses the Checkpoint/Restore In Userspace (CRIU) [63] tool for container migration. Further, the DASO approach is implemented using the Autograd package in the PyTorch module [64].
+To implement SplitPlace in the COSCO framework, we extend the Framework class to allow constraints for sequential execution of layer-splits. The function getPlacementPossible() was modiﬁed to also check for containers of layer-split partitioning scheme to be scheduled sequentially. Moreover, we implemented data transferring pipeline for broadcasting inputs in semantic-split decision and forwarding the outputs in layer-split decision. Finally, the inference outputs were synchronized and brought
+
+to the broker to calculate the performance accuracy and measure the workﬂow response time. For synchronization of outputs and execution of network splits, we use the HTTP Notiﬁcation API.
+6 PERFORMANCE EVALUATION
+To test the efﬁcacy of the SplitPlace approach and compare it against the baseline methods, we perform experiments on a heterogeneous edge computing testbed. To do this we emulate a setting with mobile edge devices mounted on selfdriving cars, that execute various image-recognition tasks.
+6.1 Experiment Setup
+As in prior work [50], [49], [65], we use α = β = 0.5 in (10) for our experiments (we consider other value pairs in Appendix A.2). Also, we use the exploration factor c = 0.5 for the UCB exploration and the exponential moving average parameter φ = 0.9, chosen using grid-search using the cumulative reward as the metric to maximize. We create a testbed of 50 resource-constrained VMs located in the same geographical location of London, United Kingdom using Microsoft Azure. The worker resources are shown in Table 3. All machines use Intel i3 2.4 GHz processor cores with processing capacity of no more than a Raspberry Pi 4B device. To keep storage costs consistent, we keep Azure P15 Managed disk with 125 MB/s disk throughput and 256 GB size3. The worker nodes have 4-8 GB of RAM, whereas the broker has 16 GB RAM. To factor in the mobility of the edge nodes, we use the NetLimiter tool to tweak the communication latency with the broker node using the mobility model described in [66]. Speciﬁcally, we use the latency and bandwidth parameters of workers from the traces generated using the Simulation of Urban Mobility (SUMO) tool [67] that emulates mobile vehicles in a city like environment. SUMO gives us the parameters like ping time and network bandwidth to simulate in our testbed using NetLimiter. The moving averages and periodic ﬁnetuning allow our approach to be robust towards any kind of dynamism in the edge environment, including the one arising from mobility of worker nodes.
+Our Azure environment is such that all devices are in the same LAN with 10 MBps network interface cards to avoid
+3. Azure Managed Disks https://docs.microsoft. com/en-us/azure/virtual-machines/disks-types# premium-ssd.
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+11
+
+Average Response Time
+
+MNIST 10
+
+FashionMNIST
+
+CIFAR100
+
+0 0
+
+50
+
+100
+
+150
+
+200
+
+Intervals
+
+(a) Average Response Time Estimate
+
+0.9
+
+0.7
+
+0.6
+
+0.8
+
+0.5
+
+0
+
+50
+
+100 150 200
+
+Intervals
+
+(d) Training Parameters with time
+
+Reward Threshold Rewards (high setting)
+
+Counts (high setting)
+
+layer
+
+semantic
+
+10
+
+5
+
+0 0
+
+50
+
+100
+
+150
+
+200
+
+Intervals
+
+(b) Decision Counts (SLA > estimate)
+
+layer
+
+semantic
+
+0.75
+0.50
+0.25
+0.00 0
+
+50
+
+100
+
+150
+
+200
+
+Intervals
+
+(e) Average Rewards (SLA > estimate)
+
+Figure 6: MAB training curves
+
+Rewards (low setting)
+
+Counts (low setting)
+
+layer
+
+semantic
+
+40
+
+20
+
+0 0
+
+50
+
+100
+
+150
+
+200
+
+Intervals
+
+(c) Decision Counts (SLA < estimate)
+
+layer
+
+semantic
+
+0.6
+
+0.4
+
+0.2
+
+0.0 0
+
+50
+
+100
+
+150
+
+200
+
+Intervals
+
+(f) Average Rewards (SLA < estimate)
+
+Epsilon
+
+network bottlenecks while transferring inputs, outputs and intermediate results across neural network splits. Even if the nodes are in the same LAN with high bandwidth connections, the SUMO model would emulate the affects of mobility as is common in prior work on mobile edge computing [65], [68]. Further, we use the cPickle4 Python module to save the intermediate results using bzip2 compression and rsync5 ﬁle-transfer utility to minimize the communication latency. For containers corresponding to a layer-split workload that are deployed in different nodes, the intermediate results are forwarded using the scp utility to the next container in the neural network pipeline. Similarly, for semantic splitting, the cPickle outputs are collected using rsync and concatenated using the torch.cat function.
+We use the Microsoft Azure pricing calculator to obtain the cost of execution per hour (in US Dollars)6. The power consumption models are taken from the Standard Performance Evaluation Corporation (SPEC) benchmarks repository7. The Million-Instruction-per-Second (MIPS) of all VMs are computed using the perf-stat8 tool on the SPEC benchmarks. We run all experiments for 100 scheduling intervals, i.e., Γ = 100, with each interval being 300 seconds long, giving a total experiment time of 8 hours 20 minutes. We average over ﬁve runs and use diverse workload types to ensure statistical signiﬁcance in our experiments. We consider variations of the experimental setup in Appendix A.3.
+6.2 Workloads
+Motivated from prior work [32], we use three families of popular DNNs as the benchmarking models: ResNet50-
+4. cPickle module https://docs.python.org/2/library/ pickle.html#module-cPickle.
+5. rsync tool https://linux.die.net/man/1/rsync. 6. Microsoft Azure pricing calculator for South UK https:// azure.microsoft.com/en-gb/pricing/calculator/. 7. SPEC benchmark repository https://www.spec.org/cloud_ iaas2018/results/. 8. perf-stat tool https://man7.org/linux/man-pages/ man1/perf-stat.1.html.
+
+V2 [69], MobileNetV2 [70] and InceptionV3 [71]. Each family has many variants of the model, each having a different number of layers in the neural model. For instance, the ResNet model has 34 and 50 layers. We use three image-classiﬁcation data sets: MNIST, FashionMNIST and CIFAR100 [33], [34], [35]. MNIST is a hand-written digit recognition dataset with 28 × 28 gray-scale images to 10dimensional output. FashionMNIST has 28 × 28 RGB images with 10 dimensional output. CIFAR100 has 32 × 32 RGB images with 100-dimensional output. Thus the application set A becomes {MNIST, FashionMNIST, CIFAR100}. These models have been taken directly from the AIoTBench workloads [72]. This is a popular suite of AI benchmark applications for IoT and Edge computing solutions. The three speciﬁc datasets used in our experiments are motivated from the vertical use case of self-driving cars, which requires DNN-based applications to continuously recognize images with low latency requirements. Herein, an image recognition software is deployed that reads speed signs (digit recognition, MNIST), recognizes humans (through apparel and pose [73], FashionMNIST), identiﬁes other objects like cars and barriers (object detection, CIFAR100). We use the implementation of neural network splitting from prior work [32], [16].
+We use the inference deadline from the work [32] as our SLA. To create the input tasks, we use batch sizes sampled uniformly from 16, 000 − 64, 000. At the beginning of each scheduling interval, we create P oisson(λ) tasks with λ = 6 tasks for our setup, sampled uniformly from one of the three applications [50]. We consider other λ values and single workload type (from MNIST, FashionMNIST and CIFAR100) in Appendices A.1 and A.4. The split fragments for MNIST, FashionMNIST and CIFAR100 lead to container images of sizes 8-14 MB, 34-56 MB and 47-76 MB, respectively. To calculate the inference accuracy to feed in the MAB models and perform UCB exploration, we also share the ground-truth labels of all datasets with all worker nodes at the time of sharing the neural models as Docker container images. We also compare edge and cloud setups
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+12
+
+Average Accuracy
+
+0.93 0.92 0.91 0.90 0.89
+M+D M+G R+D L+G S+G Gillis MC Model
+(a) Average Accuracy
+
+Average Response Time (intervals)
+
+12 10
+8 6 4 2 0
+M+D M+G R+D L+G S+G Gillis MC Model
+(b) Average Response Time
+
+Fraction of total SLA Violations
+
+0.8
+0.6
+0.4
+0.2
+0.0 M+D M+G R+D L+G S+G Gillis MC Model
+(c) Fraction of SLA Violations
+
+Average Reward
+
+1.0 0.8 0.6 0.4 0.2 0.0
+M+D M+G R+D L+G S+G Gillis MC Model
+(d) Average Reward
+
+Fraction of SLA Violations per application
+
+Average Response Time per application (intervals)
+
+Average Accuracy per application
+
+0.95
+0.90
+0.85
+0.80
+0.75 M+D M+G R+D L+G S+G Gillis MC Model
+
+16 14 12 10
+8 6 4 2
+M+D M+G R+D L+G S+G Gillis MC Model
+
+0.8 0.6 0.4 0.2 0.0
+M+D M+G R+D L+G S+G Gillis MC Model
+
+Average Reward per application
+
+1.0
+0.9
+0.8
+0.7
+0.6 M+D M+G R+D L+G S+G Gillis MC Model
+
+(e) Average Accuracy (per applica- (f) Average Response Time (per (g) Fraction of SLA Violations (per (h) Average Reward (per applica-
+
+tion)
+
+application)
+
+application)
+
+tion)
+
+Figure 7: Comparison of SplitPlace against baselines and ablated models on physical setup with 50 edge workers
+
+in Appendix A.5 to establish the need for edge devices for latency critical workloads.
+6.3 MAB Training
+To train our MAB models, we execute the workloads on the test setup for 200 intervals and use feedback-based -greedy exploration to update the layer-split decision response time estimates, Q-estimates and decision counts. Figure 6 shows the training curves for the two models.
+Figure 6(a) shows how the response time estimates for the layer-split decision are learned starting from zero using moving averages. Figure 6(d) shows how the rewardthreshold ρ and decay parameter change with time. We use the decay and increment multipliers as 0.9 and 1.1 (k = 0.1 in (7)) for and ρ respectively, as done in [56]. Figures 6(b) and 6(c) show the decision counts for high and low SLA settings for both decisions. Figures 6(e) and 6(f) show the Q-estimates for high and low SLA settings. The dichotomy between the two settings is reﬂected here. When the slai of the input task i is less than the estimate Rai (low setting) there is a clear distinction between the rewards of the two decisions as layer-split is likely to lead to SLA violation and hence lower rewards. However, when slai is greater than the estimate Rai (high setting), both decisions give relatively high rewards with layer-split decision slightly surpassing the semantic-split due to higher average accuracy as discussed in Section 2.
+The feedback-based -greedy training allows us to obtain close estimates of the average response times of the layer-split executions for each application type and average rewards for both decisions in high and low SLA settings. Thus, in our experiments, we initialize the expected reward
+
+(Q) and layer-split response time (R) estimates by the values we get from this training approach. At test time, we dynamically update these estimates using (2) and (5).
+
+6.4 Performance Metrics
+
+We use the following evaluation metrics in our experiments as motivated from prior works [2], [50], [49]. We also use AEC and ART as discussed in Section 4.
+1) Average Accuracy is deﬁned for an execution trace as the average accuracy of all tasks run in an experiment, i.e,
+
+Accuracy = t i∈Et pi .
+
+(13)
+
+t |Et|
+
+2) Fraction of SLA violation is deﬁned for an execution trace as the fraction of all tasks run in an experiment for which the response time is higher than the SLA deadline, i.e.,
+
+SLA V iolations = t t∈Et 1(slai ≥ ri) .
+
+(14)
+
+t |Et|
+
+3) Average Reward is deﬁned for an execution trace as fol-
+
+lows
+
+Reward = t t∈Et 1(slai ≥ ri) + pi .
+
+(15)
+
+2 · t |Et|
+
+4) Execution Cost is deﬁned for an execution trace as the total cost incurred during the experiment, i.e.,
+
+Cost =
+
+Ch(x)dx.
+
+(16)
+
+h∈H x
+
+where Ch(x) is the cost function for worker h with time.
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+13
+
+Interval Energy (Kilowatt-hr)
+
+1080 1060 1040 1020 1000
+M+D M+G R+D L+G S+G Gillis MC Model
+(a) Average Energy Consumption
+
+Average Execution Time (seconds)
+
+250
+200
+150
+100
+50
+0 M+D M+G R+D L+G S+G Gillis MC Model
+(b) Average Execution Time
+
+Fairness (Jain’s index)
+
+1.0 0.8 0.6 0.4 0.2 0.0
+M+D M+G R+D L+G S+G Gillis MC Model
+(c) Fairness
+
+Average Wait Time (intervals)
+
+1.50 1.25 1.00 0.75 0.50 0.25 0.00
+M+D M+G R+D L+G S+G Gillis MC Model
+(d) Average Wait Time
+
+Average Wait Time per application (intervals)
+
+Average CPU Utilization (%)
+
+800
+600
+400
+200
+0 M+D M+G R+D L+G S+G Gillis MC Model
+(e) Average CPU Utilization
+
+Average RAM Utilization (MB)
+
+1000 800 600 400 200 0 M+D M+G R+D L+G S+G Gillis MC Model
+(f) Average RAM Utilization
+
+Fairness per application
+
+1.0 1.8
+0.9 1.6
+
+0.8
+
+1.4
+
+0.7
+
+1.2
+
+0.6
+
+1.0
+
+M+D M+G R+D L+G S+G Gillis MC Model
+
+M+D M+G R+D L+G S+G Gillis MC Model
+
+(g) Average Fairness (per applica- (h) Average Wait Time (per appli-
+
+tion)
+
+cation)
+
+Cost per container (US Dollars)
+
+4
+3
+2
+1
+0 M+D M+G R+D L+G S+G Gillis MC Model
+(i) Average Cost per container
+
+Decision per application (% Layer)
+
+100 80 60 40 20 0 M+D M+G R+D L+G S+G Gillis MC Model
+(j) Fraction of Layer Decisions
+
+Average Accuracy
+
+0.96 10
+0.94
+8 0.92
+
+0.90
+
+6
+
+0.88
+
+4
+
+0.86
+0.84 0
+
+10 20 30 40 50 Execution Time (Interval)
+
+2 0
+
+10 20 30 40 50 Execution Time (Interval)
+
+(k) Average Accuracy with inter- (l) Average Response Time with in-
+
+vals
+
+tervals
+
+Average Response Time (intervals)
+
+Figure 8: Additional results comparing SplitPlace with baselines and ablated models.
+
+5) Average Wait Time is the average time a task had to wait in the wait queue till it could be allocated to a worker for execution.
+6) Average Execution Time is the response time minus the wait time, averaged for all tasks run in an experiment.
+7) Fairness is deﬁned as the Jain’s fairness index for execution on tasks over the edge workers [50].
+6.5 Baselines and Ablated Models
+We compare the performance of the SplitPlace approach against the state-of-the-art baselines Gillis and BottleNet++ Model Compression (denoted as MC in our graphs) [32], [37], [38]. Gillis refers to the reinforcement learning method proposed in [32] that leverages both layer-splitting and compression models to achieve optimal response time and inference accuracy. Note that contrary to the original Gillis’ work, our implementation does not leverage serverless functions. MC is a model-compression approach motivated from BottleNet++ that we implement using the PyTorch
+
+Prune library.9 Further details in Section 2. We do not include results for other methods discussed in Section 2 as MC and Gillis give better results empirically for all comparison metrics. We also compare SplitPlace with ablated models, where we replace one or both of the MAB or DASO components with simpler versions as described below.
+• Semantic+GOBI (S+G): Semantic-split decision only with vanilla GOBI placement module.
+• Layer+GOBI (L+G): Layer-split decision only with vanilla GOBI placement module.
+• Random+DASO (R+D): Random split decision with DASO placement module.
+• MAB+GOBI (M+G): MAB based split decider with vanilla GOBI placement module.
+The ﬁnal SplitPlace approach is represented as MAB+DASO or M+D in shorthand notation in the graphs. These ablated baselines help us determine the relative im-
+9. PyTorch Prune. https://pytorch.org/docs/stable/ generated/torch.nn.utils.prune.ln_structured.html. Accessed 10 October 2021.
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+14
+
+Table 4: Comparison of SplitPlace with baseline and ablated models. The best achieved value for each metric is shown in bold. Units: Energy (MW-hr), Scheduling Time (seconds), Fairness (Jain’s Index), Wait Time (Intervals), Response Time (Intervals).
+
+Model
+Model Compression Gillis
+Semantic+GOBI Layer+GOBI Random+DASO MAB+GOBI
+MAB+DASO
+
+Energy
+1.1368 1.1442
+1.1112 1.1517 1.1297 1.1290
+1.0867
+
+Scheduling Time
+8.84±0.02 8.22±0.01
+8.68±0.03 8.72±0.01 8.86±0.01 9.12±0.02
+9.32±0.02
+
+Fairness
+
+Wait Time
+
+Baselines
+
+0.65±0.01 1.15±0.09 0.89±0.03 1.40±0.18
+
+Ablation
+
+0.68±0.04 0.88±0.03 0.62±0.05 0.78±0.08
+
+1.08±0.00 1.52±0.21 1.00±0.07 1.13±0.13
+
+SplitPlace Model
+
+0.73±0.01 1.09±0.08
+
+Response Time
+6.85±1.20 8.39±0.95
+3.70±0.57 9.92±0.91 5.55±1.05 5.64±1.02
+4.50±1.00
+
+SLA Violations
+0.26±0.02 0.22±0.03
+0.14±0.04 0.62±0.07 0.29±0.09 0.10±0.03
+0.08±0.02
+
+Accuracy
+89.93 91.90
+89.04 93.17 90.71 91.45
+92.72
+
+Average Reward
+83.98 84.17
+83.91 64.87 81.62 90.18
+94.18
+
+provements in performance by the two components of MAB and DASO separately.
+6.6 Results and Ablation Analysis
+We now provide comparative results showing the performance of the proposed SplitPlace approach against the baseline models and argue the importance of the MAB and decision-aware placement using ablation analysis. We train the GOBI and DASO models using the execution trace dataset used to train the MAB models. The learning rate (η) was set to 10−3 from [50].
+Figure 7 shows the average reward and related performance metrics, i.e., accuracy, response time and SLA violation rate. As expected, the L+G policy gives the highest accuracy of 93.17% as all decisions are layer-wise only with a higher inference performance than semantic-split execution. The S+G policy gives the least accuracy of 89.04%. However, due to layer-splits only the L+G policy also has the highest average response time, subsequently giving the highest SLA violation rate. On the other hand, S+G policy has the least average response time. However, due to the intelligent decision making in SplitPlace, it is able to get the highest total reward of 0.9418. Similar trends are also seen when comparing across models for each application. The accuracy is the highest for the MNIST dataset and lowest for CIFAR100. Average response time is highest for the CIFAR100 and lowest for MNIST in general. Among the baselines, the Gillis approach has the lowest SLA violation rate of 22% and SplitPlace improves upon this by giving 14% lower SLA violations (only 8%). Gillis has higher accuracy between the baselines of 91.9%, with SplitPlace giving an average improvement of 0.82%. Overall, the total reward of SplitPlace is higher than the baselines by at least 10.1%, giving the reward of 94.18%.
+Figure 8 shows the performance of all models for other evaluation metrics like energy, execution time and fairness. Compared to the baselines, SplitPlace can reduce energy consumption by up to 4.41% − 5.03% giving an average energy consumption of 1.0867 MW-hr. However, the SplitPlace approach has higher scheduling time and lower fairness index (Table 4). The Gillis baseline has the highest fairness
+
+index of 0.89, however this index for SplitPlace is 0.73. SplitPlace has a higher overhead of 11.8% compared to the Gillis baseline in terms of scheduling time. Figure 8(i) compares the average execution cost (in USD) for all models. As SplitPlace is able to run the maximum number of containers in the 100 intervals, it has the least cost of 3.07 USD/container. The main advantage of SplitPlace is the intelligent splitting decisions facilitate overcoming the memory bottlenecks in edge environments, giving up to 32% lower RAM utilization compared to Gillis and Model Compression.
+In terms of the initial communication time of the Docker container images, the SplitPlace method takes 30 seconds at the start of an execution. Gillis and MC have such communication times of 20 and 18 seconds, respectively. This demonstrates that SplitPlace has a low one-time overhead (up to 12 seconds) compared to the baselines when compared to the gains in response time (up to 46%) that linearly scales as the number of workloads increase.
+A summary of comparisons with values of main performance metrics for all models is given in Table 4. The best values achieved for each metric are highlighted in bold.
+7 CONCLUSIONS
+In this work, we present SplitPlace, a novel framework for efﬁciently managing demanding neural network based applications. SplitPlace exploits the trade-off between layer and semantic split models where the former gives higher accuracy, but the latter gives much lower response times. This allows SplitPlace to not only manage tasks to maintain high inference accuracy on average, but also reduce SLA violation rate. The proposed model uses a Multi-ArmedBandits based policy to decide which split strategy to use according to the SLA deadline of the incoming task. Moreover, it uses a decision-aware learning model to take appropriate placement decisions for those neural fragments on mobile edge workers. Further, both MAB and learning models are dynamically tuned to adapt to volatile scenarios. All these contributions allow SplitPlace to out-perform the baseline models in terms of average response time, SLA violation rate, inference accuracy and total reward by up to 46.3%,
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+15
+
+69.2%, 3.1% and 12.1% respectively in a heterogeneous edge environment with real-world workloads.
+We propose the following future directions for this work. An extension of the current work may be developed that dynamically updates the splitting conﬁguration to adapt to more heterogeneous and non-stationary edge environments [74]. Moreover, the current model assumes that all neural models are divisible into independent layers. This may be hard for deep learning models like attention based neural networks or transformer models [75]. Finally, the model only considers splits and their placement as containers, more ﬁne-grained methods involving Neural Architecture Search and cost efﬁcient deployment methods may be explored like serverless frameworks [76]. Other considerations such as privacy concerns and non-stationary number of active edge nodes with extreme levels of heterogeneity such that the placement decision has a signiﬁcant impact on response time is also part of future work.
+SOFTWARE AVAILABILITY
+The code and relevant training scripts shall be made publicly available on GitHub under BSD-3 licence upon publication.
+ACKNOWLEDGMENTS
+Shreshth Tuli is grateful to the Imperial College London for funding his Ph.D. through the President’s Ph.D. Scholarship scheme. We thank Feng Yan for helpful discussions.
+REFERENCES
+[1] S. Tuli, “SplitPlace: Intelligent Placement of Split Neural Nets in Mobile Edge Environments,” SIGMETRICS Perform. Eval. Rev., 2021.
+[2] S. S. Gill, S. Tuli, M. Xu, I. Singh, K. V. Singh, D. Lindsay, S. Tuli, D. Smirnova, M. Singh, U. Jain et al., “Transformative effects of IoT, Blockchain and Artiﬁcial Intelligence on cloud computing: Evolution, vision, trends and open challenges,” Internet of Things, vol. 8, pp. 100–118, 2019.
+[3] H. Zhu, M. Akrout, B. Zheng, A. Pelegris, A. Jayarajan, A. Phanishayee, B. Schroeder, and G. Pekhimenko, “Benchmarking and analyzing deep neural network training,” in 2018 IEEE International Symposium on Workload Characterization (IISWC). IEEE, 2018, pp. 88–100.
+[4] E. Li, L. Zeng, Z. Zhou, and X. Chen, “Edge AI: On-demand accelerating deep neural network inference via edge computing,” IEEE Transactions on Wireless Communications, vol. 19, no. 1, pp. 447–457, 2019.
+[5] A. Khanna, A. Sah, and T. Choudhury, “Intelligent mobile edge computing: A deep learning based approach,” in International Conference on Advances in Computing and Data Sciences. Springer, 2020, pp. 107–116.
+[6] F. A. Kraemer, A. E. Braten, N. Tamkittikhun, and D. Palma, “Fog computing in healthcare–a review and discussion,” IEEE Access, vol. 5, pp. 9206–9222, 2017.
+[7] L. Zhang and L. Zhang, “Deep learning-based classiﬁcation and reconstruction of residential scenes from large-scale point clouds,” IEEE Transactions on Geoscience and Remote Sensing, vol. 56, no. 4, pp. 1887–1897, 2017.
+[8] M. Roopaei, P. Rad, and M. Jamshidi, “Deep learning control for complex and large scale cloud systems,” Intelligent Automation & Soft Computing, vol. 23, no. 3, pp. 389–391, 2017.
+[9] J. R. Gunasekaran, C. S. Mishra, P. Thinakaran, M. T. Kandemir, and C. R. Das, “Implications of public cloud resource heterogeneity for inference serving,” in Proceedings of the 2020 Sixth International Workshop on Serverless Computing, 2020, pp. 7–12.
+
+[10] S. Laskaridis, S. I. Venieris, M. Almeida, I. Leontiadis, and N. D. Lane, “Spinn: synergistic progressive inference of neural networks over device and cloud,” in Proceedings of the 26th Annual International Conference on Mobile Computing and Networking, 2020, pp. 1–15.
+[11] Q. Liang, P. Shenoy, and D. Irwin, “AI on the edge: Characterizing AI-based IoT applications using specialized edge architectures,” in 2020 IEEE International Symposium on Workload Characterization (IISWC). IEEE, 2020, pp. 145–156.
+[12] N. Abbas, Y. Zhang, A. Taherkordi, and T. Skeie, “Mobile edge computing: A survey,” IEEE Internet of Things Journal, vol. 5, no. 1, pp. 450–465, 2017.
+[13] Y. Mao, J. Zhang, and K. B. Letaief, “Dynamic computation ofﬂoading for mobile-edge computing with energy harvesting devices,” IEEE Journal on Selected Areas in Communications, vol. 34, no. 12, pp. 3590–3605, 2016.
+[14] J. Shao and J. Zhang, “Communication-computation trade-off in resource-constrained edge inference,” IEEE Communications Magazine, vol. 58, no. 12, pp. 20–26, 2020.
+[15] J. Liu, M. L. Curry, C. Maltzahn, and P. Kufeldt, “Scale-out edge storage systems with embedded storage nodes to get better availability and cost-efﬁciency at the same time,” in 3rd {USENIX} Workshop on Hot Topics in Edge Computing (HotEdge 20), 2020.
+[16] J. Kim, Y. Park, G. Kim, and S. J. Hwang, “Splitnet: Learning to semantically split deep networks for parameter reduction and model parallelization,” in Proceedings of the 34th International Conference on Machine Learning-Volume 70. JMLR. org, 2017, pp. 1866–1874.
+[17] Y. Shi, K. Yang, T. Jiang, J. Zhang, and K. B. Letaief, “Communication-efﬁcient edge ai: Algorithms and systems,” IEEE Communications Surveys & Tutorials, vol. 22, no. 4, pp. 2167–2191, 2020.
+[18] W. Y. B. Lim, N. C. Luong, D. T. Hoang, Y. Jiao, Y.-C. Liang, Q. Yang, D. Niyato, and C. Miao, “Federated learning in mobile edge networks: A comprehensive survey,” IEEE Communications Surveys & Tutorials, vol. 22, no. 3, pp. 2031–2063, 2020.
+[19] Y. Siriwardhana, P. Porambage, M. Liyanage, and M. Ylianttila, “A Survey on Mobile Augmented Reality With 5G Mobile Edge Computing: Architectures, Applications, and Technical Aspects,” IEEE Communications Surveys & Tutorials, vol. 23, no. 2, pp. 1160– 1192, 2021.
+[20] S. Tuli, N. Basumatary, S. S. Gill, M. Kahani, R. C. Arya, G. S. Wander, and R. Buyya, “Healthfog: An ensemble deep learning based smart healthcare system for automatic diagnosis of heart diseases in integrated iot and fog computing environments,” Future Generation Computer Systems, vol. 104, pp. 187–200, 2020.
+[21] W. Xiao, R. Bhardwaj, R. Ramjee, M. Sivathanu, N. Kwatra, Z. Han, P. Patel, X. Peng, H. Zhao, Q. Zhang et al., “Gandiva: Introspective cluster scheduling for deep learning,” in 13th {USENIX} Symposium on Operating Systems Design and Implementation ({OSDI} 18), 2018, pp. 595–610.
+[22] A. Gujarati, R. Karimi, S. Alzayat, W. Hao, A. Kaufmann, Y. Vigfusson, and J. Mace, “Serving dnns like clockwork: Performance predictability from the bottom up,” in 14th {USENIX} Symposium on Operating Systems Design and Implementation ({OSDI} 20), 2020, pp. 443–462.
+[23] J. Chen and X. Ran, “Deep learning with edge computing: A review.” Proceedings of the IEEE, vol. 107, no. 8, pp. 1655–1674, 2019.
+[24] A. Capotondi, M. Rusci, M. Fariselli, and L. Benini, “Cmix-nn: Mixed low-precision cnn library for memory-constrained edge devices,” IEEE Transactions on Circuits and Systems II: Express Briefs, vol. 67, no. 5, pp. 871–875, 2020.
+[25] J. Huang, C. Samplawski, D. Ganesan, B. Marlin, and H. Kwon, “CLIO: Enabling automatic compilation of deep learning pipelines across IoT and Cloud,” in Proceedings of the 26th Annual International Conference on Mobile Computing and Networking, 2020, pp. 1– 12.
+[26] Q. Le, L. Miralles-Pechua´n, S. Kulkarni, J. Su, and O. Boydell, “An overview of deep learning in industry,” Data Analytics and AI, pp. 65–98, 2020.
+[27] Y. Matsubara, S. Baidya, D. Callegaro, M. Levorato, and S. Singh, “Distilled split deep neural networks for edge-assisted real-time systems,” in Proceedings of the 2019 Workshop on Hot Topics in Video Analytics and Intelligent Edges, 2019, pp. 21–26.
+[28] Y. A. Ushakov, P. N. Polezhaev, A. E. Shukhman, M. V. Ushakova, and M. Nadezhda, “Split neural networks for mobile devices,” in
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+16
+
+2018 26th Telecommunications Forum (TELFOR). IEEE, 2018, pp. 420–425.
+[29] V. S. Gordon and J. Crouson, “Self-splitting modular neural network-domain partitioning at boundaries of trained regions,” in 2008 IEEE International Joint Conference on Neural Networks (IEEE World Congress on Computational Intelligence). IEEE, 2008, pp. 1085–1091.
+[30] E. Ahmed and M. H. Rehmani, “Mobile edge computing: Opportunities, solutions, and challenges,” pp. 59–63, 2017.
+[31] D. Bouneffouf, I. Rish, and C. Aggarwal, “Survey on applications of multi-armed and contextual bandits,” in 2020 IEEE Congress on Evolutionary Computation (CEC). IEEE, 2020, pp. 1–8.
+[32] M. Yu, Z. Jiang, H. C. Ng, W. Wang, R. Chen, and B. Li, “Gillis: Serving large neural networks in serverless functions with automatic model partitioning,” in International Conference on Distributed Computing Systems, 2021.
+[33] Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner, “Gradient-based learning applied to document recognition,” Proceedings of the IEEE, vol. 86, no. 11, pp. 2278–2324, 1998.
+[34] H. Xiao, K. Rasul, and R. Vollgraf, “Fashion-MNIST: a novel image dataset for benchmarking machine learning algorithms,” arXiv preprint arXiv:1708.07747, 2017.
+[35] A. Krizhevsky, G. Hinton et al., “Learning multiple layers of features from tiny images,” 2009.
+[36] A. Goli, O. Hajihassani, H. Khazaei, O. Ardakanian, M. Rashidi, and T. Dauphinee, “Migrating from monolithic to serverless: A ﬁntech case study,” in Companion of the ACM/SPEC International Conference on Performance Engineering, 2020, pp. 20–25.
+[37] A. E. Eshratifar, A. Esmaili, and M. Pedram, “Bottlenet: A deep learning architecture for intelligent mobile cloud computing services,” in 2019 IEEE/ACM International Symposium on Low Power Electronics and Design (ISLPED). IEEE, 2019, pp. 1–6.
+[38] J. Shao and J. Zhang, “Bottlenet++: An end-to-end approach for feature compression in device-edge co-inference systems,” in 2020 IEEE International Conference on Communications Workshops (ICC Workshops). IEEE, 2020, pp. 1–6.
+[39] S. Gao, F. Huang, J. Pei, and H. Huang, “Discrete model compression with resource constraint for deep neural networks,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2020, pp. 1899–1908.
+[40] S. Teerapittayanon, B. McDanel, and H.-T. Kung, “Distributed deep neural networks over the cloud, the edge and end devices,” in 2017 IEEE 37th International Conference on Distributed Computing Systems (ICDCS). IEEE, 2017, pp. 328–339.
+[41] Y. Kang, J. Hauswald, C. Gao, A. Rovinski, T. Mudge, J. Mars, and L. Tang, “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge,” ACM SIGARCH Computer Architecture News, vol. 45, no. 1, pp. 615–629, 2017.
+[42] S. Zhang, S. Zhang, Z. Qian, J. Wu, Y. Jin, and S. Lu, “Deepslicing: collaborative and adaptive cnn inference with low latency,” IEEE Transactions on Parallel and Distributed Systems, vol. 32, no. 9, pp. 2175–2187, 2021.
+[43] L. Deng, G. Li, S. Han, L. Shi, and Y. Xie, “Model compression and hardware acceleration for neural networks: A comprehensive survey,” Proceedings of the IEEE, vol. 108, no. 4, pp. 485–532, 2020.
+[44] P. S. Chandakkar, Y. Li, P. L. K. Ding, and B. Li, “Strategies for re-training a pruned neural network in an edge computing paradigm,” in 2017 IEEE International Conference on Edge Computing (EDGE). IEEE, 2017, pp. 244–247.
+[45] L. Wang, L. Xiang, J. Xu, J. Chen, X. Zhao, D. Yao, X. Wang, and B. Li, “Context-aware deep model compression for edge cloud computing,” in 2020 IEEE 40th International Conference on Distributed Computing Systems (ICDCS). IEEE, 2020, pp. 787–797.
+[46] F. Yu, L. Cui, P. Wang, C. Han, R. Huang, and X. Huang, “Easiedge: A novel global deep neural networks pruning method for efﬁcient edge computing,” IEEE Internet of Things Journal, vol. 8, no. 3, pp. 1259–1271, 2020.
+[47] A. Kaplunovich and Y. Yesha, “Automatic tuning of hyperparameters for neural networks in serverless cloud,” in 2020 IEEE International Conference on Big Data (Big Data). IEEE, 2020, pp. 2751–2756.
+[48] S. Tuli, R. Mahmud, S. Tuli, and R. Buyya, “Fogbus: A blockchainbased lightweight framework for edge and fog computing,” Journal of Systems and Software, vol. 154, pp. 22–36, 2019.
+[49] D. Basu, X. Wang, Y. Hong, H. Chen, and S. Bressan, “Learn-asyou-go with megh: Efﬁcient live migration of virtual machines,”
+
+IEEE Transactions on Parallel and Distributed Systems, vol. 30, no. 8, pp. 1786–1801, 2019. [50] S. Tuli, S. R. Poojara, S. N. Srirama, G. Casale, and N. R. Jennings, “COSCO: Container Orchestration Using Co-Simulation and Gradient Based Optimization for Fog Computing Environments,” IEEE Transactions on Parallel and Distributed Systems, vol. 33, no. 1, pp. 101–116, 2022. [51] S.-H. Park, O. Simeone, and S. Shamai, “Joint cloud and edge processing for latency minimization in fog radio access networks,” in 2016 IEEE 17th International Workshop on Signal Processing Advances in Wireless Communications (SPAWC). IEEE, 2016, pp. 1–5. [52] R. A. da Silva and N. L. da Fonseca, “Resource allocation mechanism for a fog-cloud infrastructure,” in 2018 IEEE International Conference on Communications (ICC). IEEE, 2018, pp. 1–6. [53] R. Kohavi and R. Longbotham, “Online controlled experiments and a/b testing.” Encyclopedia of machine learning and data mining, vol. 7, no. 8, pp. 922–929, 2017. [54] M. Wiering and M. Van Otterlo, “Reinforcement learning,” Adaptation, learning, and optimization, vol. 12, no. 3, 2012. [55] X. Chen, H. Zhang, C. Wu, S. Mao, Y. Ji, and M. Bennis, “Optimized computation ofﬂoading performance in virtual edge computing systems via deep reinforcement learning,” IEEE Internet of Things Journal, vol. 6, no. 3, pp. 4005–4018, 2018. [56] A. Maroti, “RBED: Reward Based Epsilon Decay,” arXiv preprint arXiv:1910.13701, 2019. [57] R. S. Sutton and A. G. Barto, Reinforcement learning: An introduction. MIT press, 2018. [58] Y. Zhang, P. Cai, C. Pan, and S. Zhang, “Multi-agent deep reinforcement learning-based cooperative spectrum sensing with upper conﬁdence bound exploration,” IEEE Access, vol. 7, pp. 118 898–118 906, 2019. [59] S. Gupta, G. Joshi, and O. Yag˘ an, “Correlated multi-armed bandits with a latent random source,” in ICASSP 2020-2020 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP). IEEE, 2020, pp. 3572–3576. [60] A. Ahmed and G. Pierre, “Docker container deployment in fog computing infrastructures,” in 2018 IEEE International Conference on Edge Computing (EDGE). IEEE, 2018, pp. 1–8. [61] I. Loshchilov and F. Hutter, “Decoupled weight decay regularization,” in International Conference on Learning Representations, 2018. [62] M. Grinberg, Flask web development: developing web applications with python. ” O’Reilly Media, Inc.”, 2018. [63] R. S. Venkatesh, T. Smejkal, D. S. Milojicic, and A. Gavrilovska, “Fast in-memory criu for docker containers,” in The International Symposium on Memory Systems, 2019, pp. 53–65. [64] A. Paszke, S. Gross, S. Chintala, G. Chanan, E. Yang, Z. DeVito, Z. Lin, A. Desmaison, L. Antiga, and A. Lerer, “Automatic differentiation in pytorch,” 2017. [65] S. Tuli, S. Ilager, K. Ramamohanarao, and R. Buyya, “Dynamic scheduling for stochastic edge-cloud computing environments using a3c learning and residual recurrent neural networks,” IEEE Transactions on Mobile Computing, 2020. [66] K. Gilly, S. Alcaraz, N. Aknin, S. Filiposka, and A. Mishev, “Modelling edge computing in urban mobility simulation scenarios,” in 2020 IFIP Networking Conference (Networking). IEEE, 2020, pp. 539–543. [67] D. Krajzewicz, J. Erdmann, M. Behrisch, and L. Bieker, “Recent development and applications of sumo-simulation of urban mobility,” International journal on advances in systems and measurements, vol. 5, no. 3&4, 2012. [68] C. Wang, Y. Xu, J. Zhang, and B. Ran, “Integrated trafﬁc control for freeway recurrent bottleneck based on deep reinforcement learning,” IEEE Transactions on Intelligent Transportation Systems, 2022. [69] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2016, pp. 770–778. [70] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen, “Mobilenetv2: Inverted residuals and linear bottlenecks,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2018, pp. 4510–4520. [71] C. Szegedy, S. Ioffe, V. Vanhoucke, and A. Alemi, “Inception-v4, inception-resnet and the impact of residual connections on learning,” in Proceedings of the AAAI Conference on Artiﬁcial Intelligence, vol. 31, no. 1, 2017. [72] C. Luo, F. Zhang, C. Huang, X. Xiong, J. Chen, L. Wang, W. Gao, H. Ye, T. Wu, R. Zhou et al., “AIoT bench: towards comprehensive
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+
+This article has been accepted for publication in a future issue of this journal, but has not been fully edited. Content may change prior to final publication. Citation information: DOI 10.1109/TMC.2022.3177569, IEEE Transactions on Mobile Computing
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING
+
+17
+
+benchmarking mobile and embedded device intelligence,” in International Symposium on Benchmarking, Measuring and Optimization. Springer, 2018, pp. 31–35. [73] K. Hoang, “Image classiﬁcation with fashion-mnist and cifar10,” California State University, 2018. [74] K. A. Bonawitz, H. Eichner, W. Grieskamp, D. Huba, A. Ingerman, V. Ivanov, C. M. Kiddon, J. Konecˇny´ , S. Mazzocchi, B. McMahan, T. V. Overveldt, D. Petrou, D. Ramage, and J. Roselander, “Towards federated learning at scale: System design,” in SysML 2019, 2019. [75] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” Advances in Neural Information Processing Systems, vol. 30, pp. 5998– 6008, 2017. [76] G. Casale, M. Artacˇ, W.-J. van den Heuvel, A. van Hoorn, P. Jakovits, F. Leymann, M. Long, V. Papanikolaou, D. Presenza, A. Russo et al., “Radon: rational decomposition and orchestration for serverless computing,” SICS Software-Intensive Cyber-Physical Systems, vol. 35, no. 1, pp. 77–87, 2020.
+
+Shreshth Tuli is a President’s Ph.D. Scholar at the Department of Computing, Imperial College London, UK. Prior to this he was an undergraduate student at the Department of Computer Science and Engineering at Indian Institute of Technology - Delhi, India. He has worked as a visiting research fellow at the CLOUDS Laboratory, School of Computing and Information Systems, the University of Melbourne, Australia. He is a national level Kishore Vaigyanik Protsahan Yojana (KVPY) scholarship holder from the Government of India for excellence in science and innovation. His research interests include Fog Computing and Deep Learning.
+
+Giuliano Casale joined the Department of Computing at Imperial College London in 2010, where he is currently a Reader. Previously, he worked as a research scientist and consultant in the capacity planning industry. He teaches and does research in performance engineering and cloud computing, topics on which he has published more than 100 refereed papers. He has served on the technical program committee of over 80 conferences and workshops and as co-chair for several conferences in the area of performance and reliability engineering, such as ACM SIGMETRICS/Performance and IEEE/IFIP DSN. His research work has received multiple awards, recently the best paper award at ACM SIGMETRICS. He serves on the editorial boards of IEEE TNSM and ACM TOMPECS and as current chair of ACM SIGMETRICS.
+
+Nicholas R. Jennings is the Vice-Chancellor and President of Loughborough University. He is an internationally-recognised authority in the areas of AI, autonomous systems, cyber-security and agent-based computing. He is a member of the UK government’s AI Council, the governing body of the Engineering and Physical Sciences Research Council, and chair of the Royal Academy of Engineering’s Policy Committee. Before Loughborough, he was the Vice-Provost for Research and Enterprise and Professor of Artiﬁcial Intelligence at Imperial College London, the UK’s ﬁrst Regius Professor of Computer Science (a post bestowed by the monarch to recognise exceptionally high quality research) and the UK Government’s ﬁrst Chief Scientiﬁc Advisor for National Security.
+
+1536-1233 (c) 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See http://www.ieee.org/publications_standards/publications/rights/index.html for more information. Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 07:54:37 UTC from IEEE Xplore. Restrictions apply.
+

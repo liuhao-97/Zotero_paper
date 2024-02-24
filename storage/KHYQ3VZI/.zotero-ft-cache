@@ -1,0 +1,712 @@
+1
+
+SC2: Supervised Compression for Split Computing
+
+Yoshitomo Matsubara, Ruihan Yang, Marco Levorato, Stephan Mandt,
+
+arXiv:2203.08875v1 [cs.LG] 16 Mar 2022
+
+Abstract—Split computing distributes the execution of a neural network (e.g., for a classiﬁcation task) between a low-powered mobile device and a more powerful edge server. A simple alternative to splitting the network is to carry out the supervised task purely on the edge server while compressing and transmitting the full data, and most approaches have barely outperformed this baseline. This paper proposes a new approach for discretizing and entropy-coding intermediate feature activations to efﬁciently transmit them from the mobile device to the edge server. We show that a efﬁcient splittable network architecture results from a three-way tradeoff between (a) minimizing the computation on the mobile device, (b) minimizing the size of the data to be transmitted, and (c) maximizing the model’s prediction performance. We propose an architecture based on this tradeoff and train the splittable network and entropy model in a knowledge distillation framework. In an extensive set of experiments involving three vision tasks, three datasets, nine baselines, and more than 180 trained models, we show that our approach improves supervised rate-distortion tradeoffs while maintaining a considerably smaller encoder size. We also release sc2bench, an installable Python package, to encourage and facilitate future studies on supervised compression for split computing (SC2).
+Index Terms—Supervised Compression, Split Computing, Resource-Constrained Edge Computing Systems.
+!
+
+1 INTRODUCTION
+
+W ITH the abundance of smartphones, autonomous drones, and other intelligent devices, advanced computing systems for machine learning applications have become evermore important [1], [2]. Machine learning models are frequently deployed on low-powered mobile devices for reasons of computational efﬁciency or data privacy [3], [4]. However, deploying conventional computer vision or NLP models on such hardware raises a computational challenge, as state-of-the-art deep neural networks are often too complex and energy-consuming to be deployed [5].
+An alternative to carrying out the deep learning model’s operation on a low-powered mobile device is to send compressed data to an edge server that takes over heavy computing tasks. In the context of visual data, neural image compression models have attracted much interest, and we refer to [6] for a comprehensive introduction. On the one hand, compressing the full image using traditional algorithms optimized for input reconstruction is inefﬁcient [7], [8], as they likely result in embedding information that is irrelevant toward the supervised task [9]. On the other hand, supervised compression schemes have not been optimized for low computational cost and high supervised performance [10], [11]. A potentially better solution is to split the neural network [12] into two sequences so that some elementary feature transformations are applied by the ﬁrst sequence of the model on the weak mobile (local) device. Then, intermediate, informative features are transmitted through a wireless communication channel to the edge server that processes the bulk part of the computation (the second sequence of the model) [13], [14].
+Traditional split computing approaches transmit intermediate features by either reducing channels in convolution layers [12] or truncating them to a lower arithmetic precision [15], [16], [17]. Since the models were not “informed” about such truncation
+• Y. Matsubara, R. Yang, M. Levorato, and S. Mandt are with the Department of Computer Science, University of California, Irvine, CA, 92697. E-mail: {yoshitom, ruihan.yang, levorato, mandt}@uci.edu
+
+steps during training oftentimes leads to substantial performance degradation. This raises the question of whether learnable end-toend data compression pipelines can be designed to both truncate and entropy-code the involved early-stage features.
+In this paper, we formalize and study the problem of supervised compression for split computing (SC2). Our proposed solution relies on a neural feature compression approach by drawing on variational inference-based data compression [6], [10], [18]. Our strategy formally resembles the variational information bottleneck objective [19] and relies on an encoder, a “prior” on the bottleneck state, and a decoder that leads to a supervised loss (see Fig. 1). At inference time, we discretize the encoder’s output and use our learned prior as a model for entropy coding intermediate features. The decoder reconstructs the feature vector losslessly from the binary bitstring and carries out the subsequent supervised machine learning task. Crucially, we combine this supervised compression approach with knowledge distillation, where a teacher model provides the training data as well as part of the trained architecture.1
+Our second contribution is an extended discussion of evaluating split computing approaches, where we benchmark several established approaches in for different network architectures. While most published approaches do not discuss the choice of the splitting point or the encoder architectures, our experiments reveal that these choices substantially affect the supervised rate-distortion performance (i.e., supervised accuracy versus compressed data size). Compared to a powerful encoder model deployed on the mobile device side, a cheap encoder model has less capacity to also ﬁnd a compressible data representation while maintaining high accuracy. We, therefore, argue that the study of these approaches necessitates a thorough characterization of the three-way tradeoff between encoder size, data size, and supervised learning performance. Herein, we demonstrate that our proposed method
+1. Available at https://github.com/yoshitomo-matsubara/sc2-benchmark
+
+2
+
+- Limited computing resource - Limited channel capacity
+
+- Battery constraint
+
+- Unstable connectivity
+
+Minimize Encoder Size
+
+Minimize Data Size
+
+Mobile Device
+
+Communication
+
+- Powerful computing resource - Negligible processing time
+Maximize Model Accuracy
+Cloud/Edge Server
+
+Input Compressor
+
+Compressed Input
+
+Reconstructed Decompressor Input
+
+Full Inference Model
+
+Prediction “Zebra”
+
+Input
+
+Encoder
+
+(a) Input Compression for Full Offloading
+
+Compressed Feature
+
+Decoder
+
+Pruned Inference Model
+
+Decoded Feature
+
+Prediction
+
+“Zebra”
+
+(b) Supervised Compression for Split Computing
+Fig. 1: Image classiﬁcation with input compression (top) vs. our proposed supervised compression for split computing (bottom). While the former approach fully reconstructs the image, our approach learns an intermediate compressible representation suitable for the supervised task.
+
+performs favorably on this tradeoff.
+In summary, our main contributions are as follows. • A new model. We propose the Entropic Student, a new
+training objective for feature compression in split computing that allows us to use a learned entropy model for bottleneck quantization in conjunction with knowledge distillation. Our approach outperforms nine strong baselines (see Table 1) from the split computing and (neural) image compression literature in terms of supervised rate-distortion (R-D) tradeoff. Moreover, we show that a single encoder network can serve multiple supervised tasks, including classiﬁcation, object detection, and semantic segmentation. • New metrics. While previous studies ignored the encoder size and exclusively focused on supervised distortion and rate, we stress the necessity of studying the three-way tradeoff between rate, distortion, and encoder size. As an additional metric, we also propose to study the supervised performance as a function of model size times data size, which we term ExR-D tradeoff. We argue that in split computing, the ExR-D tradeoff can be more sensible for model selection than the R-D tradeoff. • Exhaustive, reproducible benchmarking. We systematically test the effect of the encoder architecture on our proposed metrics, where we used more than 180 trained models and ten methods for both split computing and input compression. Our “Supervised Compression for Split Computing” (SC2) benchmark, sc2bench, is published as a Python library for encouraging and facilitating future research.
+The rest of this paper is structured as follows. Section 2 introduces related studies focused on neural image compression, split computing, and knowledge distillation. We present our supervised compression approach in Section 3, and Section 4 describes the overview of SC2. In Section 5, we demonstrate the effectiveness of our approach, highlighting the importance of our proposed
+
+tradeoffs for SC2, and further discuss factors to improve SC2 Benchmark results. Finally, we conclude this work in Section 6.
+2 RELATED WORK
+We summarize related ideas from the neural compression and split computing communities as well as knowledge distillation.
+2.1 Neural Image Compression
+Neural image compression methods [6] apply neural networks for nonlinear dimensionality reduction and subsequent entropy coding. Early studies [20], [21] leveraged LSTMs to model spatial correlations of the pixels within an image. The ﬁrst proposed autoencoder architecture for image compression [22] used the straight-through estimator [23] for learning a discrete latent representation. The connection of image compression to probabilistic generative models was drawn by variational autoencoders (VAEs) [7], [24]. In the subsequent work [18], two-level VAE architectures involving a scale hyper-prior are proposed to encode images, which can be further improved by autoregressive structures [8], [25] or by optimization at encoding time [26]. Recent work also shows the potential progressive compression of the VAE structure by extending the quantization grid [27]. Other studies [28], [29] demonstrate competitive image compression performance without a pre-deﬁned quantization grid.
+Recently, Dubois et al. [11] propose a self-supervised compression architecture for generic image classiﬁcation. However, their encoder involves 87.8 million parameters (627 times larger than our encoder [30]) due to its Vision Transformer (ViT [31])based encoder used in the CLIP model [32]. Thus, it does not satisfy the requirements for deployment on resource-constrained edge computing systems.
+
+2.2 Split Computing
+
+3
+3 THE ENTROPIC STUDENT
+
+Given that mobile (or local) devices often have limited resources such as computing power and battery, in many application settings sensor data captured by mobile devices and compute-intense tasks are ofﬂoaded to resourceful edge (or cloud) servers. Unlike in local computing, where the entire analysis model is executed on the mobile device, the whole computing task in edge computing (or full ofﬂoading) is executed on the edge server. The latter strategy requires a high-capacity wireless communication channel between the mobile device and edge server. In low-capacity scenarios, critical performance metrics such as end-to-end latency would degrade compared to local computing due to the large communication delay. As an intermediate option between local computing and edge computing, split computing [12] has been attracting considerable attention from the research community to minimize total delay in resource-limited networked systems [13], [14]. For instance, Long Range (LoRa) [33] is a widely used technology for resource-constrained Internet of Things devices and applications, which has a data rate of 37.5 Kbps due to duty cycle limitations [34].
+In split computing, a neural model is split into the ﬁrst and second sequences. The ﬁrst sequence of the model is executed on the mobile device. Having received the output of the ﬁrst section via wireless communication, the second sequence of the model completes the inference on the edge server. A critical need is to reduce computational load on the mobile device while minimizing communication cost (data size) as processing time on the edge server is often smaller than local processing and communication delays [17]. In order to reduce communication cost, recent studies on split computing [13], [14], [16], [17] introduce a bottleneck, whose data size is smaller than input sample, to vision models. In recent studies, a combination of 1) fewer channels (channel reduction) in convolution layers and 2) quantization at bottleneck point is key to designing such bottlenecks. While such studies show the effectiveness of their proposed approach for image classiﬁcation and object detection tasks, the accuracy of bottleneck-injected models sharply drops when further compressing the bottleneck size, as we will describe in Section 5.
+2.3 Knowledge Distillation
+It is widely known that deep neural models are often overparameterized [35], [36], and knowledge distillation [37] is one of the well-known techniques for model compression [38]. In this paradigm, a large pretrained model plays a role of teacher for a model to be trained (called student), and the student model learns from both hard-targets (e.g., one-hot vectors) and softtargets (outputs of the teacher for the given input) during training. Interestingly, some uncertainty from the pretrained teacher model as soft-target is informative to student models. The models trained with teachers often achieve better prediction performance than those trained without teachers [35]. As will be discussed later in this paper, learning compressed features for a target task such as image classiﬁcation [10] would be challenging, speciﬁcally in the case that we introduce such bottlenecks to early layers in the model. We leverage a pretrained model as the teacher and those with introduced bottlenecks as students to be trained to improve rate-distortion performance.
+
+For learning compressible feature representations, we combine two ideas: knowledge distillation and neural data compression via learned entropy coding. First, we train a large teacher network on a dataset of interest to teach a smaller student model (Section 3.1). Then, we train a lightweight student model to match the teacher model’s intermediate features (Section 3.2) with minimal performance loss. Finally, we ﬁne-tune the student model to different downstream tasks (Section 3.3).
+
+3.1 Student Model
+Our goal is to learn a lightweight, communication-efﬁcient feature extractor for supervised downstream applications. We thereby transmit intermediate feature activations between two distinct portions of a neural network. In order to further compress these features, we subsequently entropy-code them.
+Teacher. The teacher network realizes a deterministic mapping x → h → y, where x are the input data, y are the targets, and h are some intermediate feature representations of the teacher network. We assume that the teacher model is too large to be executed on the mobile device.
+Student. The main idea is to replace the teacher model’s mapping x → h with the encoder-decoder proposed below (i.e., the targets are the teacher model’s intermediate feature activations). This encoder-decoder mapping becomes part of the student model, deﬁned below. This architecture involves a stochastic bottleneck representation z that is trained to be robust upon discretization. This is needed since the discretized z will be further entropycoded for better compression. Once all models are trained, we transmit data as x → z → h → y.
+We realize such a student in terms of a stochastic encoder qθ(z|x) and decoder pφ(h|z), where we marginalize over the bottleneck representation z as
+
+pθ,φ(h|x) = pθ(h|z)qφ(z|x)dz.
+
+(1)
+
+The encoder is chosen to be a unit-width box function qθ(z|x) =
+
+U (fθ(x)
+
+−
+
+1 2
+
+,
+
+fθ
+
+(x)
+
++
+
+1 2
+
+)
+
+centered
+
+around
+
+a
+
+neural
+
+network
+
+prediction fθ(x). The fact that the encoder is stochastic ensures
+
+that the bottleneck representation is robust to rounding [6], and a
+
+discrete representation is needed for entropy coding. The decoder
+
+is chosen to be a Gaussian centered around a mean prediction,
+
+pφ(h|z) = N (h; gφ(z), I), where I is the identity matrix. We choose it to be Gaussian since optimizing it results in minimizing
+
+a mean-squared error loss (see below).
+
+Once the model is trained and deployed, we only use the
+
+deterministic parts of the architecture, where we replace stochastic
+
+noise by rounding · . The trained encoder-decoder in the student
+
+model, therefore, corresponds to the mapping
+
+h ← gθ( fφ(x) ).
+
+(2)
+
+Training the model will be discussed in the next subsection.
+The whole data transmission pipeline is visualized in the bottom panel of Fig. 1 while Fig. 8 shows a corresponding graphical model. Both the ﬁgures show that the mapping x → h is replaced by an encoder-decoder architecture with entropy bottleneck z. Next, we discuss training the student.
+
+4
+
+is assumed Gaussian, this leads to the following objective:
+
+Fig. 2: Proposed graphical model. Black arrows indicate the encoding (fθ) and decoding (gφ) processes in our student model. The dashed arrow shows the teacher’s original deterministic mapping. Colored arrows show the discriminative tail portions shared between student and teacher.
+
+3.2 Training by Knowledge Distillation
+We ﬁrst focus on the details of the distillation process. The Entropic Student model learns the mapping x → h (Fig. 2, left) by drawing samples from the teacher model. The second part of the pipeline h → y (Fig. 2, right) will be adapted from the teacher model and will be ﬁne-tuned to different tasks (see Section 3.3). Similar to neural image compression [7], [18], we draw on latent variable models whose latent states allow us to quantize and entropy-code data under a prior probability model. In contrast to neural image compression, our approach is supervised.
+Our training objective function can be derived from the variational information bottleneck perspective [19], but here we present a more pragmatic view. Our training goal is two-fold:
+1) We want to optimize the parameters θ and φ such that the marginal distribution pθ,φ(h|x) from Eq. 1 leads to high accuracy in our knowledge distillation framework.
+2) Simultaneously, we want the bottleneck representation z to be well-compressible under entropy coding. That is, we want to be able to match an entropy model pφ(z) (or “prior”) to the empirical distribution over encodings Ex∼pdata(x)[q(z|x)].
+Similar two-fold matching criteria are well-known in neural image compression [6] where they relate to beta-VAEs. In this paper, we study a supervised version of it.
+Since both matching criteria compete, they induce a tradeoff that we can control with a hyperparameter β. Mathematically, the training objective is given by
+
+Lθ,φ(x, h) = − Eqθ(z|x)[log pφ(h|z) +β log pφ(z)], (3)
+
+distortion
+
+rate
+
+where the training data pairs (x, h) are provided by the teacher model. While the ﬁrst term leads to a matching of the encoder to the decoder, the second term matches the encoder’s target distribution to the entropy model pφ(z).
+The ﬁrst term aims for high supervised accuracy, and in analogy to neural image compression, we term it the “distortion” term. The second term leads to a more compressible feature representation, and we term it the “rate” term. Once the entropy model is trained, we can therefore compress the discretized bottleneck state z losslessly [6].
+Optimizing the objective with SGD. In analogy to neural image compression, we use the reparameterization trick [24] to optimize Eq. 3 via stochastic gradient descent.2 Since the decoder
+
+2. For better convergence, we follow [17] and leverage intermediate representations from frozen layers besides h as illustrated in Fig. 3 (left).
+
+Lθ,φ(x, h)
+
+=
+
+1 2
+
+||h
+
+−
+
+gφ
+
+(fθ
+
+(x)
+
++
+
+) ||22
+
+distortion
+− β log pφ(fθ(x) + ),
+
+∼
+
+Unif(−
+
+1 2
+
+,
+
+1 2
+
+).
+
+(4)
+
+rate
+
+We used the same entropy model pφ(z) as commonly used in neural image compression [7]. Once the model is trained, we discretize the latent state z = fθ(x) (where · denotes the rounding operation) to allow for entropy coding under pφ(z). By injecting noise from a box-shaped distribution of width one, we simulate the rounding operation during training. The prior factorizes over all dimensions of z, allowing for efﬁcient and parallel entropy coding.
+As a particular instantiation of an information bottleneck framework [19], Singh et al. [10] proposed a similar loss function as Eq. 3 to train a classiﬁer with a bottleneck at its penultimate layer without any teacher models. In Section 5, we compare against a version of this approach that is compatible with our architecture and ﬁnd that the knowledge distillation aspect is crucial to improve performance.
+
+3.3 Fine-tuning for Target Tasks
+
+Equation 3 shows the base approach, describing the knowledge distillation pipeline with a single h and involving a single target y. In practice, our goal is to learn a compressed representation z that does not only serve a single supervised target y, but multiple ones y1, · · · , yj. In particular, for a deployed system with a learned compression module, we would like to be able to ﬁne-tune the
+part of the network living on the edge server to multiple tasks
+without having to retrain the compression model (encoder). In this
+study, we show that such multi-task learning is possible.
+A learned student model from knowledge distillation can be depicted as a two-step deterministic mapping z = fθ(x) and hˆ = gφ(z), where hˆ (≈ h) is now a decompressed intermediate hidden feature in our ﬁnal student model (see Fig. 2). Assuming that pψj (yj|hˆ) denotes the student model’s output probability distribution with parameters ψj, the ﬁne-tuning step amounts to optimizing
+
+ψj∗
+
+=
+
+arg
+
+min
+ψj
+
+−E(x,y)∼D [pψj
+
+(yj |gφ (
+
+fθ (x)
+
+))].
+
+(5)
+
+The pair (yj, ψj) refers to the target label and the parameters of each downstream task. The formula illustrates the Maximum Likelihood Estimation (MLE) method to optimize the parameter ψj for task j. Note that we optimize the discriminative model after the compression model is frozen, so θ is ﬁxed in this training stage, and φ can either be ﬁxed or trainable. We elucidate the hybrid model in Fig. 2.
+For ﬁne-tuning the student model with the frozen encoder, we leverage a teacher model again. For image classiﬁcation, we apply a standard knowledge distillation technique [37] to achieve better model accuracy by distilling the knowledge in the teacher model into our student model. Speciﬁcally, we ﬁne-tune the student model by minimizing a weighted sum of two losses: 1) cross-entropy loss between the student model’s class probability distribution and one-hot vector (hard-target), and 2) KullbackLeibler divergence between softened class probability distributions from both the student and teacher models.
+
+Input
+
+Teacher (Pretrained) Frozen
+
+5
+
+Input
+
+Teacher (Pretrained) Frozen
+
+Soft-target:
+
+Hard-target: “Zebra”
+
+Frozen
+
+Frozen
+
+1st stage: Student w/ Bottleneck
+
+2nd stage: Student w/ Bottleneck
+
+Fig. 3: Our two-stage training approach. Left: training encoder-decoder (Fig. 4) in our entropic student (bottom) with targets h and tail
+
+architecture obtained from teacher (top) (Section 3.2). Right: ﬁne-tuning the decoder and tail portion with ﬁxed encoder (Section 3.3).
+
+Modules in cyan-color box indicate their model parameters are frozen at the training stage.
+
+Encoder
+
+Decoder
+
+Input
+
+Prior
+
+Conv ch=c1 , k=5x5, s=2, p=2 GDN ch=c1
+Conv ch=c2 , k=5x5, s=2, p=2 GDN ch=c2
+Conv ch=c3 , k=2x2, s=1, p=0 Quantizer
+Conv ch=c4 , k=2x2, s=1, p=1 IGDN ch=c4
+Conv ch=c5 , k=2x2, s=1, p=0 IGDN ch=c5
+Conv ch=c6 , k=2x2, s=1, p=1
+
+Fig. 4: Our encoder and decoder introduced to student model in place of its ﬁrst layers. ch: number of output channels, k: kernel size, s: stride, p: padding. ci’s vary from reference models. e.g., [c1, . . . , c6] = [96, 48, 24, 512, 256, 256] for ResNet-50 in this study.
+
+Similarly, having frozen the encoder, we can ﬁne-tune different models for different downstream tasks reusing the trained entropic student model (classiﬁer) as their backbone, which will be demonstrated in Section 5.2.
+3.4 Network Architecture
+Our encoder fθ is composed of convolution and GDN [39] layers followed by a quantizer described in the supplementary material. Similarly, our decoder gφ is designed with convolution and inversed GDN (IGDN) layers to have the output tensor shape match that of the ﬁrst residual block in ResNet-50 [40]. The encoderdecoder architecture is illustrated in the supplementary material. For image classiﬁcation, the entire architecture of our entropic student model consists of the encoder and decoder followed by the last three residual blocks, average pooling, and fully-connected layers in ResNet-50. For object detection and semantic segmentation, we replace ResNet-50 (used as a backbone) in Faster RCNN [41] and DeepLabv3 [42] with our student model for image classiﬁcation.
+4 EVALUATION AND SC2 BENCHMARK
+In the following, we describe our evaluation criteria in detail. This includes concise deﬁnitions of the supervised rate-distortion tradeoff, the three-way tradeoff between rate, distortion, and compute, as well as our selection of baselines. Experimental results will be presented in Section 5.
+
+4.1 Evaluation Criteria
+In split computing, three components are typically considered: a low-powered local (mobile) device, a capacity-constrained network, and an edge server (cloud). Our goal is to distribute a neural network M such that the ﬁrst layers are deployed on the local device, and the remaining layers are deployed on cloud/edge server. The part of the model deployed on the device is considered an “encoder” because it compresses the data into a representation suitable for transmission to the edge server. We expect the encoder to be lightweight, while the remaining part of the model should comprehend most of the computing load, as the edge server is assumed to have large computing power. Note that the training process is done ofﬂine, and split computing occurs only at runtime. Training split computing models across multiple devices [43] is out of our focus in this study.
+We deﬁne supervised compression as learning compressed representations for supervised downstream tasks such as classiﬁcation, detection, or segmentation. We thereby typically aim for three criteria: high supervised performance (low distortion), high compressibility (low rate), and minimal encoder size on the local device. We discuss these three aspects in more detail.
+4.1.1 Supervised Distortion
+The target metric highly depends on the supervised task; in the simplest case, it could be a form of accuracy, e.g., in classiﬁcation. In this paper, we study three applications of supervised compression involving classiﬁcation, object detection, and semantic segmentation. In these cases, we consider the supervised distortion to
+
+be accuracy, mean average precision (mAP), and mean intersection over union (mIoU), respectively. Note that compressing intermediate model representations typically requires a discretization step at the bottleneck layer. These supervised distortions are therefore computed after such intermediate discretizations.
+
+4.1.2 Compressed Data Size (Rate)
+Rate is deﬁned as the average ﬁle size per datum after compression. In neural compression [7], [8], [10], [18], [28], one typically studies bits per pixel (BPP), deﬁned as the number of bits in the compressed representation divided by the input image size. In this paper, we report the rate on the basis of data points since this measures the actual amount of data sent to the edge server. We want to penalize large data being transferred from the mobile device to the edge server while the BPP does not penalize it when feeding higher resolution images to downstream models for achieving higher model accuracy [44].
+The rate could either be directly related to the sizes of the raw feature representations rounded to a certain arithmetic precision or result from an additional entropy coding step.
+
+4.1.3 Encoder Size
+In addition to minimizing rate and distortion, it is also critical to minimize local processing cost as local (mobile) devices usually have battery constraints and limited computing power [15], [30].
+To estimate the local processing cost, FLOPS (ﬂoating point operations per second) and MAC (multiply-accumulate) [45] are often used. However, FLOPS is not a static value, and FLOP/MAC is not well-deﬁned in practice.3 As a simple proxy for computing costs, we measure the number of model parameters; this is a static value and widely used to discuss model complexity [30], [40], [46], [47]. We deﬁne the encoder size Esize as the total number of bits to represent the parameters of the encoder:
+
+Esize =
+
+#bits(Θi),
+
+(6)
+
+i∈|Θ|
+
+where Θ is a set of model parameters and #bits(·) indicates the number of bits for its input.
+
+4.2 Supervised R-D Tradeoff and Three-way Tradeoff
+In lossy data compression [6], one typically studies the tradeoff between the rate and distortion (R-D) of a compression scheme, i.e., the quality degradation as a function of ﬁle size [7], [8], [10], [18]. In analogy to this, split computing approaches typically consider a supervised R-D tradeoffs [10], [15], [17], [30]. In analogy to data compression, one replaces the reconstruction distortion with the supervised distortion deﬁned above.
+The conventional supervised rate-distortion (R-D) tradeoff does not consider the encoder size. This approach is reasonable as long as models are compared with similar encoder sizes. However, without restrictions on the encoder size, the supervised compression problem becomes trivial. For example, in a K-class classiﬁcation setup, a powerful encoder could simply carry out the classiﬁcation task on the local device and only compress the label, leading to a cheap − log(K) bit representation of the transmitted features. If the bottleneck layer is deployed close to the output layer, similarly small compression costs can be achieved [10].
+3. https://detectron2.readthedocs.io/en/latest/modules/fvcore.html#fvcore. nn.FlopCountAnalysis
+
+6
+TABLE 1: List of methods used for SC2 Benchmark. I: Input compression, S: Supervised compression.
+
+Name (Acronym) Type
+
+Description
+
+JPEG Webp BPG FP SHP MSHP JAHP
+
+I Standard lossy image codec I Classical lossy image codec [48] I State-of-the-art classical lossy image codec [49] I Factorized prior [18] I Scale hyperprior [18] I Mean-scale hyperprior [8] I Joint autoregression hierarchical prior [8]
+
+CR + BQ
+
+S Channel reduction & bottleneck quantization [17]
+
+Compressive Feature S End-to-end learning of compresive feature [10]
+
+Entropic Student S Our proposed method (See Section 3)
+
+However, [30] emphasized the importance of minimizing the encoder size for achieving efﬁcient split computing.
+To also take the encoder size into account, we propose to analyze the three-way tradeoff between encoder size, rate, and supervised distortion. Naturally, not all criteria can be simultaneously fulﬁlled: upon choosing a more lightweight encoder, we naturally have a less compressible bottleneck representation or a drop in accuracy. In Section 5, we visualize several such tradeoff curves. To simplify plotting and ease model selection, we also propose another tradeoff that takes encoder size and data size multiplicatively into account. We term this quantity ExR-D tradeoff function, where we plot the distortion as a function of the product of encoder size and data size (see Section 4.1).
+4.3 Baselines
+In this section, we discuss relevant baselines and categorize them as either input compression or supervised compression methods. All these baselines and the corresponding acronyms are summarized in Table 1.
+4.3.1 Input Compression Baselines
+A conventional implementation of the edge computing paradigm is to transmit the compressed image to the edge server, where all the tasks are then executed. We extend a set of ﬁve baselines used in our prior study [30] and consider seven baselines in this study referring to this “input compression” scenario that can be categorized into either codec-based or neural input compression.
+Classical Image Compression. A ﬁrst approach relies on using off-the-shelf classical image compressors. We evaluate each model’s performance in terms of the rate-distortion curve by setting different quality values for three codec-based input compression methods: JPEG, WebP [48], and BPG [49]. We use the implementations in Pillow4 and investigate the rate-distortion (RD) tradeoff for the combination of the codec and pretrained downstream models by tuning the quality parameter in the range of 10 to 100. Since BPG is not available in Pillow, our implementation follows [49], and we use tune the quality parameter in the range of 0 to 50 to observe the R-D curve. We use the x265 encoder with 4:4:4 subsampling mode and 8-bit depth for YCbCr color space, following [50].
+Neural Image Compression. As an alternative, we consider state of the art neural image compressors [8], [25], [26] (see [6] for
+4. https://python-pillow.org/
+
+7
+
+a recent survey). We adopted the neural image compression models whose pretrained weights were available in CompressAI [50]. These models mainly rely on variational autoencoder architectures and differ in terms of their entropy models (priors) that can have a large effect on the achievable code lengths. Without going into detail, these models are known under the names of “factorized prior” [18], “scale hyperprior” [18], “mean-scale hyperprior” [8], and “joint autoregressive hierarchical prior” [8].
+4.3.2 Supervised Compression Baselines
+Another group of baseline models originates from prior split computing frameworks. We broadly divide them into two categories.
+Channel Reduction + Bottleneck Quantization. Split computing baselines [15], [16], [17] correspond to reducing the bottleneck data size with channel reduction and bottleneck quantization; we hence denote them as CR+BQ. These methods quantize 32-bit ﬂoating-point to 8-bit integers [51]. Matsubara et al. [15], [17] report that post-training bottleneck quantization did not lead to signiﬁcant accuracy loss. Following [17], we modify these pretrained models and introduce bottlenecks with a different number of output channels in a convolution layer to control the bottleneck data size. Using the original pretrained model as a teacher model, we train the bottleneck-injected model (student) by generalized head network distillation (GHND) and quantize the bottleneck after the training session.
+End-to-End Supervised Compression. Our ﬁnal baseline in this paper is an end-to-end approach towards learning compressible features for a single task similar to Singh et al. [10] (for brevity, we cite their reference). Their approach focuses only on classiﬁcation and introduces the compressible bottleneck to the penultimate layer. In the considered setting, such a design leads to an overwhelming workload allocated to mobile devices: for example, in terms of model parameters, about 92% of the ResNet50 [40] parameters would be deployed on the weaker, mobile device. To make this approach compatible with our setting, we apply their approach to our architecture; that is, we directly train our entropic student model without a teacher model. We ﬁnd that compared to [10], having a stochastic bottleneck at an earlier layer (due to limited capacity of mobile devices) leads to a model that is much harder to optimize (see Section 5.1).
+4.4 Choice of Datasets
+We use image data with relatively high resolution, including ImageNet [52], COCO [53], and PASCAL VOC datasets [54]. As pointed out in [55], split computing is mainly beneﬁcial for supervised tasks involving high-resolution images e.g., 224 × 224 pixels or larger. For smaller data, either local processing or full ofﬂoading would be more suitable.5
+4.5 Python Package - sc2bench -
+To facilitate research on supervised compression for split computing (SC2), we published an installable Python package named sc2bench (i.e., pip install sc2bench) and scripts to reproduce the experimental results reported in this paper.1 This Python package is built on PyTorch [58], CompressAI [50], PyTorch Image Models [59], and torchdistill [60]. Our package and repository
+5. E.g., the average compressed data sizes of 32 × 32 pixels input images for MNIST [56] (Gray scale) and CIFAR [57] (RGB) are only 0.966 KB and 1.79 KB, respectively.
+
+provide the implementations of our baseline and proposed models and training methods, including weights of the models we trained in this study.
+5 EXPERIMENTS
+We compared our Entropic Student model to a variety of baselines (Table 1) and evaluated them according to the criteria introduced in Section 4. We thereby considered the three supervised tasks of image classiﬁcation, object detection, and semantic segmemnation. In all tasks, our approach signiﬁcantly outperformed the baselines. We also studied a variety of architecture ablations.
+5.1 Image Classiﬁcation
+We ﬁrst discuss the rate-distortion performance of our and baseline models using a large-scale image classiﬁcation dataset. Specifically, we use ImageNet (ILSVRC 2012) [52], that consists of 1.28 million training and 50,000 validation samples. We train the models on the training split and report the top-1 accuracy on the validation split.
+We used ResNet-50 [40] pre-trained on ImageNet as a teacher model. We replaced all the layers before its second residual block with our encoder-decoder modules. The introduced encoderdecoder modules are trained to approximate h in Eq. 4, which is the output of the corresponding residual block in the teacher model (the original ResNet-50). We then ﬁne-tune the student model as described in Section 3. The input tensor shape for ResNet-50 as an image classiﬁer is 3 × 224 × 224. We provide more details about training (e.g., hyperparameters) in the supplementary material.
+Figure 5 (left) presents supervised rate-distortion curves of ResNet-50 with various compression approaches, where the xand y-axes show the expected compressed data size and the supervised performance (accuracy), respectively. For image compression baselines, we considered factorized prior (FP) [18], scale hyperprior (SHP) [18], mean-scale hyperprior (MSHP) [8], and joint autoregressive hierarchical prior models (JAHP) [8], as well as JPEG, WebP, and BPG codecs. The combination of channel reduction and bottleneck quantization (CR+BQ) [17] – a popular approach used in split computing studies – is comparable to JPEG compression in terms of R-D performance, but neural image compression models perform better.
+Among all baselines, our Entropic Student trained by the twostage method performs the best. To test the effect of knowledge distillation, we also trained our model without teacher model, which in essence corresponds to [10] with an adjusted bottleneck placement. The resulting R-D curve is signiﬁcantly worse, which we attribute to two possible effects: ﬁrst, it is widely acknowledged that knowledge distillation generally ﬁnds solutions that generalize better. Second, having a bottleneck at an earlier layer may make it difﬁcult for the end-to-end training approach without a (pretrained) teacher model to optimize as empirically shown in [15], [61]. We explore the effects of the bottleneck placement in Section 5.3.
+Besides focusing only on bitrate and accuracy, we also investigated the three-way tradeoff incorporating the encoder’s model size. While Figure 5 (middle) shows the proposed ExR-D tradeoff, the full three-dimensional tradeoff is shown in Figure 5 (right). Both the ﬁgures reveal that when considering encoder size, our method outperforms the baselines even more signiﬁcantly since the encoders of the split DNN models are signiﬁcantly smaller than those in the neural input compression models. Our model’s
+
+8
+Fig. 5: SC2 for image classiﬁcation on ImageNet (ILSVRC 2012). We show the supervised R-D tradeoff (left), the ExR-D tradeoff (middle), and the full three-way tradeoff (right). In all cases, we used ResNet-50 as our reference model. Grey lines denote projections. Our Entropic Student model performs best in R-D and ExR-D performance.
+
+Fig. 6: SC2 for object detection on COCO 2017. We show the supervised R-D tradeoff (left), the ExR-D tradeoff (middle), and the full three-way tradeoff (right). In all cases, we used Faster R-CNN with ResNet-50 and FPN as our reference model. Grey lines denote projections. Our Entropic Student model performs best in R-D and ExR-D performance.
+
+encoder is approximately 40 times smaller than the encoder of the mean-scale hyperprior and can therefore be deployed efﬁciently on mobile devices. As shown in [30], our model also can achieve a much shorter latency to complete the input-to-prediction pipeline (see Fig. 1) than the baselines we considered for resourceconstrained edge computing systems.
+5.2 Object Detection and Semantic Segmentation
+We further study the rate-distortion performance on two downstream tasks: object detection and semantic segmentation, reusing the proposed model pretrained on the ImageNet dataset. As suggested by He et al. [63], such pre-training speeds up the convergence for other tasks [52]. Speciﬁcally, we train Faster RCNN [41] and DeepLabv3 [42] for object detection and semantic segmentation, respectively, using our models pre-trained on ImageNet. Faster R-CNN is a two-stage object detection model; it generates region proposals and classiﬁes objects in the proposed regions. DeepLabv3 is a semantic segmentation model [64].
+For object detection, we use the COCO 2017 dataset [53] to ﬁne-tune the models. The training and validation splits in the COCO 2017 dataset have 118,287 and 5,000 annotated images, respectively. For detection performance, we refer to mean average precision (mAP) for bounding box (BBox) outputs with different Intersection-over-Unions (IoU) thresholds from 0.5 and 0.95 on the validation split. For semantic segmentation, we use the PASCAL VOC 2012 dataset [54] with 1,464 and 1,449 samples
+
+for training and validation splits, respectively. We measure the performance by pixel IoU averaged over its 21 classes. It is worth noting that following the PyTorch [58] implementations, the input image scales for Faster R-CNN [41] are deﬁned by the shorter image side and set to 800 in this study which is much larger than the input image in the previous image classiﬁcation task. As for DeepLabv3 [42], we use the resized input images such that their shorter size is 513. The training setup and hyperparameters used to ﬁne-tune the models are described in the supplementary material.
+Figures 6 and 7 show the results for object detection and semantic segmentation, where the left ﬁgure shows the supervised R-D tradeoff. Compared to various split computing and input compression approaches, our approach demonstrates better supervised R-D curves in both the tasks. In object detection, our model’s improvements over BPG and the joint autoregressive hierarchical prior are smaller than those in the image classiﬁcation and semantic segmentation tasks. However, as shown in Figs. 6 and 7 (middle and right), the proposed ExR-D and three-way tradeoffs show that the combined improvements in encoder size and data size reductions are even more signiﬁcant.
+5.3 Bottleneck Placement
+An important design decision in split computing is to choose the layer for splitting the DNN. If the network is split at an early layer, the computation on the edge server is lightweight, but the learned representation at the splitting point is not easily
+
+9
+Fig. 7: SC2 for semantic segmentation on PASCAL VOC 2012. We show the supervised R-D tradeoff (left), the ExR-D tradeoff (middle), and the full three-way tradeoff (right). In all cases, we used DeepLabv3 with ResNet-50 as our reference model. Grey lines denote projections. Our Entropic Student model performs best in R-D and ExR-D performance.
+
+Fig. 8: Entropic Student vs. ResNet-50 with entropy bottleneck (EB) introduced to different layers. Simply introducing EBs to its late layers e.g., layer4 and avgpool improves the conventional R-D tradeoff (left), which results in most of the layers in the model to be deployed on weak local devices. Our proposed ExR-D and three-way tradeoffs penalize such conﬁgurations (middle and right).
+
+compressible. When splitting the network close to the output, the latent representation contains only relevant information for the supervised task and is therefore compressible, but most of the computation is carried out on the weak mobile (local) device.
+The proposed ExR-D tradeoff considers both the encoder size and the data size of the latent representation. It can guide selecting a bottleneck layer that simultaneously leads to a compressible representation and a lightweight encoder model. Figure 8 shows different R-D tradeoff curves, where we consider ﬁve ResNet50 models that have entropy bottlenecks (EBs) placed at ﬁve different layers. Speciﬁcally, we introduce the EBs after the 1st, 2nd, 3rd, 4th residual blocks as well as at the penultimate layer; we refer to these models as layer1, layer2, layer3, layer4, and avgpool respectively. We introduce the EB to a pretrained ResNet-50 and then ﬁne-tune the model for better performance. For reference, we also add entropic student model to the plot.
+Figure 8 (left) shows that the supervised R-D tradeoff can be misleading for choosing the bottleneck layer, simply favoring models that place their bottlenecks at late layers. With such conﬁgurations, we would deploy at least 92% of the entire model on the weak local device. Clearly, in split computing scenarios, we would rather prefer doing most of the computation on the edge server side. A complete picture is seen based on the ExR-D tradeoff (middle) and the three-way tradeoff (right), revealing that layer1 would be the best placement for introducing bottlenecks (as done in the entropic student).
+
+These ﬁndings are not speciﬁc to learned entropy models but apply to conventional feature compression schemes as well. To demonstrate this, we adopted the method of [65] that used conventional image codecs to compress feature maps of a pretrained neural network. (Overall, this baseline leads to much worse compression rates, which is why we excluded it in our main experiments.) Thus, we implement a similar baseline by replacing the EB compressor in a pretrained ResNet-50 with JPEG and WebP codecs. To be speciﬁc, we treat the network feature maps as a concatenation of 3-channel “sub-images”, which can be compressed separately. In analogy to Fig. 8, we study the same bottleneck placements. Figure 9 shows the R-D, ExR-D, and threeway tradeoffs of the corresponding method, mirroring the ﬁndings of the previous discussion.
+5.4 Network Architecture Ablations
+To further improve the performance of models for split computing without increasing the encoder size or data size, we investigate the effect of enhancing the reference models.
+This subsection investigates alternatives to ResNet-50 as our default reference model and in particular considers ResNet-101 (a larger model in the family) [40], RegNetY-6.4GF [66], and Hybrid Vision Transformer (ViT) R26+S/32 (224px) [62] as reference models. All these models use the same input patch size of (224 × 224) and use the same encoder-decoder architecture. Since most layers are deployed on the edge server (which we assume
+
+10
+Fig. 9: Entropic Student vs. ResNet-50 with codec-based feature compression approaches (instead of EB in Fig. 8) introduced to different layers. Overall, their data sizes are about orders of magnitude larger than those of the supervised compression in Fig. 8.
+
+Fig. 10: Conventional R-D (left), our proposed ExR-D (middle), and three-way tradeoffs (right) for Entropic Student with various reference models and encoder-decoder. Different colors indicate different reference models. Stronger reference models outperform Splittable ResNet-50, our best Entropic Student model in Fig. 5 in terms of R-D, ExR-D, and three-way tradeoffs. Our encoder-decoder design well generalizes so that can work with various reference models including Hybrid ViT [62], a transformer-based model. The more sophisticated (MSHP-based) encoder-decoder design further improves R-D tradeoff at cost of signiﬁcantly increased encoder size.
+
+is not resource-constrained), this does not signiﬁcantly affect our architecture’s latency. Therefore, we can improve the ExR-D and three-way tradeoffs as long as the encoder-decoder can still learn suitable feature representations.
+As shown in Fig. 10 (left), we signiﬁcantly improved the R-D tradeoff shown in Fig. 5 by replacing ResNet-50 with the more accurate reference models. Since we reused our encoder-decoder design (Fig. 4) for the conﬁgurations (i.e., comparable encoder size and data size), we successfully improved the ExR-D and three-way tradeoffs as shown in Fig. 10 (middle and right).
+5.5 Supervised Compression with a Hyperprior
+In this section, we discuss whether we can improve the supervised rate-distortion tradeoff by adopting a more powerful entropy model for compressing the latent variables z losslessly. To this end, we draw on the neural compression literature, where we adopt a hierarchical design in which the latent representations z are compressed using an entropy model that relies on additional hyperlatents zh. While our original supervised encoder-decoder design (Fig. 4) was inspired by the factorized prior (FP) model of image compression [18], the hyperprior approach draws on the mean-scale hyperprior (MSHP) model from [8]. The hyperprior can be expected to reduce the data size since the distribution of z can be better approximated.
+
+In Fig. 10 (left), we conﬁrm that the MSHP-based encoderdecoder consistently improved the R-D tradeoff compared to those with FP-based encoder-decoder. These gains are more signiﬁcant for simpler reference models i.e., ResNet-50 and -101. We stress that this extra performance comes at the cost of additional model complexity, which is reﬂected in the ExR-D curve that takes the data size and encoder size jointly into account.
+5.6 Bitrate Allocation of Latent Representations
+Finally, we analyze the differences between input compression and supervised compression approaches qualitatively. To this end, we visualize their allocated bits spatially for different input images. Since input compression models are trained to reconstruct images, they tend to allocate bits more or less uniformly across the image. In contrast, supervised compression methods use the compressed features for prediction tasks; they should therefore be expected to allocate most of their bits to only relevant regions of the image, i.e., regions that correlate with the prediction task.
+Figure 11 conﬁrms this intuition, showing the difference in the bitrates between supervised compression and input (image) compression approaches. In more detail, we created spatial maps of the bits consumed for each pixel for an image compression model [7] and our entropic student and plotted the difference (right column). Blue and red areas indicate pixels for which the neural image compression model allocates more and fewer bits to each
+
+11
+Hoping that our benchmark will set the stage for a more rigorous evaluation of supervised compression methods and split computing models, we published sc2bench, a pip-installable Python package to lower the barrier to SC2 studies. We also released our code repository1 based on sc2bench to offer reproducibility of the experimental results in this study.
+
+ACKNOWLEDGMENTS
+This material is in part based upon work supported by the Defense Advanced Research Projects Agency (DARPA) under Contract No. HR001120C0021. Any opinions, ﬁndings and conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reﬂect the views of DARPA. We acknowledge the support by the National Science Foundation under the NSF CAREER award 2047418 and Grants 1928718, 2003237, 2007719, IIS-1724331 and MLWiNS-2003237, the Department of Energy under grant DESC0022331, as well as Disney, Intel, and Qualcomm.
+
+(a) Input images
+
+(b) Entropic Student vs. FP
+
+Fig. 11: Bitrate comparison between our model and an input compression model (FP) [18]. We plot the difference of the bits allocated for each pixel, exempliﬁed on three images. Areas where our model allocates fewer and more bits for the given image are indicated in blue and red, respectively (best viewed in PDF). It appears that our supervised compression allocates more bits to information relevant to the supervised object recognition goal.
+
+pixel than our model, respectively. Since our model’s bitrate is overall smaller, the maps are dominantly blue. However, some regions consume more bits, such as contours of relevant objects depicted (e.g., a Frisbee disc). These objects are relevant for the classiﬁcation task but contribute very little to the overall bitrate.
+
+6 CONCLUSION
+In this paper, we investigated supervised compression for split computing (SC2), where a machine learning model is split between a low-powered device and a much more powerful edge server. We explored optimal ways of splitting the network while aiming for high supervised performance, high compression rates, and low computational costs on the edge server. We introduced SC2 Benchmark, a new split computing benchmark to more rigorously analyze this setting and the various tradeoffs involved.
+Speciﬁcally, we investigated a variety of input compression models, split computing models, supervised tasks (such as object detection, classiﬁcation, and segmentation), training schemes (such as knowledge distillation), metrics (such as three-way ratedistortion tradeoffs and aggregate metrics accounting for both model and data size), and architectures (convolutional or vision transformers). Altogether, this study involved more than 180 trained models. We showed that a supervised version of a neural image compression model (with or without hyperprior), trained in a multi-stage knowledge distillation approach, performed best in terms of supervised rate-distortion performance.
+
+REFERENCES
+[1] W. Shi, J. Cao, Q. Zhang, Y. Li, and L. Xu, “Edge Computing: Vision and Challenges,” IEEE internet of things journal, vol. 3, no. 5, pp. 637–646, 2016.
+[2] J. Chen and X. Ran, “Deep Learning With Edge Computing: A Review,” Proceedings of the IEEE, vol. 107, no. 8, pp. 1655–1674, 2019.
+[3] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen, “MobileNetV2: Inverted Residuals and Linear Bottlenecks,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp. 4510–4520.
+[4] A. Howard, M. Sandler, G. Chu, L.-C. Chen, B. Chen, M. Tan, W. Wang, Y. Zhu, R. Pang, V. Vasudevan et al., “Searching for MobileNetV3,” in Proceedings of the IEEE/CVF International Conference on Computer Vision, 2019, pp. 1314–1324.
+[5] A. E. Eshratifar, M. S. Abrishami, and M. Pedram, “JointDNN: an efﬁcient training and inference engine for intelligent mobile cloud computing services,” IEEE Transactions on Mobile Computing, 2019.
+[6] Y. Yang, S. Mandt, and L. Theis, “An introduction to neural data compression,” arXiv preprint arXiv:2202.06533, 2022.
+[7] J. Balle´, V. Laparra, and E. P. Simoncelli, “End-to-end Optimized Image Compression,” International Conference on Learning Representations, 2017.
+[8] D. Minnen, J. Balle´, and G. D. Toderici, “Joint Autoregressive and Hierarchical Priors for Learned Image Compression,” in Advances in Neural Information Processing Systems, 2018, pp. 10 771–10 780.
+[9] J. Choi and B. Han, “Task-aware quantization network for jpeg image compression,” in European Conference on Computer Vision. Springer, 2020, pp. 309–324.
+[10] S. Singh, S. Abu-El-Haija, N. Johnston, J. Balle´, A. Shrivastava, and G. Toderici, “End-to-end Learning of Compressible Features,” in 2020 IEEE International Conference on Image Processing (ICIP). IEEE, 2020, pp. 3349–3353.
+[11] Y. Dubois, B. Bloem-Reddy, K. Ullrich, and C. J. Maddison, “Lossy Compression for Lossless Prediction,” in Neural Compression: From Information Theory to Applications–Workshop@ ICLR 2021, 2021.
+[12] Y. Kang, J. Hauswald, C. Gao, A. Rovinski, T. Mudge, J. Mars, and L. Tang, “Neurosurgeon: Collaborative Intelligence Between the Cloud and Mobile Edge,” in Proceedings of the Twenty-Second International Conference on Architectural Support for Programming Languages and Operating Systems, 2017, pp. 615–629.
+[13] A. E. Eshratifar, A. Esmaili, and M. Pedram, “BottleNet: A Deep Learning Architecture for Intelligent Mobile Cloud Computing Services,” in 2019 IEEE/ACM Int. Symposium on Low Power Electronics and Design (ISLPED), 2019, pp. 1–6.
+[14] Y. Matsubara, S. Baidya, D. Callegaro, M. Levorato, and S. Singh, “Distilled Split Deep Neural Networks for Edge-Assisted Real-Time Systems,” in Proceedings of the 2019 Workshop on Hot Topics in Video Analytics and Intelligent Edges, 2019, pp. 21–26.
+[15] Y. Matsubara, D. Callegaro, S. Baidya, M. Levorato, and S. Singh, “Head Network Distillation: Splitting Distilled Deep Neural Networks for Resource-Constrained Edge Computing Systems,” IEEE Access, vol. 8, pp. 212 177–212 193, 2020.
+
+12
+
+[16] J. Shao and J. Zhang, “BottleNet++: An end-to-end approach for feature compression in device-edge co-inference systems,” in 2020 IEEE International Conference on Communications Workshops (ICC Workshops). IEEE, 2020, pp. 1–6.
+[17] Y. Matsubara and M. Levorato, “Neural Compression and Filtering for Edge-assisted Real-time Object Detection in Challenged Networks,” in 2020 25th International Conference on Pattern Recognition (ICPR), 2021, pp. 2272–2279.
+[18] J. Balle´, D. Minnen, S. Singh, S. J. Hwang, and N. Johnston, “Variational image compression with a scale hyperprior,” in International Conference on Learning Representations, 2018.
+[19] A. A. Alemi, I. Fischer, J. V. Dillon, and K. Murphy, “Deep Variational Information Bottleneck,” in International Conference on Learning Representations, 2017.
+[20] G. Toderici, D. Vincent, N. Johnston, S. Jin Hwang, D. Minnen, J. Shor, and M. Covell, “Full Resolution Image Compression with Recurrent Neural Networks,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2017, pp. 5306–5314.
+[21] N. Johnston, D. Vincent, D. Minnen, M. Covell, S. Singh, T. Chinen, S. Jin Hwang, J. Shor, and G. Toderici, “Improved lossy image compression with priming and spatially adaptive bit rates for recurrent networks,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp. 4385–4393.
+[22] L. Theis, W. Shi, A. Cunningham, and F. Husza´r, “Lossy Image Compression with Compressive Autoencoders,” in International Conference on Learning Representations, 2017.
+[23] Y. Bengio, N. Le´onard, and A. Courville, “Estimating or Propagating Gradients Through Stochastic Neurons for Conditional Computation,” arXiv preprint arXiv:1308.3432, 2013.
+[24] D. P. Kingma and M. Welling, “Auto-Encoding Variational Bayes,” in International Conference on Learning Representations, 2014.
+[25] D. Minnen and S. Singh, “Channel-Wise Autoregressive Entropy Models for Learned Image Compression,” in 2020 IEEE International Conference on Image Processing (ICIP). IEEE, 2020, pp. 3339–3343.
+[26] Y. Yang, R. Bamler, and S. Mandt, “Improving Inference for Neural Image Compression,” in Advances in Neural Information Processing Systems, vol. 33, 2020, pp. 573–584.
+[27] Y. Lu, Y. Zhu, Y. Yang, A. Said, and T. S. Cohen, “Progressive Neural Image Compression with Nested Quantization and Latent Ordering,” arXiv preprint arXiv:2102.02913, 2021.
+[28] Y. Yang, R. Bamler, and S. Mandt, “Variational Bayesian Quantization,” in International Conference on Machine Learning. PMLR, 2020, pp. 10 670–10 680.
+[29] G. Flamich, M. Havasi, and J. M. Herna´ndez-Lobato, “Compression without Quantization,” in OpenReview, 2019.
+[30] Y. Matsubara, R. Yang, M. Levorato, and S. Mandt, “Supervised Compression for Resource-Constrained Edge Computing Systems,” in Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision, 2022, pp. 2685–2695.
+[31] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly et al., “An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale,” in International Conference on Learning Representations, 2020.
+[32] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal, G. Sastry, A. Askell, P. Mishkin, J. Clark et al., “Learning Transferable Visual Models From Natural Language Supervision,” arXiv preprint arXiv:2103.00020, 2021.
+[33] F. Samie, L. Bauer, and J. Henkel, “IoT Technologies for Embedded Computing: A Survey,” in 2016 International Conference on Hardware/Software Codesign and System Synthesis (CODES+ ISSS). IEEE, 2016, pp. 1–10.
+[34] F. Adelantado, X. Vilajosana, P. Tuset-Peiro, B. Martinez, J. MeliaSegui, and T. Watteyne, “Understanding the Limits of LoRaWAN,” IEEE Communications Magazine, vol. 55, no. 9, pp. 34–40, 2017.
+[35] J. Ba and R. Caruana, “Do deep nets really need to be deep?” in NIPS 2014, 2014, pp. 2654–2662.
+[36] G. Urban, K. J. Geras, S. E. Kahou, O. Aslan, S. Wang, R. Caruana, A. Mohamed, M. Philipose, and M. Richardson, “Do deep convolutional nets really need to be deep and convolutional?” in Fifth International Conference on Learning Representations, 2017.
+[37] G. Hinton, O. Vinyals, and J. Dean, “Distilling the Knowledge in a Neural Network,” in Deep Learning and Representation Learning Workshop: NIPS 2014, 2014.
+[38] C. Bucilua, R. Caruana, and A. Niculescu-Mizil, “Model compression,” in Proceedings of the 12th ACM SIGKDD international conference on Knowledge discovery and data mining, 2006, pp. 535–541.
+
+[39] J. Balle´, V. Laparra, and E. P. Simoncelli, “Density Modeling of Images using a Generalized Normalization Transformation,” in International Conference on Learning Representations, 2016.
+[40] K. He, X. Zhang, S. Ren, and J. Sun, “Deep Residual Learning for Image Recognition,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2016, pp. 770–778.
+[41] S. Ren, K. He, R. Girshick, and J. Sun, “Faster R-CNN: Towards RealTime Object Detection with Region Proposal Networks,” in Advances in neural information processing systems, 2015, pp. 91–99.
+[42] L.-C. Chen, G. Papandreou, F. Schroff, and H. Adam, “Rethinking Atrous Convolution for Semantic Image Segmentation,” arXiv preprint arXiv:1706.05587, 2017.
+[43] O. Gupta and R. Raskar, “Distributed learning of deep neural network over multiple agents,” Journal of Network and Computer Applications, vol. 116, pp. 1–8, 2018.
+[44] H. Touvron, A. Vedaldi, M. Douze, and H. Jegou, “Fixing the traintest resolution discrepancy,” Advances in Neural Information Processing Systems, vol. 32, pp. 8252–8262, 2019.
+[45] H. Zhang, D. Chen, and S.-B. Ko, “New Flexible Multiple-Precision Multiply-Accumulate Unit for Deep Neural Network Training and Inference,” IEEE Transactions on Computers, vol. 69, no. 1, pp. 26–38, 2019.
+[46] G. Huang, Z. Liu, L. Van Der Maaten, and K. Q. Weinberger, “Densely Connected Convolutional Networks,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2017, pp. 4700–4708.
+[47] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding,” in Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), 2019, pp. 4171–4186.
+[48] Google, “Compression Techniques — WebP — Google Developers,” https://developers.google.com/speed/webp/docs/compression [Accessed on August 6, 2021].
+[49] F. Bellard, “BPG Image format,” https://bellard.org/bpg/ [Accessed on August 6, 2021].
+[50] J. Be´gaint, F. Racape´, S. Feltman, and A. Pushparaja, “CompressAI: a PyTorch library and evaluation platform for end-to-end compression research,” arXiv preprint arXiv:2011.03029, 2020, https://github.com/ InterDigitalInc/CompressAI.
+[51] B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam, and D. Kalenichenko, “Quantization and Training of Neural Networks for Efﬁcient Integer-Arithmetic-Only Inference,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp. 2704–2713.
+[52] O. Russakovsky, J. Deng, H. Su, J. Krause, S. Satheesh, S. Ma, Z. Huang, A. Karpathy, A. Khosla, M. Bernstein, A. C. Berg, and L. Fei-Fei, “ImageNet Large Scale Visual Recognition Challenge,” International Journal of Computer Vision, vol. 115, no. 3, pp. 211–252, 2015.
+[53] T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan, P. Dolla´r, and C. L. Zitnick, “Microsoft COCO: Common Objects in Context,” in European conference on computer vision. Springer, 2014, pp. 740–755.
+[54] M. Everingham, L. Van Gool, C. Williams, J. Winn, and A. Zisserman, “The PASCAL Visual Object Classes Challenge 2012 (VOC2012),” 2012.
+[55] Y. Matsubara, M. Levorato, and F. Restuccia, “Split Computing and Early Exiting for Deep Learning Applications: Survey and Research Challenges,” arXiv preprint arXiv:2103.04505, 2021.
+[56] Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner, “Gradient-Based Learning Applied to Document Recognition,” Proceedings of the IEEE, vol. 86, no. 11, pp. 2278–2324, 1998.
+[57] A. Krizhevsky, “Learning Multiple Layers of Features from Tiny Images,” 2009.
+[58] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N. Gimelshein, L. Antiga et al., “PyTorch: An imperative style, high-performance deep learning library,” in Advances in Neural Information Processing Systems, 2019, pp. 8024–8035.
+[59] R. Wightman, “Pytorch image models,” https://github.com/rwightman/ pytorch-image-models, 2019.
+[60] Y. Matsubara, “torchdistill: A Modular, Conﬁguration-Driven Framework for Knowledge Distillation,” in International Workshop on Reproducible Research in Pattern Recognition. Springer, 2021, pp. 24–44, https: //github.com/yoshitomo-matsubara/torchdistill.
+[61] Y. Matsubara, D. Callegaro, S. Singh, M. Levorato, and F. Restuccia, “BottleFit: Learning Compressed Representations in Deep Neural Networks for Effective and Efﬁcient Split Computing,” arXiv preprint arXiv:2201.02693, 2022.
+
+13
+
+[62] A. Steiner, A. Kolesnikov, X. Zhai, R. Wightman, J. Uszkoreit, and L. Beyer, “How to train your ViT? Data, Augmentation, and Regularization in Vision Transformers,” arXiv preprint arXiv:2106.10270, 2021.
+[63] K. He, R. Girshick, and P. Dolla´r, “Rethinking ImageNet Pre-training,” in Proceedings of the IEEE/CVF International Conference on Computer Vision, 2019, pp. 4918–4927.
+[64] L.-C. Chen, G. Papandreou, I. Kokkinos, K. Murphy, and A. L. Yuille, “DeepLab: Semantic Image Segmentation with Deep Convolutional Nets, Atrous Convolution, and Fully Connected CRFs,” IEEE Transactions on Pattern Analysis and Machine Intelligence, vol. 40, no. 4, pp. 834–848, 2017.
+[65] S. R. Alvar and I. V. Bajic´, “Pareto-Optimal Bit Allocation for Collaborative Intelligence,” IEEE Transactions on Image Processing, vol. 30, pp. 3348–3361, 2021.
+[66] I. Radosavovic, R. P. Kosaraju, R. Girshick, K. He, and P. Dolla´r, “Designing Network Design Spaces,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2020, pp. 10 428–10 436.
+[67] K. He, G. Gkioxari, P. Dolla´r, and R. Girshick, “Mask R-CNN,” in Proceedings of the IEEE International Conference on Computer Vision, 2017, pp. 2961–2969.
+[68] D. P. Kingma and J. Ba, “Adam: A Method for Stochastic Optimization,” in Third International Conference on Learning Representations, 2015.
+[69] T.-Y. Lin, P. Goyal, R. Girshick, K. He, and P. Dolla´r, “Focal loss for dense object detection,” in Proceedings of the IEEE international conference on computer vision, 2017, pp. 2980–2988.
+[70] I. Loshchilov and F. Hutter, “SGDR: Stochastic Gradient Descent with Warm Restarts,” in International Conference on Learning Representations, 2017.
+
+B.2 Prior Optimization
+
+For entropy coding, a prior that can precisely ﬁt the distribution of the latent variable reduces the bitrate. However, the prior distributions such as Gaussian and Logistic distributions are continuous, which is not directly compatible with discrete latent variables. Instead, we use the cumulative of a continuous distribution to approximate the probability mass of a discrete distribution [7]:
+
+z+
+
+1 2
+
+P (z) =
+
+p(t)dt,
+
+(9)
+
+z−
+
+1 2
+
+where p is the prior distribution we choose, and P (z) is the corresponding probability mass under the discrete distribution P . The integral can easily be computed with the Cumulative Distribution Function (CDF) of the continuous distribution.
+
+APPENDIX C CHANNEL REDUCTION AND BOTTLENECK QUANTIZATION
+A combination of channel reduction and bottleneck quantization (CR + BQ) is a popular approach in studies on split computing [13], [15], [16], [17], and we refer to the approach as a baseline.
+
+APPENDIX A IMAGE COMPRESSION CODECS
+As image compression baselines, we use JPEG, WebP [48], and BPG [49]. For JPEG and WebP, we follow the implementations in Pillow6 and investigate the rate-distortion (RD) tradeoff for the combination of the codec and pretrained downstream models by tuning the quality parameter in range of 10 to 100. Since BPG is not available in Pillow, our implementation follows [49] and we tune the quality parameter in range of 0 to 50 to observe the RD curve. We use the x265 encoder with 4:4:4 subsampling mode and 8-bit depth for YCbCr color space, following [50].
+
+APPENDIX B QUANTIZATION
+This section brieﬂy introduces the quantization technique used in both proposed methods and neural baselines with entropy coding.
+
+B.1 Encoder and Decoder Optimization
+
+As entropy coding requires discrete symbols, we leverage the method that is ﬁrstly proposed in [7] to learn a discrete latent variable. During the training stage, the quantization is simulated with a uniform noise to enable gradient-based optimization:
+
+11
+
+z = fθ(x) + U (− 2 , 2 ).
+
+(7)
+
+During the inference session, we round the encoder output to the nearest integer for entropy coding and the input of the decoder:
+
+z = fθ(x) .
+
+(8)
+
+6. https://python-pillow.org/
+
+C.1 Network Architecture
+C.1.1 Image classiﬁcation
+We reuse the architectures of encoder and decoder from Matsubara and Levorato [17] introduced in ResNet [40] and validated on the ImageNet (ILSVRC 2012) dataset [52]. Following the study, we explore the rate-distortion (RD) tradeoff by varying the number of channels in a convolution layer (2, 3, 6, 9, and 12 channels) placed at the end of the encoder and apply a quantization technique (32bit ﬂoating point to 8-bit integer) [51] to the bottleneck after the training session.
+C.1.2 Object detection and semantic segmentation
+Similarly, we reuse the encoder-decoder architecture used as ResNet-based backbone in Faster R-CNN [41] and Mask RCNN [67] for split computing [17]. The same ResNet-based backbone is used for Faster R-CNN [41] and DeepLabv3 [42]. Again, we examine the RD tradeoff by controlling the number of channels in a bottleneck layer (1, 2, 3, 6, and 9 channels) and apply the same post-training quantization technique [51] to the bottleneck.
+C.2 Training
+Using ResNet-50 [40] pretrained on the ImageNet dataset as a teacher model, we train the encoder-decoder introduced to a copy of the teacher model, that is treated as a student model for image classiﬁcation. We apply the generalized head network distillation (GHND) [17] to the introduced encoder-decoder in the student model. The model is trained on the ImageNet dataset to mimic the intermediate features from the last three residual blocks in the teacher (ResNet-50) by minimizing the sum of squared error losses. Using the Adam optimizer [68], we train the student model on the ImageNet dataset for 20 epochs with the training batch size of 32. The initial learning rate is set to 10−3 and reduced by a factor of 10 at the end of the 5th, 10th, and 15th epochs.
+
+14
+
+Similarly, we use ResNet-50 models in Faster R-CNN with FPN pretrained on COCO 2017 dataset [53] and DeepLabv3 pretrained on PASCAL VOC 2012 dataset [54] as teachers, and apply the GHND to the students for the same dataset. The training objective, the initial learning rate, and the number of training epochs are the same as those for the classiﬁcation task. We set the training batch size to 2 and 8 for object detection and semantic segmentation tasks, respectively. The learning rate is reduced by a factor of 10 at the end of the 5th and 15th epochs.
+
+APPENDIX D PROPOSED STUDENT MODEL
+This section presents the details of our proposed and baseline training methods in this study.
+
+D.1 Two-stage Training
+Here, we describe the two-stage method we proposed to train the entropic student models.
+
+D.1.1 Image classiﬁcation
+
+Using the ImageNet dataset, we put our focus on the introduced encoder and decoder at the ﬁrst stage of training and then freeze the encoder to ﬁne-tune all the subsequent layers at the second stage for the target task. At the 1st stage, we train the student model for 10 epochs to mimic the behavior of the ﬁrst residual block in the teacher model (pretrained ResNet-50) in a similar way to [17] but with the rate term to learn a prior for entropy coding. We use Adam optimizer with batch size of 64 and an initial learning rate of 10−3. The learning rate is decreased by a factor of 10 after the end of the 5th and 8th epochs.
+Once we ﬁnish the 1st stage, we ﬁx the parameters of the encoder that has learnt compressed features at the 1st stage and ﬁne-tune all the other modules, including the decoder for the target task. By freezing the encoder’s parameters, we can reuse the encoder for different tasks. The rest of the layers can be optimized to adopt the compressible features for the target task. Note that once the encoder is frozen, we also no longer optimize both the prior and encoder, which means we can directly use rounding to quantize the latent variable. With the encoder frozen, we apply a standard knowledge distillation technique [37] to achieve better model accuracy, and the concrete training objective is formulated as follows:
+
+L = α · Lcls(yˆ, y) + (1 − α) · τ 2 · LKL oS, oT , (10)
+
+where Lcls is a standard cross entropy. yˆ indicates the model’s estimated class probabilities, and y is the annotated object category. α
+and τ are both hyperparameters, and LKL is the Kullback-Leibler divergence. oS and oT represent the softened output distribu-
+tions from student and teacher models, respectively. Speciﬁcally, oS = [oS1, oS2, . . . , oS|C|] where C is a set of object categories considered in target task. oSi indicates the student model’s softened output value (scalar) for the i-th object category:
+
+oSi =
+
+exp
+
+vi τ
+
+k∈C exp
+
+vk τ
+
+,
+
+(11)
+
+where τ is a hyperparameter deﬁned in Eq. 10 and called temper-
+
+ature. vi denotes a logit value for the i-th object category. The same rules are applied to oT for teacher model, which is a target
+
+distribution.
+
+For the 2nd stage, we use the stochastic gradient descent (SGD) optimizer with an initial learning rate of 10−3, momentum of 0.9, and weight decay of 5 × 10−4. We reduce the learning rate
+by a factor of 10 after the end of the 5th epoch, and the training batch size is set to 128. The balancing weight α and temperature τ for knowledge distillation are set to 0.5 and 1, respectively.
+
+D.1.2 Object detection
+We reuse the entropic student model trained on the ImageNet dataset in place of ResNet-50 in Faster R-CNN [41] and DeepLabv3 [42] (teacher models). Note that we freeze the parameters of the encoder trained on the ImageNet dataset to make the encoder sharable for multiple tasks. Reusing the encoder trained on the ImageNet dataset is a reasonable approach as 1) the ImageNet dataset contains a larger number of training samples (approximately 10 times more) than those in the COCO 2017 dataset [53]; 2) models using an image classiﬁer as their backbone frequently reuse model weights trained on the ImageNet dataset [41], [69].
+To adapt the encoder for object detection, we train the decoder for 3 epochs at the 1st stage in the same way we train those for image classiﬁcation (but with the encoder frozen). The optimizer is Adam [68], and the training batch size is 6. The initial learning rate is set to 10−3 and reduced to 10−4 after the ﬁrst 2 epochs. At the 2nd stage, we ﬁne-tune the whole model except its encoder for 2 epochs by the SGD optimizer with learning rates of 10−3 and 10−4 for the 1st and 2nd epochs, respectively. We set the training batch size to 6 and follow the training objective in [41], which is a combination of bounding box regression, objectness, and object classiﬁcation losses.
+
+D.1.3 Semantic segmentation
+
+For semantic segmentation, we train DeepLabv3 in a similar way.
+At the 1st stage, we freeze the encoder and train the decoder for
+40 epochs, using Adam optimizer with batch size of 16. The initial learning rate is 10−3 and decreased to 10−4 and 10−5 after the
+ﬁrst 30 and 35 epochs, respectively. At the 2nd stage, we train the
+entire model except for its encoder for 5 epochs. We minimize a
+standard cross entropy loss, using the SGD optimizer. The initial learning rates for the body and the sub-branch (auxiliary module)7 are 2.5 × 10−3 and 2.5 × 10−2, respectively. Following [42], we
+reduce the learning rate after each iteration as follows:
+
+lr = lr0 ×
+
+1 − Niter Nmax iter
+
+0.9
+,
+
+(12)
+
+where lr0 is the initial learning rate. Niter and Nmax iter indicate the accumulated number of iterations and the total number of iterations, respectively.
+
+D.2 End-to-end Training In this work, the end-to-end training approach for feature compression [10] is treated as a baseline and applied to our entropic student model without teacher models.
+D.2.1 Image classiﬁcation Following the end-to-end training approach [10], we train our entropic student model from scratch. Speciﬁcally, we use Adam [68] optimizer and cosine decay learning rate schedule [70] with an
+7. https://github.com/pytorch/vision/tree/master/references/segmentation
+
+15
+initial learning rate of 10−3 and weight decay of 10−4. Based on their training objectives (Eq. 13), we train the model for 60 epochs with batch size of 256.8 Note that Singh et al. [10] evaluate the accuracy of their models on a 299 × 299 center crop. Since the pretrained ResNet-50 expects the crop size of 224 × 224,9 we use the crop size for all the considered classiﬁers to highlight the effectiveness of our approach.
+
+L = Lcls(yˆ, y) − β log pφ(fθ(x) + ),
+
+distortion
+
+rate
+
+∼
+
+Unif(−
+
+1 2
+
+,
+
+1 2
+
+)
+
+(13)
+
+D.2.2 Object detection
+Reusing the model trained on the ImageNet dataset with the endto-end training method, we ﬁne-tune Faster R-CNN [41]. Since we empirically ﬁnd that a standard transfer learning approach10 to Faster R-CNN with the model trained by the baseline method did not converge, we apply the 2nd stage of our ﬁne-tuning method described above to the Faster R-CNN model. The hyperparameters are the same as above, but the number of epochs for the 2nd stage training is 5.
+
+D.2.3 Semantic segmentation
+We ﬁne-tune DeepLabv3 [42] with the same student model trained on the ImageNet dataset. Using the SGD optimizer with an initial learning rate of 0.0025, momentum of 0.9, and weight decay of 0.0001, we minimize a standard cross entropy loss. The learning rate is adjusted by Eq. 12, and we train the model for 50 epochs with batch size of 8.
+
+8. For the ImageNet dataset, Singh et al. train their models for 300k steps
+
+with batch size of 256 for 1.28M training samples, which is equivalent to 60
+
+epochs
+
+(=
+
+300k×256 1.28M
+
+).
+
+9. https://pytorch.org/vision/stable/models.html#classiﬁcation
+
+10. https://github.com/pytorch/vision/tree/master/references/detection
+

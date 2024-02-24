@@ -1,0 +1,1202 @@
+1
+
+Multi-Agent Collaborative Inference via DNN Decoupling: Intermediate Feature Compression
+and Edge Learning
+
+Zhiwei Hao, Guanyu Xu, Yong Luo, Han Hu, Jianping An, and Shiwen Mao
+
+arXiv:2205.11854v2 [cs.LG] 12 Jun 2022
+
+Abstract—Recently, deploying deep neural network (DNN) models via collaborative inference, which splits a pre-trained model into two parts and executes them on user equipment (UE) and edge server respectively, becomes attractive. However, the large intermediate feature of DNN impedes ﬂexible decoupling, and existing approaches either focus on the single UE scenario or simply deﬁne tasks considering the required CPU cycles, but ignore the indivisibility of a single DNN layer. In this paper, we study the multi-agent collaborative inference scenario, where a single edge server coordinates the inference of multiple UEs. Our goal is to achieve fast and energy-efﬁcient inference for all UEs. To achieve this goal, we design a lightweight autoencoder-based method to compress the large intermediate feature at ﬁrst. Then we deﬁne tasks according to the inference overhead of DNNs and formulate the problem as a Markov decision process (MDP). Finally, we propose a multi-agent hybrid proximal policy optimization (MAHPPO) algorithm to solve the optimization problem with a hybrid action space. We conduct extensive experiments with different types of networks, and the results show that our method can reduce up to 56% of inference latency and save up to 72% of energy consumption.
+
+Index Terms—Deep Reinforcement Learning, Mobile Edge Computing, Multi-user, Collaborative Inference, Hybrid Action Space
+!
+
+1 INTRODUCTION
+
+R ECENT years have witnessed a rapid development of intelligent internet of things (IoT) for deep learning (DL)-based applications, e.g., intelligent personal assistant and healthcare applications. However, the inference of most DL models has an enormous amount of overhead, and this often results in an unacceptable latency or energy consumption, especially on resource-limited IoT UEs. For example, the ResNet50 model [1] requires 103MB memory and 4 GFLOPs for inference, while a Raspberry Pi-3B device only has 1GB RAM and 3.62 GFLOPS [2]. To achieve effective inference, models are usually deployed in a mobile-edge computing (MEC) manner [3]. Speciﬁcally, a pre-trained model is decoupled at a proper point, and each pair is deployed on an UE and an edge server respectively. When receiving an inference task, the front part of the model is ﬁrst executed on the UE. Then the obtained intermediate feature is ofﬂoaded to the edge server, which will complete the remaining inference task and ﬁnally return the result to the UE. This procedure is called collaborative inference. Compared with cloud computing approaches, collaborative inference avoids direct uploading the input data to the cloud, which is the performance bottleneck of the current DL-based techniques [4].
+In collaborative inference, the size of intermediate features should be smaller than the original input. Otherwise, it’s better to ofﬂoad the original input data to the edge
+• Zhiwei Hao, Guanyu Xu, Han Hu, and Jianping An are with the School of Information and Electronics, Beijing Institute of Technology, Beijing 100081, China. E-mail: {haozhw, xuguanyu, hhu, an}@bit.edu.cn.
+• Yong Luo is with School of Computer Science, Wuhan University, Wuhan 430072, China. E-mail: luoyong@whu.edu.cn.
+• Shiwen Mao is with Department of Electrical and Computer Engineering, Auburn University, Auburn, AL 36849, USA. E-mail: smao@auburn.edu.
+
+server. However, the size of intermediate features of most DNN models are usually larger than the original input. Furthermore, in common MEC scenarios, there usually exists multiple UEs, and their interference on the ofﬂoading channel would incur additional latency. Hence, achieving effective multi-agent collaborative inference is challenging.
+To address this problem, some existing works propose to compress the intermediate features of DNNs to reduce the transmission overhead [5], [6], where DNN together with quantization or entropy coding are utilized to build the compressor. However, the architectures of such compressors are usually complex, which lead to a high inference latency under high uplink rate conditions.
+In the real world, it is common for a single edge server to serve multiple UEs, where the UEs communicate with the server via a shared channel. The interference between UEs in the ofﬂoading channel could incur signiﬁcant additional latency in this scenario, even with compressed features. To tackle this issue, some existing methods optimize the ofﬂoading decision and channel resource allocation to improve edge task ofﬂoading. The resulting optimization problem is NP-hard [7], and hence deep reinforcement learning (DRL) has been adopted to ﬁnd the solution. For example, Li et al. [8] use deep Q-learning (DQL) to allocate ofﬂoading decision and resources for multiple UEs, and Nath et al. [9] address this problem by employing deep deterministic policy gradient (DDPG). However, these approaches simply deﬁne tasks using the size of input data and the required number of CPU cycles, while the indivisibility of a single DNN layer is ignored. Furthermore, the multi-agent collaborative inference problem contains a hybrid action space, e.g., the discrete ofﬂoading channel and the continuous transmit power, while the existing methods only focus on either a discrete or continuous action space.
+
+To remedy these drawbacks, we propose a DRL framework for multi-agent collaborative inference. The framework contains a lightweight autoencoder-based intermediate feature compressor and a multi-agent hybrid proximal policy optimization algorithm, named MAHPPO, to train the DRL agent. At ﬁrst, to achieve fast and effective intermediate feature compression, we design a lightweight autoencoder-based method, which utilizes autoencoder and quantization to build the compressor. Then for the multiagent scenario, we redeﬁne and formulate the problem by taking layer indivisibility into consideration. Finally, we design an MAHPPO algorithm to solve the problem with a hybrid action space. In the experiments, we ﬁrst train the autoencoder-based compressors at each potential partitioning point of the ResNet18 model [1]. Then we measure the inference overhead of each module on an edge hardware. Given the collected data, we train a DRL agent via MAHPPO to provide ofﬂoading decisions. The results show that the autoencoder architecture can achieve a high compression rate with little overhead, and the MAHPPO algorithm can reduce up to 56% of the inference latency and save up to 72% of energy consumption compared with the full local inference strategy. By simply tuning a balancing hyperparameter, we can achieve a trade-off between inference latency and energy consumption. Moreover, we conduct experiments on VGG11 [10] and MobileNetV2 [11] to further verify the effectiveness of our approach. Our main contributions are summarized as follows:
+• We design a lightweight autoencoder-based intermediate feature compression module, which can greatly reduce the transmission overhead while consuming little time and energy.
+• We measure the latency and energy consumption of the DNN inference task on an edge hardware, and use these measurements on real devices to build model. This is different from the existing works that deﬁne tasks using only the input data size and the required amount of CPU cycles, which may not be appropriate for describing real-world applications.
+• We redeﬁne and formulate the problem of multiagent collaborative inference as an MDP to enable feasible optimization, where the interference among multiple UEs is taken into consideration.
+• We propose an MAHPPO algorithm to solve the optimization problem, which can deal with multiple agents and work with the hybrid action space.
+The remainder of this paper is organized as follows. We present the autoencoder-based intermediate feature compressor in Sec. 2. The overall system and general formulation is presented in Sec. 3, which is then reformulated as an MDP to facilitate optimization in Sec. 4. The proposed MAHPPO algorithm is depicted in Sec. 5, and Sec. 6 includes some experiments and analysis. Finally, we discuss the related works in Sec. 7 and conclude our paper in Sec. 8.
+2 AUTOENCODER-BASED INTERMEDIATE FEATURE COMPRESSION
+In this section, we propose a lightweight autoencoder-based intermediate feature compression method. We ﬁrst present
+
+Device
+
+Quantization
+
+2
+
+Cloud
+
+Encoder
+
+Decoder
+
+Quantization
+
+Inference Results
+Fig. 1. Architecture of the lightweight autoencoder-based intermediate feature compression framework. The DNN model is partitioned into two parts, which are deployed on the UE and the edge server respectively. During inference, the input data go through the front part of the model, the compressor, the wireless channel, the decompressor, and the remaining part of the model successively.
+an overview of the proposed method and then provide the details of each module. Finally, we present the optimization strategy for model training.
+2.1 Overview
+Existing compressors usually require a large overhead and incur a high latency. To achieve efﬁcient intermediate feature compression, we propose a lightweight autoencoderbased compressing method. In particular, we adopt a singlelayer autoencoder coupled with a quantization module as the compressor. Autoencoder is an unsupervised learner composed of an encoder and a decoder, and the two parts constitute our compressor and decompressor respectively. The quantization module represents the feature map using fewer bits to further compress the encoder outputs.
+Fig. 1 illustrates the workﬂow of the collaborative inference equipped with the feature compression method. The DNN model is split into two parts, which are deployed on the UE and the edge server, respectively. When a new inference task arrives, the UE ﬁrst executes the front part of the model and performs compression of the obtained intermediate feature, which is then transmitted to the edge server via a wireless channel. On the edge server, the received compressed feature is restored and passed into the remaining part of the original DNN model. When the inference is completed, the edge server returns the results to the UE.
+2.2 Channel Reduction and Restoration
+Intermediate features of DNN usually contain large information redundancy. This motivates us to design a compressor to learn a compact feature representation.
+In order to achieve effective feature compression with limited overhead, both the encoder and decoder are composed of only a convolution layer with a 1 × 1 kernel. Suppose the shape of the intermediate feature is (bs, ch, w, h), where each dimension denotes batch size, channel number, width, and height of the feature respectively. The convolution layer with kernel size (ch, ch , 1, 1) shrinks the channel
+
+number from ch to ch , where ch < ch . The compression rate of the channel reduction encoder is deﬁned as Rc = ch/ch , and the corresponding convolution kernel shape in the decoder is (ch , ch, 1, 1).
+When the model serves UEs, there may be inputs beyond the original training dataset, which usually causes a performance degradation. Nevertheless, the lightweight autoencoder is focused on feature compression at the channel level, and is insensitive to small input domain shifts. Hence, the proposed autoencoder is an effective and robust feature compressor.
+
+2.3 Quantization and Dequantization
+
+Existing works have shown that representing intermediate
+
+features using lower bit-width has little impact on inference
+
+accuracy [12]. This motivates us to further compress the
+
+output features of the encoder by adopting the quantiza-
+
+tion technique, which maps ﬂoating-point values in feature
+
+maps to a smaller set consisting of discrete integers.
+
+On the UE, the quantization procedure can be formu-
+
+lated as:
+
+yi = round
+
+(2cq − 1)[xi − min(x)] max(x) − min(x)
+
+,
+
+(1)
+
+where x is the intermediate feature to be quantized, xi is the i-th value in x, yi is output integer of xi, and cq is the bitwidth used for quantization. The maximum and minimum value of xi can be replaced by the result computed on a pre-collected set of feature maps.
+On the edge server, the quantized value yi can be recovered approximately by the dequantization procedure:
+
+xi
+
+=
+
+yi[max(x) − min(x)] 2cq − 1
+
++
+
+min(x),
+
+(2)
+
+where xi is the recovered value. The rounding operation in the quantization causes round-off error, so xi is usually not precisely equal to xi. Since the original intermediate
+features are represented by 32 bit-width ﬂoating-point num-
+ber, the compression rate of the quantization procedure is Rq = 32/cq. Hence, the overall compression rate of our
+method is given by:
+
+R
+
+=
+
+Rc
+
+×
+
+Rq
+
+=
+
+ch ch
+
+× 32 × cq
+
+.
+
+(3)
+
+2.4 Optimization
+
+The feature compression component is optimized using a
+two-stage training strategy. For a given pre-trained model M and a selected partitioning point, we ﬁrst train the autoencoder by minimizing the l2 distance between the
+original and recovered features. Moreover, a cross-entropy
+loss is introduced to minimize the prediction error. For a sample x in the training set X , we denote the original feature and the recovered feature of the autoencoder as Txi and Txo , respectively. Then the loss function for training the autoencoder can be formulated as:
+
+Lae = ||Txi − Txo ||2 + ξdce(M(x), y),
+
+(4)
+
+where ξ is a balancing hyperparameter, dce is the cross entropy measurement, and y is the corresponding label of sample x.
+
+3
+
+UE 1
+
+……
+
+UE 1
+
+BS
+
+Edge
+
+UE 𝑁𝑁
+
+BS
+
+Edge
+
+UE 𝑁𝑁
+
+(a)
+
+1 Inference
+
+Controller
+
+1
+
+CInofnetrreonl2lceer
+
+Offload2ing?
+
+3N
+
+Offlo3aYdYing?FullIynf3CerPeNUnc/Ge PU
+
+3
+
+Fully CPU/GPU
+
+CPUN/GotP/PUarItniafellryencIenference4
+
+No/Partially C7PU/GPU Inference
+
+4
+
+7
+
+UE 1
+
+Decision Maker Decision Maker
+State Pool State Pool
+BS BS
+
+GPU/FPGA/…
+Inference GPU/FPGA/… 6 Infere6nce 7
+
+7
+
+6
+
+6
+
+Model Pool
+
+Model Pool 5
+
+4 74 Ed7ge
+
+Inferen5ce Controller Inference Controller
+
+Data flUowE 1
+
+Result flow
+
+DecEisdigoen information flow
+
+Data flow
+
+Result flow
+(b)
+
+Decision information flow
+
+Fig. 2. Workﬂow of the multi-agent collaborative inference scenario: (a) the overall workﬂow; (b) workﬂow of a speciﬁc UE, where the UE can perform local inference, ofﬂoad the original input to the edge for inference, or split the DNN into two parts for collaborative inference.
+
+In the training of the autoencoder, we freeze parameters in the pre-trained model. When this ﬁrst-stage training is done, we ﬁne-tune all the parameters in the model on the training set using a small learning rate.
+Discussion. The proposed autoencoder-based compressor is specially designed for the MEC scenario, which reduces the size of intermediate features while consuming little time during inference. The autoencoder training also takes little time and energy due to its lightweight nature. In practice, we can further improve the compression rate by designing a more complex autoencoder structure or adopting other approaches such as entropy coding. However, the compressor is designed to reduce the latency caused by data ofﬂoading. The extra latency introduced by the compressor should be less than the reduced ofﬂoading latency. By adopting the proposed compressor, we can signiﬁcantly reduce the inference latency and save plenty of energy with little training and inferring overhead on the autoencoder.
+
+3 MULTI-USER COLLABORATIVE INFERENCE
+In practice, one edge server usually needs to provide service for more than one UE, where the optimal ofﬂoading policy is more difﬁcult to obtain than the single UE scenario, because of the interference within wireless channels. In this section, we consider a scenario where multiple UEs conduct DNN inference with the help of only one edge server. We will ﬁrst present the workﬂow of the multi-agent collaborative inference, and then the system model and problem formulation.
+
+4
+
+3.1 Workﬂow
+The overall workﬂow of the multi-agent collaborative inference system is provided in Fig. 2(a), where the system contains multiple UEs, a wireless base station (BS), and an edge server. UEs communicate with the BS via a wireless channel, and the BS is linked with the edge server via an optical ﬁber network. Each UE needs to complete several DNN inference tasks. For each task, the edge server makes a decision about where the task is to be processed, i.e., on the UE holding the task or on the edge server. Our goal is to ﬁnd the decision that helps complete all tasks quickly while consuming as little energy as possible.
+Fig. 2(b) illustrates the detailed workﬂow by taking “UE 1” as an example. We consider a ﬁxed-frequency decision update for the collaborative inference problem and divide time into nonoverlapping frames. At the beginning of each time frame, a decision-maker deployed at the edge server sends decisions about where tasks should be processed during the current frame to each UE. The decision is obtained based on the state of each UE, such as the number of remaining tasks, the size of data to be ofﬂoaded, and so on. We provide a detailed deﬁnition of the UE state in Sec. 4.3. At the end of the previous frame, each UE sends their state information to the edge server, and the edge server collects and stores the states of all UEs. We term the collection of all UE states the state pool. In a speciﬁc time frame, when the UE starts a new task, it follows the received decision on whether to ofﬂoad the task to the edge or not. If the decision is to perform inference locally, the UE will execute the complete neural network with its on-chip CPU/GPU. Otherwise, the UE will partially (or not) run the neural network locally and then transmit the compressed intermediate features (or the original input) to the BS via a wireless channel. The BS will then transmit such data to the edge server through an optical ﬁber. At the edge end, the server will identify the right model according to the received data at ﬁrst and then complete the inference task using its more powerful hardware. Finally, the edge server returns the result to the UE.
+3.2 DNN Inference Model
+Collaborative inference requires to decouple DNN into several parts. Here we assume that the DNN can be divided by layers or residual blocks, if it is a deep residual model.
+For a system consists of N UEs, we denote the set of UEs as N , N = {1, ..., N }. The model deployed on UE n can be divided into Bn + 1 parts, which indicates that there are Bn potential partitioning points for the model deployed on UE n. The partitioning decision of this UE can be denoted as bn ∈ B, B = {0, 1, ..., Bn + 1}, which indicates that the UE will ofﬂoad the intermediate result to the edge after completing the inference of the ﬁrst bn parts. If bn = 0, UE n will direct ofﬂoad the original input to the edge server for inference, and if bn = Bn + 1, the UE will conduct the inference locally.
+3.3 Communication Model
+During the ofﬂoading procedure, UEs ﬁrst communicate with a wireless BS. Then the data will be transmitted to the edge server via an optical ﬁber network.
+
+Each user transmits data through a particular ofﬂoading
+channel with a transmit power. We denote the channel and the power of UE n as cn ∈ {1, ..., C} and pn > 0, respectively. Combined with the partitioning point bn, the three terms construct the inference action of UE n, denoted as (bn, cn, pn). The decision-maker provides inference action of all UEs, based on a policy π, which is the probability
+distribution of all possible inference actions. Hence, the uplink data rate between UE n and the edge server can be
+computed as [13]:
+
+
+
+
+
+rn(π)
+
+=
+
+ωcn
+
+log2
+
+1 
+
++
+
+σcn
+
++
+
+pngn
+
+pigi
+
+ 
+
+,
+
+i∈N \{n},bi∈B\{Bi+1}
+
+(5)
+
+where ωcn is the bandwidth of channel cn, gn is the channel gain between UE n and the wireless BS, and σcn is the background noise power of channel cn.
+
+3.4 Computation Model
+
+We consider the inference latency and the energy consumption of each sample. The overhead for collecting states of the UEs in each time frame is ignored, as the state information is usually negligible compared with the ofﬂoading data. In the worst case, the extra latency at the server is only a small constant, which does not affect the optimization results. Here we still take UE n as an example, and suppose that the size of compressed intermediate feature is fn bits at partitioning point bn. When n = 0, fn denotes the size of the original input sample. We assume a powerful edge server, i.e., all received tasks can be ﬁnished with negligible latency, and omit the latency at the edge end. Similar settings can be found in previous works [14]. Hence, the inference latency of a single sample is composed of three terms: the local inference latency tfn, the feature compression latency tcn, and the data transmission latency ttn. The local inference latency tfn and the feature compression latency tcn can be collected on device. Based on the communication model, the data transmission latency is:
+
+ttn
+
+=
+
+fn rn(π
+
+)
+
+.
+
+(6)
+
+Thus the overall latency can be computed as:
+
+tn(π) = tfnI{bn∈B\{0}} + tcnI{bn∈B\{0,Bn+1}} + ttnI{bn∈B\{Bn+1}},
+
+(7)
+
+where I{C} is an indicator function which equals to 1 only when the condition C is true and equals to 0 otherwise.
+Similarly, we can derive the energy consumption as:
+
+en(π) = efnI{bn∈B\{0}} + ecnI{bn∈B\{0,Bn+1}} + etnI{bn∈B\{Bn+1}},
+
+(8)
+
+where efn and ecn are the local inference energy consumption
+and the feature compression energy consumption, respectively, which can also be measured on device; etn is the data
+transmission energy consumption, which is computed as:
+
+etn = pnttn.
+
+(9)
+
+5
+
+3.5 Problem Formulation
+
+Based on the above modelings, we formulate the overall optimization problem. By solving this problem, we can achieve effective multi-agent collaborative inference.
+In our scenario, each UE receives several tasks at the beginning, and our goal is to ﬁnd a policy π that can minimize both the latency and energy consumption for completing all tasks. Supposing that UE n receives Kn tasks, then our optimization problem can be formulated as:
+
+(P1) min [max
+πn
+
+Kn k=1
+
+tn,k
+
+(π)
+
++
+
+β
+
+N n=1
+
+Kn k=1
+
+en,k
+
+(π)]
+
+s.t. (C1) bn ∈ {0, 1, ..., Bn + 1}, ∀n ∈ N (C2) cn ∈ {1, ..., C}, ∀n ∈ N (C3) 0 < pn ≤ pmax, ∀n ∈ N , (10)
+where pmax is the maximum transmit power of a single UE and β > 0 is a balancing hyperparameter.
+
+4 MDP REFORMULATION
+In this section, we reformulate the problem as an MDP to facilitate the optimization procedure. Table 1 is a summary of the used notation.
+
+4.1 Problem Redeﬁnition
+
+Problem (P1) is a mixed-integer nonlinear programming problem [15], which is NP-hard and difﬁcult to solve for an optimal solution via traditional approaches [16]. DRL has emerged as a promising method to solve such problems, which requires to represent the problem as an MDP. However, problem (P1) cannot be directly expressed in the MDP form, since it contains the sum of latency and the energy consumption of each task. When state transition occurs, there may be half-completed tasks. This means the latency and the energy consumption of tasks in the last time interval may not be unavailable. Thus, we should reformulate the problem for applying DRL algorithms.
+To achieve this goal, we propose to consider the averaged latency and energy consumption of each completed task in each time frame and ignore the overhead of halfcompleted tasks. We enforce the averaged latency of each completed task in each time frame to be small so that more tasks can be completed, and thus the overall latency will also be small. We also require the averaged energy consumption to be small, so that the overall energy consumption can be minimized. Supposing that we require T (π) time frames to complete all tasks, and the expected number of completed tasks in one time frame and the energy consumption at time frame t are K(π) and Et(π), respectively, then the problem can be reformulated as:
+
+(P2) min
+π
+
+T (π) T0+βEt(π)
+
+t=1
+
+K (π )
+
+(11)
+
+s.t. (C1), (C2), and (C3),
+
+where T0 denotes the duration of one time frame.
+
+4.2 Theoretical Analysis
+In this section, we prove that the objective of problem (P1) is upper bounded by that of problem (P2), so that we can
+
+TABLE 1 Notation
+
+Symbol
+π T (π) T0 K (π ) Kt(π) Et(π) kt lt nt d
+bt ct pt R
+φ
+θn
+
+Description
+policy for generating action at time horizon duration of one time frame expected number of completed tasks in one time frame number of completed tasks at time t energy consumption at time t numbers of uncompleted tasks at time t left time of local computation at time t size of left data to be ofﬂoading at time t distance from UEs to the edge server partitioning point of each UE at time t ofﬂoading channel of each UE at time t transmit power of each UE at time t cumulative reward in one episode parameters of the critic network parameters of the n-th actor network
+
+enhance multi-agent collaborative inference by optimizing problem (P2). This is summarized in the following theorem.
+
+Theorem 1. A policy update that minimizes the objective function of problem (P2) can also minimize the objective function of problem (P1) for small β.
+
+Proof. We assume that the numbers of UEs and the task
+number of each UE in the two problems are equal. For
+convenience, we signify the objective function of problem (P1) and (p2) as f1(π) and f2(π), respectively. We denote the ﬁrst and the second terms in f1(π) as A(π) and B(π), i.e., f1(π) = A(π) + βB(π), and f2(π) can be rewritten as:
+
+f2(π) =
+
+T (π) t=1
+
+(T0
+
++
+
+βEt(π))
+
+K (π )
+
+=
+
+T (π)T0
+
++β
+
+T (π) t=1
+
+Et
+
+(π)
+
+K (π )
+
+=
+
+A(π) + βB(π) K (π )
+
+.
+
+If there are two policies π1 and π2 that satisfy f2(π1) > f2(π2), we aim to prove that f1(π1) > f1(π2). We consider two cases: 1) K(π1) ≥ K(π2); 2) K(π1) < K(π2).
+For case 1), it is obvious that f1(π1) > f1(π2). For case 2), we can obtain that T (π1) > T (π2), since K(π) is the expected number of completed tasks in one time frame. Thus we have A(π1) > A(π2), and for f1(·), we have:
+
+f1(π1) − f1(π2) = (A(π1) − A(π2)) + β(B(π1) − B(π2)),
+where B(π1) − B(π2) denotes the extra energy used for completing all tasks using policy π2. This value is upper bounded since the energy consumption of the local inference and the feature compression is constant, and the transmit power is upper bounded. Thus there must exist a small β that ensures f1(π1) > f1(π2). According to the analysis in the above two cases, we conclude that minimizing the objective function of problem (P2) can guarantee the decrease of the objective function of problem (P1) when β is small.
+Discussion. Problem (P2) converts the sum of tasks into the sum of time frames, so that the problem is in accordance with the form of cumulative reward in DRL. In practice,
+
+the improvement of K(π) can usually decrease the overall energy consumption B(π). Thus generally a large β can also
+guarantee the validity of Theorem 1.
+
+4.3 MDP Formulation
+
+An MDP depicts the interaction between the DRL agent
+and the environment and can be represented by a tuple (S; A; P ; r), where S is a set of states, A is a set of actions, P : S × A × S → R is a probability distribution that depicts the system dynamics, and r : S × A × S → R is the reward.
+We ﬁrst deﬁne state st of the MDP, where t denotes the t-th decision time frame. State st consists of four parts: the left task number kt, the left local computation time lt, the left ofﬂoading data size nt, and the distance from UEs to the edge server d. That is, st = {kt, lt, nt, d}, where kt contains the left uncompleted task number of each UE at time t,
+which may guide the system to assign more resources to the UEs that have more uncompleted tasks; lt is the left time of
+completing the local inference and the feature compression of current half-completed tasks; nt is the size of left data to be ofﬂoaded of these tasks; and the distance d is , which
+remains unchanged in one episode. We then deﬁne action at at time t, given by at =
+{bt, ct, pt}, where bt is the partitioning point of each UE, ct is the ofﬂoading channel of each UE, and pt is the transmit power of each UE. At time t, the transmit power pt becomes effective immediately, while the other two elements in at
+become effective when new tasks are started, i.e., after half-
+completed tasks in the previous time frame are completed. Finally, we deﬁne reward rt. The expectation K(π) in
+problem (P2) is hard to obtain. Thus we use the number of completed tasks at the t-th time frame Kt(π) as an estimate of K(π). According to the problem deﬁnition in problem
+(P2), we deﬁne the reward as:
+
+rt
+
+=
+
+−
+
+T0 Kt
+
+−
+
+β
+
+Et Kt
+
+,
+
+(12)
+
+where we have omitted the dependence on π to simplify the
+
+notation. The cumulative reward is R =
+
+T (π) t=1
+
+rt,
+
+which
+
+is just the negative of the objective function of problem
+
+(P2). Thus we can solve the problem by maximizing the
+
+cumulative reward.
+
+6
+
+branches share several front layers that encode the state information and output partitioning point, ofﬂoading channel, and transmit power decisions, respectively. We denote parameters of the critic network and the actor networks as φ and θn, respectively, where θn denotes the parameters of the corresponding actor network of UE n.
+The input of the actor-critic network is state st, as described in Sec. 4.3. The state consists of four vectors that depict the number of uncompleted tasks of each user, left local computing time and ofﬂoading data size of halfcompleted tasks, and the distance to the edge server of each UE. In practice, we simply concatenate the four vectors into one and input them into the actor-critic network.
+The critic network outputs the predicted state value Vφπ(st), which is the expected cumulative reward of st. The state value guides the update of all actor networks in the training stage.
+The actor networks output the policy πθ(at|st), which is a predicted distribution of action at at state st. The branches of actors that provide discrete actions output the probabilities {pi(st)} of selecting different possible actions simultaneously, and this is achieved by adding a softmax function at the end of these branches. Thus the discrete actions is followed by a categorical distribution:
+
+M
+πθdn (adt,n|st) = pi(st)I{adt,n=i},
+i=1
+M
+
+(13)
+
+∀n ∈ {1, 2, ..., N }, pi(st) = 1,
+
+i=1
+
+where the superscript d denotes the discrete part of the action and M is the number of possible actions.
+Meanwhile, the branches of actors that provide continuous actions output the mean µ(st) and the standard deviation σ(st) values of the actions. We assume the distribution
+of the continuous action is Gaussian, i.e.,
+
+πθcn (act,n|st) ∼ N (µ(st), σ2(st)),
+
+(14)
+
+where the superscript c denotes the continuous part of the action and N (·) is the probability density function of the Gaussian distribution. In practice, the action can be sampled from the above distributions.
+
+5 MAHPPO ALGORITHM
+In this section, we propose a MAHPPO algorithm to solve the multi-agent collaborative inference problem. We ﬁrst depict the network design of the algorithm and then present the optimization procedure.
+5.1 Actor-Critic Architecture Design
+The proposed MAHPPO method has an actor-critic structure, and Fig. 3 is an illustration of the method. The multiagent collaborative inference scenario contains multiple UEs, so we propose to adopt multiple actor networks to provide inference decisions for the UEs. The number of actor networks is equal to the number of UEs. A major challenge is how to deal with the hybrid action space, and we handle this by adding three output branches in each actor networks to acquire hybrid actions [17]. The three
+
+5.2 Optimization Objectives
+
+We introduce the optimization objectives of the critic and the actors here. The critic network should ﬁt an unknown state-value function and the actor networks should provide policy to maximize the ﬁtted state value. The optimizing objectives should guide the critic and the actors to achieve these goals.
+We ﬁrst present the objective of the critic network. Suppose there exists a trajectory of the MDP, and the trajectory describes the interaction process between the DRL agent and the environment. Then we can obtain the rewards of each time frame in the trajectory, and the real cumulative reward at state st is:
+
+T (π)
+
+V π(st) =
+
+γt −trt ,
+
+(15)
+
+t =t
+
+7
+
+Unfinished number 𝐤𝐤𝑡𝑡 𝐤𝐤𝑡𝑡,1 𝐤𝐤𝑡𝑡,2 ⋯ 𝐤𝐤𝑡𝑡,𝑁𝑁
+Left local time 𝐥𝐥𝑡𝑡 𝐥𝐥𝑡𝑡,1 𝐥𝐥𝑡𝑡,2 ⋯ 𝐥𝐥𝑡𝑡,𝑁𝑁
+Left data size 𝐧𝐧𝑡𝑡 𝐧𝐧𝑡𝑡,1 𝐧𝐧𝑡𝑡,2 ⋯ 𝐧𝐧𝑡𝑡,𝑁𝑁
+Distance 𝐝𝐝 𝐝𝐝1 𝐝𝐝2 ⋯ 𝐝𝐝𝑁𝑁 Concatenated State
+
+⋯
+
+⋯
+
+⋯
+
+⋯
+
+⋯
+
+𝑁𝑁 Actors Critic
+
+⋯
+
+𝐛𝐛𝑡𝑡
+
+𝜋𝜋𝜃𝜃 𝑎𝑎𝑡𝑡 𝑠𝑠𝑡𝑡
+
+𝐜𝐜𝑡𝑡
+
+/
+
+𝜋𝜋𝜃𝜃𝑜𝑜𝑜𝑜𝑜𝑜 𝑎𝑎𝑡𝑡 𝑠𝑠𝑡𝑡
+
+𝐩𝐩𝑡𝑡
+
+surr1
+
+ℒ𝑎𝑎
+
+min
+
+×
+
+surr2 clip
+
+𝑉𝑉𝜙𝜋𝜙𝜋(𝑠𝑠𝑡𝑡)
+
+𝐴̂𝐴𝑡𝑡
+
+^2
+
+−
+
+ℒ𝑐𝑐
+
+𝑉𝑉𝑉𝜋𝜋(𝑠𝑠𝑡𝑡)
+
+Forward
+
+Trajectory Backward
+
+UE 1
+𝐛𝐛𝑡𝑡,𝑛𝑛 𝐩𝐩𝑡𝑡,𝑛𝑛 𝐜𝐜𝑡𝑡,𝑛𝑛
+UE 𝑛𝑛 UE 𝑁𝑁
+
+⋯
+
+⋯
+
+Fig. 3. Overall structure of MAHPPO. This algorithm contains multiple actor networks and a global critic network. At the left part, all vectors in the state are concatenated and sent to the actors and the critic. Each actor outputs the partitioning point, ofﬂoading channel, and transmit power decisions for its corresponding UE, and the critic outputs an estimation of the state value. The middle part depicts the loss function, where “surr” is short for “surrogate objective.” The right part illustrates how a trajectory for policy updating is obtained.
+
+where γ ∈ [0, 1] is the discount factor that balances the longterm return and the short-term return. We use this sampled value as the expected cumulative reward to train the critic network. The loss function is given by:
+
+Lc(φ) = ||Vφπ(st) − V π(st)||2.
+
+(16)
+
+We then present the objective of the actor networks. According to the monotonic improvement guaranteed policy gradient algorithm, trust region policy optimization [18], we maximizes the following objective:
+
+max Et
+θ
+
+πθ (at |st ) πθold (at|st
+
+)
+
+Aˆt
+
+,
+
+(17)
+
+where πθ(at|st) is the current policy and πθold (at|st) is the old policy for collecting a trajectory. Furthermore, Aˆt is the advantage function which measures how much a speciﬁc action at is better than the average actions at state st. This objective is called the “surrogate objective” because it uses the importance sampling trick to treat samples from the old policy as the surrogate of new samples to train the actors. In order to reduce bias of the advantage function, we employ an exponentially-weighting method to obtain the generalized advantage estimation [19]:
+
+T (π)
+Aˆt = (γλ)t −t rt + γVφπ(st+1) − V π(st) , (18)
+t =t
+where λ ∈ [0, 1] is a hyperparameter. If t + 1 > T (π), we have Vφπ(st+1) = 0.
+
+The loss clipping strategy has been demonstrated to be
+
+helpful
+
+to
+
+train
+
+the
+
+actor
+
+[20].
+
+Denoting
+
+πθ (at|st) πθold (at|st)
+
+as
+
+rt(θ),
+
+the clipped loss can be formulated as:
+
+LCLIP (θ) = Et min(rt(θ)Aˆt, clip(rt(θ), 1 − , 1 + )Aˆt) ,
+(19) where > 0 is a hyperparameter that controls how rt(θ) can move away from 1.
+Hence, we can formulate the objective function of the actor networks as:
+
+N
+
+La(θ) =
+
+LCLIP (θn) + ζEt[H(πθn (at|st))] , (20)
+
+n=1
+
+where H(πθn (at|st)) is an entropy bonus that encourages exploration and ζ is a balancing hyperparameter. We summarize the proposed MAHPPO procedure in Algorithm 1. Each expectation term is evaluated by the averaged results of a batch of samples.
+
+6 EXPERIMENTS
+We ﬁrst present the results of the designed autoencoderbased intermediate feature compression method and measure the overhead of both local inference and feature compression. We then show the convergence performance of the proposed MAHPPO algorithm and investigate how effectively it can reduce the inference overhead of multi-agent collaborative inference with the ResNet18 model. Finally, we evaluate our framework on two other popular DNN models: VGG11 and MobileNetV2. Code is available at https://github.com/Hao840/MAHPPO
+
+8
+
+Algorithm 1: MAHPPO
+Randomly initialize parameters of the critic and the actors as φ and θn, n ∈ {1, 2, ..., N }; Initialize learning rate α, batch size B, sample reuse time K, and initial state s0; Initialize trajectory buffer M with size ||M||; Current state st ← s0; for step S := 1 to Smax do
+// Collecting trajectory
+while M is not ﬁlled do Sample action at ∼ πθ(at|st); Execute at and observe reward rt, the next state st+1; Append (st, at, rt, st+1) into M; if st+1 is the terminate state then st ← reinitialized state s0;
+else st ← st+1;
+end S ← S + 1; end
+// Updating Network
+Compute state value for states in M with (15); Compute advantage for states in M with (18); for epoch e := 1 to K × (||M||/B) do
+Sample B samples from M; Compute Lc(φ) and La(θ) with these samples; Update critic: φ ← φ − α∇φLc(φ); for n := 1 to N do
+Update actor: θn ← θn − α∇θn La(θ); end
+end Clear memories in M. end
+
+Compression Rate
+
+60 50 40 30 20 10
+0 Point 1
+
+Point 2
+
+Point 3
+
+Partition Point
+
+Proposed JALAD
+Point 4
+
+Fig. 4. Compression rate comparison of the proposed lightweight autoencoder-based intermediate feature compression module and JALAD on ResNet18.
+
+6.1 Intermediate Feature Compression Performance
+In this set of experiments, we select JALAD [12] as the baseline. JALAD compresses the intermediate feature by 8-bit quantization and entropy coding. According to their paper, 8-bit quantization causes almost no accuracy loss.
+The experiments are conducted on the Caltech-101
+
+ξ=0
+
+ξ=0.01
+
+ξ=0.1
+
+ξ=1
+
+80
+
+Accuracy(%)
+
+60
+
+40
+
+20
+
+0 Point 1
+
+Point 2
+
+Point 3
+
+Partition Point
+
+Point 4
+
+Fig. 5. Comparison of different ξ settings on ResNet18.
+
+dataset [21], which is a computer vision dataset containing 101 classes of samples each with size 300×200. The number of samples in each class ranges from 80 to 300. We randomly select 80% of the samples in each class as training set and use the remaining samples as test set. During training, each sample is ﬁrst resized to 256×256 and then randomly cropped to 224×224 for data augmentation. We train a ResNet18 network as the base model and select 4 partitioning points. Speciﬁcally, a ResNet18 model processes a sample in four stages. We adopt the output ends of the second layer in each stage, i.e., the batch normalization layer, as a partitioning point. Hence, there are 4 selected points in total. We train several autoencoders with different compression rates at each partitioning point and use 8-bit quantization to further compress the encoded feature. Although a more signiﬁcant compression rate always achieves less latency and energy consumption, we cannot increase the rate unboundedly, since the compression rate also affects the accuracy. Hence, we select the autoencoder to achieve the maximum compression rate under a 2% accuracy loss bound after ﬁnetuning, since 2% accuracy loss is negligible for most realworld deployments, compared with the reduced latency and energy consumption. In cases where performance degradation is unacceptable, we can replace the autoencoder with lossless compression modules, e.g., the entropy coding. We train each autoencoder for 30 epochs with a 128 batch size. The optimizer is Adam [22] and the learning rate is 0.1. The hyperparameter ξ is set to 0.1. For ﬁne-tuning, we train the base model and the autoencoder together for 10 epochs with a small learning rate of 0.0001.
+Fig. 4 illustrates the evaluation result of the lightweight autoencoder-based intermediate feature compression module. Compared with JALAD, it can be seen that our method can compress the intermediate feature much more effectively. When the partitioning point moves towards the tail of the pre-trained model, the compression rate of our method decreases and that of JALAD increases. This may because the features in the pre-trained model become sparser in deeper layers, and the simple autoencoder is not adequate to compress such data, while entropy coding is more effective for sparse data compressing. In practice, the higher compression rate performance of our method will energize
+
+9
+
+Full Local Inference
+
+Proposed
+
+Pure Model
+
+JALAD
+
+0.100
+
+0.075
+
+0.050
+
+0.025
+
+0.000
+
+Latency(s)
+
+0.10
+
+Energy(J)
+
+0.05
+
+Fig. 6. Inference overhead measurement hardware.
+the multi-agent collaborative inference remarkably. We further conduct experiments to compare different ξ
+settings at different partitioning points. Fig. 5 illustrate the comparison result. The result shows that the ξ = 0.1 setting performs the best, except at the partitioning point 1, where the performance is only slightly worse than the ξ = 0.01 setting. For convenience, we set ξ to 0.1 in all the cases.
+6.2 Local Overhead Measurement
+We then measure latency and energy consumption of the local inference and feature compression, as described in Sec. 3.3. We use an NVIDIA Jetson Nano as the UE and an external high voltage power monitor for the measurement.
+The NVIDIA Jetson Nano contains a Quad-core ARM Cortex-A57 MPCore processor at 1.6 GHz, a 4 GB RAM Memory, and an NVIDIA Maxwell architecture GPU with 128 NVIDIA CUDA cores. Jetson nano is driven by the power monitor, which can collect the output voltage and current at a sampling rate of 5000 samples per second. The two devices are connected as in Fig. 6. Before the measurement, we switch the Jetson Nano to the low power mode, i.e., the max power is 5 Watt, and turn off the dynamic voltage and frequency scaling (DVFS). We perform the inference on the test set of Caltech-101 dataset using Jetson nano. The model is the trained ResNet18 with feature compression autoencoders. We measure the inference overhead with 1000 samples in the test set. We ignore the data of the ﬁrst 100 samples and take the average of the latency and power of the last 900 samples as the data of the steady system. We minus the power of the standby system from the averaged power to acquire the power of performing inference. Thus the energy consumption of a single inference can be obtained by taking the product of the averaged latency and the power of performing inference.
+The measurement results are shown in Fig. 7. The top ﬁgure illustrates the latency of local inference and feature compression at each partitioning point, and the bottom one illustrates the energy consumption. The gray dashed line denotes the overhead when executing the full model locally. We can see that the proposed method brings nearly no additional latency and energy consumption. Moreover,
+
+0.00 Point1
+
+PoinPta2rtition PoPionitnt3
+
+Point4
+
+Fig. 7. Latency and energy consumption of executing the front part of ResNet18 and compressing the intermediate feature on UE. The overhead of executing the full model on the UE is marked out by the gray dashed line.
+
+the overhead of our method is less than that of full local inference at each partitioning point, except for the energy consumption at the last partitioning point. The results also show that the energy cost of only running the model before the partitioning point 4 is larger than that of running the whole model. We conjecture that this part of the model has a higher degree of parallelism for processing, as it is only consists of convolution layers. This results in a higher average power and a less latency, while the energy, the product of the two values, becomes larger. If we carefully assign each UE a partitioning point, an ofﬂoading channel, and a transmit power in the multi-agent collaborative inference scenario, the overall overhead can still be less than that of full local inference. In contrast, as shown in the results, JALAD incurs more overhead than full local inference in most cases, which is because the large intermediate features need plenty of time to perform entropy coding.
+6.3 MAHPPO Convergence Performance
+After obtaining the local inference and feature compression overhead, we solve problem (P2) with the proposed MAHPPO algorithm. We ﬁrst present the experiment setups and then provide the convergence performance of MAHPPO. Finally, we compare different parameter settings.
+6.3.1 Setup
+Environment. In our experiment, there are N = 5 UEs and C = 2 channels. The distance between UE n and the edge server follows the uniform distribution dn ∼ U [1, 100] in meters. UE n will receive Kn ∼ P ois(λp) tasks at the beginning, where P ois(λp) denotes the Poisson distribution, and λp is its parameter set to 200. When all tasks are completed, the current episode terminates and a new episode starts. Distance dn and the number of tasks Kn are re-initialized at
+
+10
+
+
+
+Cumulative Reward
+
+Cumulative Reward
+
+&XPXODWLYH5HZDUG
+
+      
+
+
+/RFDO -$/$' 0$+332
+. . . . . 7LPH)UDPH
+
+Fig. 8. Convergence performance of the proposed MAHPPO algorithm and the two baselines with ResNet18.
+
+Cumulative Reward
+
+−20
+
+−40 0
+
+Learning Rate=0.00001 Learning Rate=0.0001 Learning Rate=0.001 Learning Rate=0.01
+100K 200K 300K 400K 500K Time Frame
+(a)
+
+−20 −40
+0
+
+Reuse Time=5 Reuse Time=10 Reuse Time=20 Reuse Time=40 Reuse Time=80
+100K 200K 300K 400K 500K Time Frame
+(b)
+
+−20 −40
+0
+
+Memory Size=256 Memory Size=512 Memory Size=1024 Memory Size=2048 Memory Size=4096
+100K 200K 300K 400K 500K Time Frame
+(c)
+
+Value Loss
+
+0.04 0.02
+
+Memory Size=256 Memory Size=512 Memory Size=1024 Memory Size=2048 Memory Size=4096
+
+0.00 0
+
+100K 200K 300K 400K 500K Time Frame
+(d)
+
+the beginning of each episode. The multi-agent collaborative inference system is assumed to locate in the urban cellular radio environment [13], where the channel gain is gn = d−n l, where l is the path loss exponent set to 3. We adopt a static channel setting, where the bandwidth of each channel is set to ωcn = 1MHz and the background noise power is set to σcn = 10−9W [14]. The discount factor γ is set to 0.95. Furthermore, from the expression of the reward function, the expectation of completed tasks in one time frame is estimated by completed tasks in each time frame. To ensure the accuracy of the estimation, the duration of each time frame T0 should not be set to a too-small value. Conversely, a large time frame setup helps to achieve accurate estimations, but the long ofﬂoading policy update interval also harms the performance due to the lack of ﬂexibility. In order to balance precision and ﬂexibility, we set T0 to 0.5 second, which is about 10 times larger than the latency of executing a full model inference on UE. We roughly set β to the ratio of local inference latency to energy consumption, i.e., 0.47. In Sec. 6.4.2, we will study the impact of different β settings. When evaluating the performance of a trained agent, we always set dn = 50 and Kn = 200 for a fair comparison.
+Agent. Each actor network is composed of fully connected layers, where the ﬁrst 2 layers are the shared layers containing 256 and 128 neurons, respectively. Each output branch also has 2 layers, where the ﬁrst layer contains 64 neurons and the structure of the last layer is determined by the type and dimension of its corresponding action, as described in Sec. 5.1. The critic network is composed of 4 fully connected layers with 256, 128, 64, and 1 neurons, respectively. We train the actors and the critic for 50K steps with the same learning rate 0.0001. The size of memory buffer ||M|| is 1024, the batch size B is 256, and the sample reuse time K is 10. The setting of hyperparameters λ, , and ζ follows the common setting in PPO implementation, which are 0.95, 0.2, and 0.001, respectively.
+Baselines. We use the following baselines:
+• Local: UEs always execute all tasks locally without the help of the edge.
+• JALAD: JALAD is adopted as the feature compression method. The partitioning point, the ofﬂoading
+
+Fig. 9. Comparison of different parameter settings: (a) learning rate; (b) sample reuse time; (c, d) memory size.
+channel, and the transmit power are still obtained by the MAHPPO algorithm. The time frame is relaxed to 3 second to help convergence.
+6.3.2 Convergence Performance
+We present the training results of the proposed MAHPPO algorithm and the two baselines. Each experiment setup is performed 5 times.
+Fig. 8 illustrates the convergence performance of the MAHPPO algorithm and the two baselines. The curves are smoothed by taking the average of the 5 nearest values at each point. From the result, we can see that each method converges, and the MAHPPO algorithm performs the best. The convergence curve of JALAD has a large ﬂuctuating range. The full local inference method executes all tasks on the UEs, and does not take advantage of the powerful edge computation resources, so it also performs worse than MAHPPO. Note that the time frame of JALAD is 6 times larger than that of MAHPPO, so our total number of used time frames is much less. Meanwhile, the reward value at each time frame is only determined by the expected overhead of a single inference, so we can roughly regard that the cumulative reward of JALAD is shrunk by 6 times. Given this consideration, we ﬁnd that JALAD performs the worst, as the complex intermediate feature compressor of JALAD makes it inefﬁcient to decouple DNN at intermediate layers. Also, the large compressed features cause severe interference in the wireless channel. In this case, executing all tasks locally is the best policy. Still, it will be hard for the DRL agent to learn, as the signiﬁcant interference makes the environment extremely complex. By taking the 6 times shrinkage into consideration, JALAD even performs worse than local inference.
+6.3.3 Hyperparameter Analysis
+We study how different main hyperparameter settings inﬂuence the convergence performance. Different learning rates, sample reuse time, and memory size settings are compared. The results are illustrated in Fig. 9.
+
+11
+
+Cumulative Reward
+
+−2 −3 −4 −5 −6 −7 −8 −9 −10
+0
+
+100K
+
+200K
+
+300K
+
+Time Frame
+
+3 Users 4 Users 5 Users 6 Users 7 Users 8 Users 9 Users 10 Users
+
+400K
+
+500K
+
+Fig. 10. Convergence performance comparison of different UE number settings with ResNet18.
+
+Energy(J) / Task
+
+Latency(s) / Task
+
+0.10 0.08 0.06 0.04 0.02
+
+Local
+
+JALAD
+
+MAHPPO
+
+0.100
+
+0.075
+
+0.050
+
+0.025
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+User Number
+
+In Fig. 9(a), the results indicate that training the agent with a small learning rate converges slow, while a large learning rate incurs unstable cumulative reward and hinders the agent to explore the best policy . So we choose 0.0001 as the learning rate of the actors and the critic. The sample reuse time indicates how many times a sample is used to train the agent. In Fig. 9(b), we can see that a small sample reuse time setting incurs a slow and poor convergence. Given increased reuse time, the convergence becomes faster and the policy becomes better. However, a too large reuse time setup, e.g., 80, also results in a poor convergence. So the sample reuse time is set to 20 to balance the accuracy and the computation complexity. Fig. 9(c) and Fig. 9(d) illustrate the cumulative reward and the value loss of different memory size settings, respectively. The value loss is deﬁned in Eq. (16). In common PPO implementations, the batch size is set to a quarter of the memory size. We follow this setting in the comparison. From the result, we observe that training with a small memory size usually converges faster, since it leads to a high network update frequency. However, the fast convergence leads to a poor policy since it over-uses the initial experiences. Furthermore, a small memory size, which means that the batch size is also small, lead to unstable value loss decrease. When the scenario becomes complicated, this may harm the convergence of the actor networks. On the contrary, a large memory size setup also leads to poor performance, because it result in a long network update interval. Hence, the memory size is set to 1024. In the following experiments, we use the same hyperparameter settings.
+6.3.4 UE Number Comparison
+We further compare the convergence performance of different numbers of UEs to study how the UE number inﬂuence the convergence when the number of channels is ﬁxed. The UE number N ranges from 3 to 10. Other details are the same as previous experiments.
+Fig. 10 illustrates the comparison result. We observe that experiments using any UE number settings converge, and a larger UE number setting leads to a slower convergence. This is because more UEs bring a more severe interference
+
+Fig. 11. Averaged inference overhead of ResNet18 under different UE number settings.
+within wireless channels, and thus it is hard to ﬁnd an optimal policy. Furthermore, the convergent value of larger UE number setting tends to be smaller, since the overall wireless channel resources are ﬁxed.
+6.4 Inference Latency and Energy Consumption
+We evaluate the performance of the MAHPPO algorithm by comparing the overhead of multi-agent collaborative inference. We also compare the impact of different hyperparameter β settings. Evaluation is performed under the settings provided in Sec. 6.3.1.
+6.4.1 Overhead Saving Performance
+We ﬁrst evaluate the averaged inference latency and energy consumption of multi-agent collaborative inference when adopting the MAHPPO algorithm and the two baselines. The results are provided in Fig. 11.
+We can see from the results that with increased number of UEs, the averaged inference latency and energy consumption of adopting the MAHPPO algorithm continue increase, as the available channel resources are ﬁxed. Also, the averaged inference latency and energy consumption of JALAD exhibit an increasing trend because the larger interference impedes the convergence more. The averaged inference overhead of adopting the full local inference strategy remains constant because UEs do not need to compete for limited channel resources. Compared with the full local inference strategy, the proposed method always achieves a lower inference overhead. However, JALAD always performs worse than inference locally, which is in line with the analysis in Sec. 6.3.2. When the UE number is 3, our method can reduce 56% of the inference latency and save 72% of the energy consumption. We can tune the hyperparameter β to achieve a balance between latency and energy consumption. Since the wireless channel resources are limited, the overhead curves of MAHPPO become close to that of local inference when the user number is increased.
+
+Energy(J) Latency(s)
+
+0.07 0.06
+
+Energy
+
+0.05
+
+0.04
+
+0.03
+
+0.02
+
+0.01 10−2
+
+10−1
+
+100
+
+101
+
+β
+
+Latency 0.09 0.08
+
+0.07
+
+0.06
+
+0.05
+
+0.04
+
+0.03
+
+102
+
+103
+
+Fig. 12. Impact of different hyperparameter β settings. The belts of shadows present the standard deviation
+
+6.4.2 Impact of Hyperparameter β
+We study how the hyperparameter β affects the inference overhead. We set β = 0.01, 0.1, 1, 10, 100, and 1000. The number of UE is set to 5.
+Fig. 12 presents the comparison results. We run experiments for each β setup 5 times, and the belts of shadows denote the standard deviation. We can see that when the value of β is increased, the inference latency increases and the energy consumption decreases. When β < 0.1, the change of its value has little impact on the inference overhead. This is because the inference latency has a lower bound, the agent cannot further decrease the already small inference latency with little sacriﬁce of energy consumption. When β > 0.1, the inference latency and the energy consumption change signiﬁcantly with β. By adjusting the value of β, we can satisfy different overhead constraint requirements.
+
+6.5 Result with More Network Architectures
+To further verify the effectiveness of the proposed MAHPPO algorithm, we test it on two other network architectures: VGG11 [10] and MobileNetV2 [11]. We evaluate their convergence performance and overhead saving performance under different UE number settings.
+For VGG11, we select 4 partitioning points after MaxPool layers. For MobileNetV2, we select 4 partitioning points after the last batch normalization layer of residual blocks containing a downsampling layer. Other settings are the same as previous experiment setups. Fig. 13 reports the results. The convergence performance of both networks is similar to that of ResNet18, and the overhead saving performance of the MAHPPO algorithm is also similar. However, JALAD is better than local inference on VGG11, especially for energy consumption. This is because the inference overhead of VGG11 is high, which makes the overhead of entropy coding ignorable. In this case, JALAD is an efﬁcient intermediate feature compression approach, and thus achieves better performance than local inference. The results of either network demonstrate the effectiveness of the MAHPPO algorithm.
+
+12
+7 RELATED WORKS
+7.1 Computation ofﬂoading
+Edge devices suffer from low computation resources and limited energy storage, which constrains the deployment of powerful applications. To remedy this drawback, ofﬂoading a part of tasks to an external processor, termed computation ofﬂoading, has become popular. Some early works ofﬂoaded tasks to the cloud. For example, Zhang et al. [23] investigated a mobile cloud system with a stochastic wireless channel and minimized the energy consumption of the mobile through ofﬂoading. However, ofﬂoading to the cloud usually incurs signiﬁcant latency in communication and lacks ﬂexibility. To address these issues, MEC places edge servers on the BS to serve users, providing a promising edge computing paradigm for quick and ﬂexible applications and services. Chen et al. [7] achieved efﬁcient computation ofﬂoading in a multi-user multi-channel MEC scenario via game theory. Guo et al. [24] integrated MEC into small cell networks (SCN). They used genetic algorithm (GA) and particle swarm optimization (PSO) to ﬁnd the optimal ofﬂoading decision. Optimization problems in MEC are usually NP-hard, since both ofﬂoading channel selection and computation resources allocation require solving integer linear programming (ILP) problems. Traditional approaches for solving such problems suffer from high computational complexity and slow convergence [16], which limits their application in the real world.
+To this end, DRL provides a promising solution, and some DRL-based algorithms have been proposed for MEC systems. Huang et al. [25] studied the scenario where multiple UEs have multiple tasks to be ofﬂoaded to the edge server. They adopted DQL to make task ofﬂoading and resource allocation decisions to minimize the overall overhead. Similarly, some other previous works also adopted DQL to assist ofﬂoading [8], [26], [27]. Chen et al. [28] used Double-DQL to obtain an optimal computation ofﬂoading policy. Recently, some researchers used the DDPG algorithm to help MEC. Chen et al. [14] adopted DDPG to minimize the long-term average energy consumption and latency at each user in the scenario with stochastic wireless channels and task arrival. Their work ignored the latency at MEC servers. Nath et al. [9] discretized the resource of the MEC server and trained a DRL agent via DDPG for ofﬂoading channel selection and MEC server resource allocation. Xie et al. [29] formulated the optimization task as a partially observable MDP to model the fast time-varying wireless channel and proposed a deep recurrent Q-network to ﬁnd the optimal ofﬂoading solution.
+7.2 Collaborative Inference
+Collaborative inference splits a DNN into two or more parts and executes each part on different devices. Collaborative inference emphasizes the deployment of DNNs, while MEC focuses on the ofﬂoading process. The split of DNNs can be conducted either horizontally or vertically. We investigate the vertical split here, i.e., the split direction and the forward propagate direction are vertical. Previous works [30], [31] extracting features at local to assist the classiﬁcation in the cloud establish prototypes of collaborative inference. Kang et al. [4] proposed the collaborative inference paradigm,
+
+13
+
+Compression Rate
+
+120 100
+80 60 40 20
+0 Point 1
+
+Point 2
+
+Point 3
+
+Partition Point
+
+(a)
+
+Proposed JALAD
+Point 4
+
+Compression Rate
+
+50 40 30 20 10
+0 Point 1
+
+Point 2
+
+Point 3
+
+Partition Point
+
+(b)
+
+Proposed JALAD
+Point 4
+
+Cumulative Reward
+
+−5 −10 −15 −20 −25 −30 −35 −40
+0
+
+100K
+
+200K
+
+300K
+
+Time Frame
+
+(c)
+
+3 Users 4 Users 5 Users 6 Users 7 Users 8 Users 9 Users 10 Users
+
+400K
+
+500K
+
+Cumulative Reward
+
+−2 −3 −4 −5 −6 −7 −8 −9 −10
+0
+
+100K
+
+200K
+
+300K
+
+Time Frame
+
+(d)
+
+3 Users 4 Users 5 Users 6 Users 7 Users 8 Users 9 Users 10 Users
+
+400K
+
+500K
+
+Local
+
+JALAD
+
+MAHPPO
+
+Local
+
+JALAD
+
+MAHPPO
+
+Latency(s) / Task
+
+Latency(s) / Task
+
+0.20 0.15 0.10 0.05
+
+0.100 0.075 0.050 0.025
+
+0.5
+
+0.10
+
+Energy(J) / Task
+
+Energy(J) / Task
+
+0.4
+
+0.3
+
+0.2
+
+0.1
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+User Number
+
+0.08 0.06 0.04
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+User Number
+
+(e)
+
+(f)
+
+Fig. 13. Results with more network architectures: intermediate feature compression rate on (a) VGG11 and (b) MobileNetV2; convergence performance of different UE number settings on (c) VGG11 and (d) MobileNetV2; averaged inference overhead of different UE number settings on (e) VGG11 and (f) MobileNetV2.
+
+where the split can be conducted at any layer in a DNN, not only the last one. They evaluated the overhead of DNN inference on the edge and cloud, and found that a favorable split decision reduces inference latency and saves energy signiﬁcantly. He et al. [32] proposed to ofﬂoad DNN
+
+inference tasks to multiple edge servers. They formulated an MINLP problem and decomposed it to obtain partitioning deployment and resource allocation decisions. To further speed up the inference, Li et al. [33] quantized weights of the front DNN part deployed on the UE, and the full-precision
+
+14
+
+inference is adopted on the cloud. Some DNN architectures are not linear, i.e., there exist cross-layer connections, such as DenseNet [34], where a single point cannot achieve the partition. To bridge this gap, Hu et al. [35] depicted DNNs by direct acyclic graphs and adopted graphic algorithms to ﬁnd the partitioning strategy. Yousefpour et al. [36] studied the failure of physical nodes when distributing DNN over multiple devices. They introduced hyper connections between multiple devices to achieve robust collaborative inference. There are very few works combining MEC with collaborative inference to our best knowledge. Yang et al. [37] studied a multi-agent MEC scenario with collaborative inference tasks. However, they assumed a ﬁxed uplink rate, ignoring the interference in the wireless channel.
+There are also works compressing intermediate features at partitioning points to reduce the ofﬂoading latency. For example, Shi et al. [38] pruned channels of a DNN, so the size of feature maps at partitioning points is reduced. Li et al. [12] adopted quantization and Huffman coding to achieve feature compression. Some works also designed convolution autoencoders to compress intermediate features. Eshratifar et al. [5] was the ﬁrst to propose to use autoencoders to compress features. They compressed the features with depthwise separable convolution [39] and then the output with the JPEG algorithm. Jankowski et al. [40] adopted a pure DNN architecture, where both the encoder and the decoder consist of a convolution layer, a batch normalization layer, and an activation function. However, these autoencoder compressors are complex, bringing signiﬁcant additional overhead in inference. There are works adopting other autoencoders [6], [41], but these works also suffer from the complex architecture.
+To tackle the above problem, we combine MEC with collaborative inference and assume a real-world communication environment. Also, we design a lightweight autoencoder to reduce the size of ofﬂoaded data with little extra latency and energy consumption.
+8 CONCLUSION
+In this paper, we proposed a novel framework to achieve efﬁcient multi-agent collaborative inference, where we ﬁrst proposed an autoencoder-based intermediate feature compression method to enable ﬂexible partitioning point selection. Then we formulated the problem, which was then redeﬁned to facilitate optimization. Finally, we proposed an MAHPPO algorithm, which was composed of multiple actor networks and one global critic network, to solve the optimization problem. We conducted extensive experiments to verify the effectiveness of the proposed framework. The results showed that our framework can remarkably reduce the inference latency and energy consumption in multiagent collaborative inference scenario.
+REFERENCES
+[1] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in IEEE Conference on Computer Vision and Pattern Recognition, CVPR, Las Vegas, NV, USA, June 27-30, 2016, pp. 770–778.
+[2] V. Weaver, “The top 50 fastest computers in the weaver research group.” [Online]. Available: https://github.com/deater/ performance results
+
+[3] ETSI, “Mobile-edge computing – introductory technical white paper,” 2014.
+[4] Y. Kang, J. Hauswald, C. Gao, A. Rovinski, T. N. Mudge, J. Mars, and L. Tang, “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge,” in International Conference on Architectural Support for Programming Languages and Operating Systems, ASPLOS, Xi’an, China, April 8-12, 2017, pp. 615–629.
+[5] A. E. Eshratifar, A. Esmaili, and M. Pedram, “Bottlenet: A deep learning architecture for intelligent mobile cloud computing services,” in IEEE/ACM International Symposium on Low Power Electronics and Design, ISLPED, Lausanne, Switzerland, July 29-31, 2019, pp. 1–6.
+[6] J. Shao and J. Zhang, “Bottlenet++: An end-to-end approach for feature compression in device-edge co-inference systems,” in IEEE International Conference on Communications Workshops, ICC Workshops, Dublin, Ireland, June 7-11, 2020, pp. 1–6.
+[7] X. Chen, L. Jiao, W. Li, and X. Fu, “Efﬁcient multi-user computation ofﬂoading for mobile-edge cloud computing,” IEEE/ACM Trans. Netw., vol. 24, no. 5, pp. 2795–2808, 2016.
+[8] J. Li, H. Gao, T. Lv, and Y. Lu, “Deep reinforcement learning based computation ofﬂoading and resource allocation for MEC,” in IEEE Wireless Communications and Networking Conference, WCNC, Barcelona, Spain, April 15-18, 2018, pp. 1–6.
+[9] S. Nath, Y. Li, J. Wu, and P. Fan, “Multi-user multi-channel computation ofﬂoading and resource allocation for mobile edge computing,” in IEEE International Conference on Communications, ICC, Dublin, Ireland, June 7-11, 2020, pp. 1–6.
+[10] K. Simonyan and A. Zisserman, “Very deep convolutional networks for large-scale image recognition,” in International Conference on Learning Representations, ICLR, San Diego, CA, USA, May 7-9, 2015.
+[11] M. Sandler, A. G. Howard, M. Zhu, A. Zhmoginov, and L. Chen, “Mobilenetv2: Inverted residuals and linear bottlenecks,” in IEEE Conference on Computer Vision and Pattern Recognition, CVPR, Salt Lake City, UT, USA, June 18-22, 2018, pp. 4510–4520.
+[12] H. Li, C. Hu, J. Jiang, Z. Wang, Y. Wen, and W. Zhu, “JALAD: joint accuracy-and latency-aware deep structure decoupling for edge-cloud execution,” in IEEE International Conference on Parallel and Distributed Systems, ICPADS, Singapore, December 11-13, 2018, pp. 671–678.
+[13] T. S. Rappaport et al., Wireless communications: principles and practice. prentice hall PTR New Jersey, 1996, vol. 2.
+[14] Z. Chen and X. Wang, “Decentralized computation ofﬂoading for multi-user mobile edge computing: a deep reinforcement learning approach,” EURASIP J. Wirel. Commun. Netw., vol. 2020, no. 1, p. 188, 2020.
+[15] P. Bonami, M. Kilinc¸, and J. Linderoth, “Algorithms and software for convex mixed integer nonlinear programs,” in Mixed integer nonlinear programming. Springer, 2012, pp. 1–39.
+[16] F. Jiang, K. Wang, L. Dong, C. Pan, and K. Yang, “Stacked auto encoder based deep reinforcement learning for online resource scheduling in large-scale MEC networks,” CoRR, vol. abs/2001.09223, 2020.
+[17] Z. Fan, R. Su, W. Zhang, and Y. Yu, “Hybrid actor-critic reinforcement learning in parameterized action space,” in International Joint Conference on Artiﬁcial Intelligence, IJCAI, Macao, China, August 1016, 2019, pp. 2279–2285.
+[18] J. Schulman, S. Levine, P. Abbeel, M. I. Jordan, and P. Moritz, “Trust region policy optimization,” in International Conference on Machine Learning, ICML, vol. 37, Lille, France, July 6-11, 2015, pp. 1889–1897.
+[19] J. Schulman, P. Moritz, S. Levine, M. I. Jordan, and P. Abbeel, “High-dimensional continuous control using generalized advantage estimation,” in International Conference on Learning Representations, ICLR, San Juan, Puerto Rico, May 2-4, 2016.
+[20] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov, “Proximal policy optimization algorithms,” CoRR, vol. abs/1707.06347, 2017.
+[21] F. Li, R. Fergus, and P. Perona, “One-shot learning of object categories,” IEEE Trans. Pattern Anal. Mach. Intell., vol. 28, no. 4, pp. 594–611, 2006.
+[22] D. P. Kingma and J. Ba, “Adam: A method for stochastic optimization,” in International Conference on Learning Representations, ICLR, San Diego, CA, USA, May 7-9, 2015.
+[23] W. Zhang, Y. Wen, and D. O. Wu, “Collaborative task execution in mobile cloud computing under a stochastic wireless channel,” IEEE Trans. Wirel. Commun., vol. 14, no. 1, pp. 81–93, 2015.
+
+15
+[24] F. Guo, H. Zhang, H. Ji, X. Li, and V. C. M. Leung, “An efﬁcient computation ofﬂoading management scheme in the densely deployed small cell networks with mobile edge computing,” IEEE/ACM Trans. Netw., vol. 26, no. 6, pp. 2651–2664, 2018.
+[25] L. Huang, X. Feng, C. Zhang, L. Qian, and Y. Wu, “Deep reinforcement learning-based joint task ofﬂoading and bandwidth allocation for multi-user mobile edge computing,” Digital Communications and Networks, vol. 5, no. 1, pp. 10–17, 2019, artiﬁcial Intelligence for Future Wireless Communications and Networking.
+[26] J. Wang, L. Zhao, J. Liu, and N. Kato, “Smart resource allocation for mobile edge computing: A deep reinforcement learning approach,” IEEE Transactions on Emerging Topics in Computing, pp. 1–1, 2019.
+[27] K. Zhang, Y. Zhu, S. Leng, Y. He, S. Maharjan, and Y. Zhang, “Deep learning empowered task ofﬂoading for mobile edge computing in urban informatics,” IEEE Internet Things J., vol. 6, no. 5, pp. 7635– 7647, 2019.
+[28] X. Chen, H. Zhang, C. Wu, S. Mao, Y. Ji, and M. Bennis, “Optimized computation ofﬂoading performance in virtual edge computing systems via deep reinforcement learning,” IEEE Internet of Things Journal, vol. 6, no. 3, pp. 4005–4018, June 2019.
+[29] R. Xie, Q. Tang, C. Liang, F. R. Yu, and T. Huang, “Dynamic computation ofﬂoading in iot fog systems with imperfect channelstate information: A POMDP approach,” IEEE Internet Things J., vol. 8, no. 1, pp. 345–356, 2021.
+[30] J. Hauswald, T. Manville, Q. Zheng, R. G. Dreslinski, C. Chakrabarti, and T. N. Mudge, “A hybrid approach to ofﬂoading mobile image classiﬁcation,” in IEEE International Conference on Acoustics, Speech and Signal Processing, ICASSP 2014, Florence, Italy, May 4-9, 2014. IEEE, 2014, pp. 8375–8379.
+[31] P. Hu, H. Ning, T. Qiu, Y. Zhang, and X. Luo, “Fog computing based face identiﬁcation and resolution scheme in internet of things,” IEEE Trans. Ind. Informatics, vol. 13, no. 4, pp. 1910–1920, 2017.
+[32] W. He, S. Guo, S. Guo, X. Qiu, and F. Qi, “Joint DNN partition deployment and resource allocation for delay-sensitive deep learning inference in iot,” IEEE Internet Things J., vol. 7, no. 10, pp. 9241– 9254, 2020.
+[33] G. Li, L. Liu, X. Wang, X. Dong, P. Zhao, and X. Feng, “Autotuning neural network quantization framework for collaborative inference between the cloud and edge,” in International Conference on Artiﬁcial Neural Networks, ICANN, vol. 11139, Rhodes, Greece, October 4-7, 2018, pp. 402–411.
+[34] G. Huang, Z. Liu, L. van der Maaten, and K. Q. Weinberger, “Densely connected convolutional networks,” in IEEE Conference on Computer Vision and Pattern Recognition, CVPR, Honolulu, HI, USA, July 21-26, 2017, pp. 2261–2269.
+[35] C. Hu, W. Bao, D. Wang, and F. Liu, “Dynamic adaptive DNN surgery for inference acceleration on the edge,” in INFOCOM, Paris, France, April 29 - May 2, 2019, pp. 1423–1431.
+[36] A. Yousefpour, S. Devic, B. Q. Nguyen, A. Kreidieh, A. Liao, A. M. Bayen, and J. P. Jue, “Guardians of the deep fog: Failure-resilient DNN inference from edge to cloud,” in International Workshop on Challenges in Artiﬁcial Intelligence and Machine Learning for Internet of Things, 2019, pp. 25–31.
+[37] Q. Yang, X. Luo, P. Li, T. Miyazaki, and X. Wang, “Computation ofﬂoading for fast CNN inference in edge computing,” in Conference on Research in Adaptive and Convergent Systems, RACS, Chongqing, China, September 24-27, 2019, pp. 101–106.
+[38] W. Shi, Y. Hou, S. Zhou, Z. Niu, Y. Zhang, and L. Geng, “Improving device-edge cooperative inference of deep learning via 2-step pruning,” in IEEE International Conference on Computer Communications Workshops, INFOCOM Workshops, Paris, France, April 29 May 2, 2019, pp. 1–6.
+[39] F. Chollet, “Xception: Deep learning with depthwise separable convolutions,” in 2017 IEEE Conference on Computer Vision and Pattern Recognition, CVPR 2017, Honolulu, HI, USA, July 21-26, 2017. IEEE Computer Society, 2017, pp. 1800–1807.
+[40] M. Jankowski, D. Gu¨ ndu¨ z, and K. Mikolajczyk, “Joint deviceedge inference over wireless links with pruning,” in International Workshop on Signal Processing Advances in Wireless Communications, SPAWC, Atlanta, GA, USA, May 26-29, 2020, pp. 1–5.
+[41] S. Yao, J. Li, D. Liu, T. Wang, S. Liu, H. Shao, and T. F. Abdelzaher, “Deep compressive ofﬂoading: speeding up neural network inference by trading edge computation for network latency,” in ACM Conference on Embedded Networked Sensor Systems, Virtual Event, Japan, November 16-19, 2020, pp. 476–488.
+

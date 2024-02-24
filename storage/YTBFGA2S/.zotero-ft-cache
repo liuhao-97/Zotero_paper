@@ -1,0 +1,2060 @@
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+♦Key Lab of High Confidence Software Technologies (Peking University), Beijing, China ⋆Zhongguancun Laboratory, Beijing, China.
+State Key Laboratory of Networking and Switching Technology (BUPT), Beijing, China {xudaliang,hg,xinjinpku,zhang.ying,weishiyun,liuxuanzhe}@pku.edu.cn yws@stu.pku.edu.cn mwx@bupt.edu.cn
+
+arXiv:2309.04255v1 [cs.NI] 8 Sep 2023
+
+ABSTRACT
+Generative tasks, such as text generation and question answering, hold a crucial position in the realm of mobile applications. Due to their sensitivity to privacy concerns, there is a growing demand for their execution directly on mo-
+
+Acccuracy (%)
+
+Jetson TX2
+
+Xiaomi10
+
+(IoT)
+
+(Smartphone)
+
+40
+
+20
+
+0
+
+Jetson Orin (Autonomous)
+LLaMA-Math GPT3-NLU GPT3-Mode GPT3-GM Memory wall
+
+bile devices. Currently, the execution of these generative tasks heavily depends on Large Language Models (LLMs). Nevertheless, the limited memory capacity of these devices presents a formidable challenge to the scalability of such models.
+In our research, we introduce LLMCad, an innovative ondevice inference engine specifically designed for efficient generative Natural Language Processing (NLP) tasks. The core idea behind LLMCad revolves around model collaboration: a compact LLM, residing in memory, takes charge of generating the most straightforward tokens, while a highprecision LLM steps in to validate these tokens and rectify any identified errors. LLMCad incorporates three novel techniques: (1) Instead of generating candidate tokens in a sequential manner, LLMCad employs the smaller LLM to con-
+
+100M
+
+1B
+
+10B
+
+100B
+
+1T
+
+Parameter size
+
+(a) Emergent abilities across various LLMs.
+
+Latency (s)
+
+40
+
+Jetson TX2 (IoT)
+
+Xiaomi10 (Smartphone)
+
+20
+
+0
+
+Jetson Orin (Autonomous)
+T5-TX2 LLaMA-Xiaomi 10 LLaMA-Orin Memory wall
+
+100M
+
+1B
+
+10B
+
+100B
+
+1T
+
+Parameter size
+
+(b) Generation latency of LLMs across various devices.
+
+Figure 1: The memory wall hinders LLM’s “scaling law” on mobile devices. *-Math, *-NLU, *-Mode, and *-GM denote LLMs’ emergent abilities: math reasoning, multitask comprehension, mode arithmetic, and learning meaningful representations.
+
+struct a token tree, encompassing a wider range of plausible
+
+token pathways. Subsequently, the larger LLM can efficiently
+
+validate all of these pathways simultaneously. (2) It employs a self-adjusting fallback strategy, swiftly initiating the verification process whenever the smaller LLM generates an erroneous token. (3) To ensure a continuous flow of token generation, LLMCad speculatively generates tokens during the verification process by implementing a compute-IO pipeline. Through an extensive series of experiments, LLMCad showcases an impressive token generation speed, achieving rates up to 9.3× faster than existing inference engines.
+
+GBoard heavily leverages its text generation capabilities, while private assistant like Apple Siri uses it for question answering. Such tasks are often privacy-sensitive and heavily rely on users’ private data, thereby necessitating on-device local inference.
+Large language models (LLMs), especially those built atop transformer decoder [65] such as GPT-3 [17] and LLaMA [64], have become the de-facto approach to solve NLP generative tasks. Recent research in the machine learning com-
+
+1 INTRODUCTION
+
+munity has demonstrated that scaling up such LLMs parameter size brings accuracy improvement and emergent
+
+Generative tasks like text generation, question answering, ability [17, 64, 71, 71, 72], as shown in Figure 1(a). In general,
+
+and translation play a crucial role on mobile devices, as an LLM necessitates more than 1B parameters to learn mean-
+
+numerous applications rely on them to deliver key function- ingful representations [51], over 10B parameters to exhibit
+
+alities. For instance, input method application like Google certain arithmetic reasoning abilities [22], and more than 30B
+
+1
+
+Conference’17, July 2017, Washington, DC, USA
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+
+parameters to achieve multi-task comprehension capabilities [30]. This phenomenon is well-recognized in the machine learning community as the scaling law [11, 12, 21, 34].
+Key challenge: memory wall. However, our preliminary experiments in Figure 1(b) reveal that the scaling ability is challenged on mobile devices. Specifically, when LLMs are too large to be fit into device memory, mobile DNN engines like MNN [4]a nd llama.cpp [45] need to repetitively release and load model weights. It results in 59–224× lengthened inference latency. Such memory wall severely hinders the scaling law. Users have to choose between real-time generation and emergent ability. For instance, 10B parameters represent the minimum size required for LLaMA to possess arithmetic reasoning capabilities, yet it also represents the maximum parameter size for achieving real-time inference on smartphones (e.g., Xiaomi 10).
+LLMCad: breaking memory wall through model collaboration. In this paper, we propose LLMCad, the first efficient inference engine for on-device generative NLP tasks. LLMCad delivers LLM’s scaling ability to mobile devices with a tolerable generation speed through model collaboration. The main idea is to delegate most tokens to a smaller real-time LLM that can be totally hosted in device memory (namely memory-resident LLM). The design is based on a key observation that, while a smaller LLM is inadequate to deliver satisfactory end-to-end sentences, they can correctly generate most easy tokens (e.g., determiners, pronouns, and punctuations). Furthermore, LLMs are often trained with a series of model variants, e.g. T5-Small/Base/Large [55] and LLaMa7B/13B/33B [64], and its smaller counterpart (e.g., LLaMa-7B and T5-small, dubbed memory-resident model in this paper) can often be hosted in memory easily [17, 55, 64, 75].
+LLMCad employs a unique form of model collaboration, namely “generate-then-verify” [20, 41]. In this approach, the memory-resident LLM serves as a token generator, while a target LLM acts as a verifier, using its output as the ground truth to inspect and rectify any errors introduced during the token generation process. This approach provides two significant advantages: (1) No compromising accuracy. Each token is verified by the target model, therefore its accuracy is guaranteed. This is crucial as a wrong token could propagate its error to the subquent tokens due to the autoregressive nature. (2) Fast verification. As will be detailed in §2.3, the verification of 𝑁 tokens can be accomplished within oneshot inference o f the target model, therefore much faster than using it to generate 𝑁 tokens sequentially.
+Despite these advantages, applying model collaboration for on-device LLM introduces three distinctive challenges:
+• Overlooked correct tokens with sub-optimal confidence. Typically, state-of-the-art LLM engines and studies always use the token with the highest probability as the output.
+
+Nevertheless, our observation has revealed that some of generation errors by the memory-resident LLM can be rectified by the sub-optimal tokens. Figure 4 gives a realworld example of such phenomenon. Given the significant performance overhead associated with on-device verification, LLMCad must capitalize on these often-overlooked tokens to reduce the frequency of verification. • Verification timing. Another crucial aspect is determining when to initiate the verification process. On-device verification is time-consuming, e.g., taking 7.1s on Jetson TX2. Too early or too late verification just wastes computing mobile devices scarce resources by invalid verification (i.e., no errors detected) or useless tokens. Prior works have typically relied either a single token or token sequence length, which may not accurately pinpoint the optimal verification timing. • IO vs. compute asymmetry. With a LLM cascade, the large LLM execution blocks the small model inference due to the cross-token dependency, and the processor is underutilized as the I/O bottlenecks during weights loading. Such a situation severely hampers the inference speed as the target model needs to be invoked unavoidably to guarantee correct tokens generation.
+In response, LLMCad desgins three novel techniques: (1) Token tree generation and verification (§3.2). Instead of generating and verifying a linear token sequence, LLMCad employs a different approach by constructing and validating a “token tree.” This token tree permits each token to have multiple potential succeeding tokens. To accomplish this efficiently, LLMCad employs three novel modules: (1) Confidence-based branch pacer paces the progress of different branches to prevent the wasteful allocation of computing resources to the wrong branch; (2) Tree decoder generates tokens from various branches without incurring the overhead of context switching between them; (3) Non -autoregressive token tree verifier examines and rectifies all errors within a token tree in a batch manner, at the cost of a single iteration. (2) Self-adaptive fallback strategy (§3.3). This strategy is devised to initiate the verification process promptly when the memory-resident LLM generates an incorrect token. It is inspired by two key observations: (1) Typically, each token generated by the memory-resident LLM introduces some “uncertainty” (imperfect confidence score). LLMCad uses a more accurate metric referred to as cumulative uncertainty within the token tree compared. Compared to prior works, this metric better reflects the error probability associated with memory-resident LLM generation, especially considering the accumulative nature of autoregressive models. (2) Historical data pertaining to the accuracy of verified tokens
+
+2
+
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Conference’17, July 2017, Washington, DC, USA
+
+is harnessed to assess the memory-resident LLM’s generation capability. A stronger generation ability necessitates a lower frequency of verification. (3) Speculative generation pipeline (§3.4). To break the cross-token dependency and enhance parallelism, we propose speculative generation, i.e., continuing generating tokens through the memory-resident LLM during the verification process, This is founded on the insight that sometimes the
+
+Input Position embedding
+Text embedding
+N Decoder Layers
+Masked Multi Self Attention LayerNorm Feed Forward
+LayerNorm
+
+You should
+
+wear
+
+shoes
+
+iter0
+
+iter1
+
+iter2
+
+Large language model
+
+Decoder layer
+
+Decoder layer
+
+... Decoder layer
+
+Decoder layer
+
+verification process may not detect errors, rendering the speculatively generated tokens usable. However, simultaneous speculative generation with verification directly can lead
+
+Output
+(a) GPT3 architecture
+
+wear
+
+shoes
+
+<EOS>
+
+(b) Autoregressive inference
+
+to processor and memory contentions. To further tackle this Figure 2: The architecture of decoder-only language
+
+issue, LLMCad incorporates a fine-grained pipeline, ensuring model (GPT3) and the overview of LLM inference pat-
+
+that the speculative generation only runs when loading tar- tern: autoregressive.
+
+get LLM parameters below the memory upper bound to void
+
+interfering with the regular verification process. Implementation and evaluation. We have fully im-
+plemented LLMCad on top of two SOTA LLM engines: PyTorch [5] and llama.cpp [45]. Extensive evaluation of the
+
+• We prototype LLMCad and evaluate it with representative LLMs and commodity mobile devices. The results demonstrate its superior performance over existing methods.
+
+system was conducted across four platforms: two IoT devices (Jetson TX2 and Jetson Orin NX) and two smartphones (Xiaomi 10 and Xiaomi 11). This evaluation encompassed
+
+2 BACKGROUND AND MOTIVATION 2.1 Decoder-based Generative LLMs
+
+six widely utilized LLMs (GPT2 [54], T5 [55], mT5 [75], On-device generative ML tasks. Generative tasks are those
+
+Bart [42], Vicuna, and LLaMa2 [64]) and seven datasets (CN- involving automatic generation or synthesis of new contents
+
+N/Daily [61], Wikitext [47], iwlt2017 [19], wmt14/22 [15], like text sequences and image pixels [14, 58, 59]. Typical
+
+SQuAD [56], parrot, and TruthfulQA [44]). We also com- generative tasks in the NLP domain (focus of this work)
+
+pared LLMCad with five state-of-the-art competitive base- include language modeling, machine translation, summa-
+
+lines [5, 27, 37, 41, 45], encompassing two computing-loading rization, and question answering. The key focus is to pro-
+
+pipeline frameworks and two “generator and verifier” LLM vide novel, meaningful, and coherent content output. As
+
+collaboration frameworks. Our results unequivocally demon- compared to traditional classification tasks such as topic
+
+strate LLMCad’s superior performance. When compared to classification and image classification, generative tasks are
+
+the state-of-the-art LLM engines, LLMCad can reduce average often more challenging but also more profound to human
+
+per-token generation time by 2.9–9.3× and 3.5–4.7× on IoT lives [63].
+
+devices and smartphones, respectively, without comprising
+
+Generative ML tasks have been widely served for mobile
+
+accuracy. For >10B-sized LLMs like LLaMA2-13B that are users, such as language modeling for Google Gboard [1],
+
+previously unbearable on smartphones, LLMCad generates question answering for Siri [6], and translation services like
+
+more than one token per second. Furthermore, compared iTranslate [3] and Google Translate [2], etc. To guarantee
+
+with competitive baselines, LLMCad can achieve up to 5.6× user data privacy (e.g., text corpus) and service availability,
+
+speedup and noticeable higher accuracy.
+
+the models are better to be deployed on devices directly for
+
+The major contributions of this work are as follows:
+
+local inference.
+
+• We thoroughly explore the opportunities and challenges Decoder-based LLM architecture. Decoder-based large
+
+of inferring LLMs on the device.
+
+language model (LLM), including both decoder-only and
+
+• We propose LLMCad, the first efficient inference engine for encoder-decoder architectures, is the de-facto approach for
+
+on-device generative NLP tasks. To speedup the genera- generative tasks, such as GPT-3 [17], LLaMa [64], and GLM-
+
+tion procedure, LLMCad uses “generator and verifier” LLM 130B [23, 79]. As shown in Figure 2(a), a typical decoder-
+
+collaboration and incorporates three novel techniques: based LLM consists of a text embedding, a position embed-
+
+tree generation and verification, self-adaptive fallback ding, and many sequentially stacked decoder layers, where
+
+strategy, and speculative generation pipeline. These ad- each decoder layer includes masked self-attention, Layer-
+
+vancements enable LLMCad to effectively mitigate the mem- Norm, and Linear operations. For those encoder-decoder
+
+ory wall problem.
+
+LLMs such as T5 [55] and mT5 [75], encoder layers are in-
+
+corporated before the decoder to enhance semantic under-
+
+standing capabilities.
+
+3
+
+Conference’17, July 2017, Washington, DC, USA
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+
+Autoregressive inference. Generative LLMs employ an autoregressive inference procedure that generates one token at a time and takes that token as input to generate the next one. For instance, Figure 2(b) illustrates a three-autoregressiveiteration inference procedure. In the 1st iteration, the model takes all existing tokens ("You should") as input and generates the output "wear." In the next iteration, the newly generated "wear" will be fed into the model, which then predicts "shoes." This process continues until the model generates the end-of-sequence token (< 𝐸𝑂𝑆 >), indicating the end of the generation procedure. The nature of autoregressive inference introduces unique challenges for optimizing on-device LLM as will be described later.
+
+(a) On TriviaQA with Xiaomi10
+
+LLaMa-7B (4bits) LLaMa-13B (4bits) LLaMa-33B (4bits)
+
+# of Params (B) 7 13 33
+
+Accuracy 50.0 56.6 65.1
+
+PeakMem. (GB) 4.1 9.8 20.8
+
+Infer. Time (ms) 275 (1x)
+10118 (37x) 22017 (87x)
+
+GPT2 GPT2-Large
+
+(b) On SQuAD with TX2
+
+# of Params (B) Accuracy PeakMem. (GB) Infer. Time (ms)
+
+0.14
+
+49.8
+
+0.5
+
+37.64 (1x)
+
+0.8
+
+53.7
+
+3.1
+
+8065 (214x)
+
+mT5-Small mT5-Base mT5-Large
+
+0.3
+
+76.4
+
+0.58
+
+83.8
+
+1.2
+
+87.0
+
+0.7
+
+31 (1x)
+
+1.5
+
+2134 (69x)
+
+3.9
+
+7214 (230x)
+
+T5-Small T5-Base T5-Large
+
+0.06
+
+79.1
+
+0.22
+
+85.4
+
+0.73
+
+86.7
+
+0.2
+
+27 (1x)
+
+0.8
+
+37 (1.4x)
+
+2.8
+
+7098 (263x)
+
+2.2 On-device LLM is Memory-bounded
+In this section, we perform pilot experiments to reveal the performance issue of on-device LLM inference. The experiments are performed on typical LLMs (GPT2, T5, and LLaMa), datasets (SQuAD and TriviaQA), and mobile devices (Jetson TX2 and Xiaomi 10) using state-of-the-art DL engines (PyTorch [5] and llama.cpp [45]. We summarize our key findings below.
+Scaling up parameter size brings accuracy improvement. Transformer-based LLM architecture is highly flexible and scalable by simply adjusting the encoder/decoder layers, sequence length, and other hyper-parameters. Consequently, popular LLM is often developed with a series of model variants, such as T5-Small/Base/Large [55] and LLaMa-7B/13B/33B/65B [64]. With the parameter size scaling up, the model exhibits stronger abilities. As shown in Table 1, T5-Large outperformed T5-Small by a significant margin, achieving a 7.6% improvement in accuracy on the SQuAD dataset. Similarly, LLaMa-13B demonstrated a 6.6% higher QA accuracy on TriviaQA than LLaMa-7B. Indeed, such a phenomenon is well known in ML community as scaling law [11, 12, 21, 34].
+On-device LLM scalability hinders on the memory wall. However, as shown in Table 1, the inference speed declines rapidly when the memory consumption exceeds the memory budget. For instance, on the TX2 device, the inference latency increases by 189–224× with only 5.8–12.2× increase in model size. To gain a deeper understanding of the factors influencing inference speed, we conducted a breakdown analysis, as shown in Figure 3. It clearly shows that, when the model inference demands a memory size unaffordable on edge devices, loading parameters from disk to memory (i.e., disk I/O) soon becomes the bottleneck of the inference time (95.9–98.8%). This situation attributes to the fact that the state-of-the-art device-side LLM engines, such
+
+Table 1: The parameter size, accuracy, peak memory usage, and inference latency of LLM variants in one autoregressive iteration. (a) experiments are performed on PyTorch while (b) experiments are performed on llama.cpp.
+
+T5
+
+Large 1.2% Base Small
+100
+Large 1.7% Base
+100
+
+101
+Percentage (%)
+101
+Percentage (%)
+
+computing
+
+load
+
+98.8% 100.0% 100.0%
+102
+
+mT5
+
+Large 2.3% Base 2.7% Small
+100
+
+98.3% 100.0%
+102
+
+LLaMa
+
+13B 4.1% 7B
+100
+
+101
+Percentage (%)
+
+97.7% 97.3% 100.0%
+102
+
+95.9%
+
+101
+Percentage (%)
+
+100.0%
+102
+
+GPT2
+
+Figure 3: Inference delay breakdown of different LLM variants in one autoregressive iteration.
+
+as MNN [4] and llama.cpp [45], resort to the swapping technique which dynamically releases the inferred weights memory and loads weights to be inferred from the disk when memory constraints are exceeded.
+The autoregressive nature makes traditional memory optimizations barely effective for generative LLM. It is worth noting that memory optimization for model inference has been a well-researched topic in recent years [27, 32, 46, 78]. Various system-level methods have been explored, such as batching [78], compute-I/O pipeline [27], and smart swapping [32, 46]. However, these works can hardly apply to on-device LLM, because: (1) Parallelization/batching is not available as autoregressive inference requires generating tokens sequentially; (2) Overlapping can gain limited benefits since I/O time is over a hundredfold larger than computing. Additionally, algorithmic approaches like quantization [25, 31, 66, 76] can bring a few times memory reduction (e.g., FP16→− INT4 [25]), their efficiency is limited as low-bit precision (e.g., 2 bits) has been demonstrated to be insufficient to retain model capability [25, 36, 76]. Note that
+
+4
+
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Conference’17, July 2017, Washington, DC, USA
+
+the proposal of this work is at system level and is compatible with quantization.
+2.3 Opportunities and Challenges of LLM collaboration
+This work focuses on model collaboration approach [40, 60, 70], which leverages multiple models with accuracy-cost tradeoff to speed up inference. In the case of generative NLP tasks, we delegate most computations (i.e., tokens) to a smaller model that entirely fits into the memory budget. The key rationale is that smaller models can exhibit close performance to the large one, especially for the easier data points [24, 29]. Our empirical experiments have confirmed such an assumption: in the iwslt2017 de-en translation dataset [19], mT5-Small correctly generates more than 80% tokens as mT5-Large does. Figure 4 gives one concrete example of translating a sentence by the smaller model and larger LLM, and the corresponding ground truth. It shows that most of the tokens (in green) generated by the small model are correct.
+However, employing model collaboration for LLMs faces one critical challenge: Wrong token delegation could be fatal. Traditional model cascade either relies on internal [60] or external knowledge [40, 70] to select a portion of data (often the easier ones) to be processed by the smaller model. In such circumstance, the accuracy cannot be guaranteed. For generative NLP tasks, however, a wrongly generated token by the small model could propagate the error to the subsequent ones and finally cause catastrophic results due to its autoregressive nature [53, 55, 65]. For example, in Figure 4, the second "ice" in red is incorrect, resulting in additional two "ice" generations and wrong translation information in the subsequent tokens. Note that generative NLP tasks are often accuracy-sensitive, e.g., translation and Q/A, as a wrongly generated result could misinform users and result in unexpected behaviors.
+To tackle this issue, LLMCad employs a unique form of model collaboration, namely “generate-then-verify” [20, 41]. In this approach, the memory-resident LLM serves as a token generator, while a target LLM acts as a verifier, using its output as the ground truth to inspect and rectify any errors introduced during the token generation process. By doing that, LLMCad can prevent from propagating its error to the subquent tokens due to the autoregressive nature.and ensure no compromising accuracy.
+3 DESIGN
+3.1 Overview
+
+like mT5-small. The design goal of LLMCad is to generate texts with the speed of memory-resident model without compromising the accuracy of target (larger) model. Simplified workflow and an illustrative example Figure 5 illustrates the workflow of LLMCad. Figure 6 also provides an illustrative example based on the case of Figure 4 to exemplify the workflow. Essentially, LLMCad is a generation and verification framework using the memory-resident LLM as a generator, and the target LLM as a verifier.
+First, LLMCad feeds the input text to the memory-resident model and generates a token tree. A token tree is the intermediate result generated by the memory-resident model (details in tree generation §3.2). Unlike a token sequence where each token has only a single succeeding token, a token in a token tree can have multiple candidate succeeding tokens, as shown in Figure 6○1 . Each of the candidate tokens represents a candidate token sequence (referred to as a branch). This is based on the observation that sometimes the “sub-optimal” tokens generated by the memory-resident LLM is the true output of the target LLM, e.g., the alternative token “cap”. In practice, any candidate token with a confidence higher than a threshold (e.g., 30%) generates a branch.
+Each token generated by the memory-resident LLM introduces some “uncertainy” (imperfect confidence score). Once such uncertainty accumulates to a level in the output sentence, the target LLM is used to verify all the generated branches since last verification, as shown in Figure 6○2 . Notably, the verification of 𝑁 tokens can be done within oneshot inference with target LLM, therefore much faster than using it to generate one token by 𝑁 times. such verification process is therefore termed “non-autoregressive”. Once an error is detected, LLMCad will rollback the token tree and rectify the it. The details of the verification and rollback strategy is discussed in §3.2.
+The verification process involves target LLM inference, therefore is I/O-bound as previously shown in §2.3. LLMCad further proposes Speculative generation to exploit the underutilized hardware resources by generating tokens speculatively (§3.4), i.e., continuing generating tokens through the memory-resident model during verification process, as shown in Figure 6○3 dashed boxes on the left side of the red dash line. This approach is based on the insight that sometimes the verification detects no error so the speculatively generated tokens could be used afterwards. Therefore, it can effectively hide execution latency under the I/O, e.g., the second branch in Figure 6○3 .
+LLMCad repeat the above generation and verification process until it encounters “<EOS>”, the end token.
+
+LLMCad is built on two LLMs: a target model that is accurate but heavy (cannot fit to device memory) like mT5-large; and a memory-resident model that is less accurate but lightweight
+
+5
+
+Conference’17, July 2017, Washington, DC, USA
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+
+Smaller: Last year, I showed these two slides to illustrate that the Arctic ice ice ice ice, which has shrinked for nearly three million years, is 40 percent
+2-nd highest confidence token
+... that the Arctic ice cap, which has shrinked for ... Larger: Last year, I showed these two slides to illustrate that the Arctic ice cap, which for about three million years has shrunk by 40 percent. Label: Last year I showed these two slides to illustrate that the arctic ice cap, which for most of the last three million years has shrunk by 40 percent.
+Figure 4: A translation generation example from mt5-small and mt5-large models as well as its ground truth label. Green: correct parts of small model generation; Red: error propagation parts of small model generation; Blue: the sub-optimal token which is the correct answer. Noticeably, on the iwslt2017 de-en translation dataset [19], the mT5-small model correctly generates nearly 69.3% of tokens, while the number for the mT5-large model is 73.1%.
+
+Input
+
+Fallback
+
+Translation the following de text to en.
+
+Large model
+
+Jetzt muss ich meine Schuhe ausziehen, um überhaupt an Bord zu kommen!
+
+Verification Results
+Non-autoregressive verification
+
+Tree decoder
+
+Token tree
+
+Speculative execution planning
+
+Confidence-based branch generation controller
+Tree generation
+
+Tree generation
+Speculative Token Tree
+
+Small model
+
+Autoregressive
+
+Rollback?
+Verified sequence <EOS>?
+Hit/Miss?
+Output
+
+Figure 5: The workflow of LLMCad.
+3.2 Token tree generation and verification
+This subsection is mainly to discuss how the token tree is generated and verified in LLMCad. Token tree generation To generate useful token trees, LLMCad needs to answer two crucial questions: • Branches compete for computing resource (e.g., GPU) to generate subsequent tokens by running memory-resident model. At a timestamp, which branch shall receive the resource to lengthen its token sequence? The decision is crucial as generating tokens to a wrong branch (as verified by the target model later) wastes computing resource and delays the generation of true tokens. • Generating tokens from different branches requires switching between branch contexts. How to generate token from different branches efficiently? The design is crucial as LLMCad needs to frequently switch between up to tens of branches.
+In response, LLMCad incorporates two novel techniques: • Confidence-based branch pacer. To properly pace the progress of different branches, LLMCad relies on the fact that branch with a higher probability is more likely to be the correct result and should have a longer sequence length. Here, LLMCad models the probability with the cumulative confidence scores given by the memory-resident for each token generated. To control the branch length dynamically, LLMCad uses max-min fairness [28].
+Assuming that there are 𝑁 branches and 𝑀 tokens, and the i-th branch includes 𝑇 𝐵 tokens, i-th branch cumulative
+𝑖
+confidence 𝐶𝑖 is the product of every token’s confidence. Thus, the branch length problem can be done by solving the
+6
+
+following problem.
+
+𝑓 (𝑥) = 𝑀 ∗ 𝐶𝑥 − 𝑇 𝐵
+
+𝑁
+
+𝑥
+
+(1)
+
+𝑖=0 𝐶𝑖
+
+𝑂𝑏 𝑗
+
+=
+
+𝑁
+
+𝑚𝑖𝑛
+𝑥
+
+=0
+
+𝑓
+
+(𝑥 )
+
+(2)
+
+Under the max-min fairness, LLMCad tries to allocate more hardware resources to the branch which is more likely to be the ground truth. • Tree decoder. We commence our study by conducting an exhaustive analysis of the fundamental reasons behind the substantial performance overhead incurred by branch context switching (e.g., 25% overhead for mT5 models on Jetson TX2). In Figure 7(a), we provide an illustration of the implementation of branch context switching within state-of-the-art LLM engines, such as PyTorch, using the scenario depicted in Figure 6○1 as a case study. In this illustration, iterations 1–4 take the previous output token as the new input. However, generating token “7” in iteration 5 necessitates branch switch from b1 to b2, which involves the removal of token 𝑇4, the omission of the new token 𝑇6, and the utilization of the sub-optimal output 𝑇5 from iteration 3 as input. Consequently, LLMCad must deviate from the autoregressive rule and modify each iteration input with a substantial amount of metadata (e.g., Key-Value cache [7, 36, 78] and position ids [65]) maintaining operations and CPU-GPU interactions.
+To tackle this issue, LLMCad incorporates masking technique [65]. This technique is employed to ensure that the predictions for position 𝑖 depends only on the known outputs at positions less than 𝑖 in decoder-based LLMs. The masking technique relies on a table where all the positions with value of one will be taken into account for calculation.
+Crucially, the tree decoder retains the autoregressive procedure while only modifying its masking table to support the isolation of effects from different branches, as demonstrated in Figure 7(b). During each iteration, LLMCad treats the new generated token as input, just as in regular generation. However, it assigns a value of one only to the previous positions on the same branch. For example, when generating token “7” for branch b2 in iteration 5, the input remains 𝑇6, the output of iteration 4, but only the positions “1, 2, 3, and 5” are set to one; all other positions are set to zero. This approach ensures
+
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Conference’17, July 2017, Washington, DC, USA
+
+① Token Tree
+
+Confidence score = 0.6 T4: ice
+
+T6: ice b1
+
+T1: the
+
+T2: Arctic
+
+T3: ice
+
+Confidence score = 0.3 T5: cap
+
+T7: ,
+
+b2
+
+Input token tree
+
+ice
+
+Ground Truth: the Arctic ice cap, which for about
+
+Memory-resident LLM
+
+which
+
+for
+
+about three
+
+three
+
+millon
+
+years
+
+millon
+
+years
+
+One iteration All verification outputs
+Verified outputs cap
+
+③ Speculative
+generation
+
+Verification
+
+Target
+
+LLM Origin outputs
+
+ice
+
+Verified
+
+Reuse
+
+cap
+
+fallback outputs for
+
+three
+
+② Non-autoregressiveVerification
+
+ice
+
+ice
+
+cap
+
+,
+
+which
+
+has
+
+Target LLM
+
+,
+
+which
+
+for
+
+shrinked
+
+ice
+
+which
+
+has
+
+,
+
+Need rollback
+
+Figure 6: An illustrative example of LLMCad.
+
+Input tokens
+
+Iter1: Iter2: Iter3: Iter4: Iter5:
+
+T1 T1 T2 T1 T2 T3 T1 T2 T3 T4 T1 T2 T3 T5
+
+Outputs
+
+T2
+
+autoregressive
+
+T3
+
+T4 T5
+
+T6
+
+branch context
+
+T7
+
+switching
+
+Input tokens
+
+Iter1: T1 Iter2: T1 T2
+
+Iter3: Iter4: Iter5:
+
+T1 T2 T3 T1 T2 T3 T4 T5 T1 T2 T3 T4 T5 T6
+
+Masking table
+1 0 000 1 1 000 1 1 100 1 1 110 1 1 101
+
+Tokens in calculation
+
+0
+
+T1
+
+0
+
+T1 T2
+
+0
+
+T1 T2 T3
+
+0
+
+T1 T2 T3 T4
+
+0
+
+T1 T2 T3 T5
+
+Outputs
+
+T2 autoregressive
+T3
+
+... ...
+
+T4 T5
+
+T6
+
+T7
+
+autoregressive
+
+(a) Existing tree generation procedure
+
+(b) Tree decoder procedure
+
+Figure 7: Examples of tree generation procedure in state-of-the-art LLM engines and the tree decoder procedure of LLMCad based on the case of Figure 6○1 .
+
+Token Tree T2
+T1
+
+T4
+
+T5
+
+T7
+
+Branch sequences
+
+T1 T2 T4
+
+mini-batch
+
+T1 T2 T5 T7
+
+Target LLM
+
+T3
+
+T6
+
+T8
+
+T1
+
+① Batched non-autoreguressive verification ② Depth-first verified sequence searching
+
+T1
+
+T2
+
+T5
+
+T'7
+
+T1
+
+Verified sequence
+
+T3 T6 T8 batch size=3
+
+T2
+
+T5
+
+T2
+
+T5
+
+T'7
+
+T2 Correct token tree
+
+Verified Outputs Origin Outputs
+
+Branch1 T1 results T1 T2
+
+T2
+
+T2
+
+T5
+
+T4
+
+Branch1 correct sequence T1 T2 T5
+
+Branch2 T1 results T1 T2
+T1 T2 T5
+
+T2
+
+T2
+
+T5
+
+T5
+
+T'7
+
+T7
+
+Branch2 correct sequence T1 T2 T5 T'7
+
+Branch3 T1 results T1 T3
+T1 T3 T6
+
+T2
+
+T3
+
+T6
+
+T6
+
+T8
+
+T8
+
+Branch3 correct sequence T1 T2
+
+Figure 8: The illustration of token tree verification.
+
+that tokens “4 and 6” do not affect the calculation, enabling LLMCad to generate token “7” without being influenced.
+
+non-autoregressive verification
+
+75
+
+100
+
+autoregressive verification
+
+Latency (s)
+
+Token tree verification and rectification To achieve the
+
+50
+
+9.9x
+50
+
+8.5x
+
+goal of not sacrificing accuracy, LLMCad has to verify every
+
+25
+
+token generated by the memory-resident LLM. An intuitive approach is to use the target LLM to run verification after
+
+2.5 5.0 7.5 10.0
+mT5-Large on TX2
+
+2.5 5.0 7.5 10.0
+LLaMa-13B on Xiaomi 10
+
+each token generation by the memory-resident LLM. How- Figure 9: The latency of verification with input se-
+
+ever, such an approach (called autoregressive verification (AV)) is even slower than generating every token by the target model directly, since AV does not reduce the target LLM inference times but even uses memory-resident LLM.
+To tackle this issue, LLMCad is based on two opportunities: (1) The target LLM can examine a sequence of tokens
+
+quencing increasing. in parallel by visiting its parameters only once (called nonautoregressive verification (NAV)) and the verification results are the same as examining them sequentially [20, 41]. (2) The NAV process is way faster than AV. Our pilot experiments in Figure 9 on LLaMa-13B and mT5-Large models using Xiaomi10 and TX2 shows that NAV outperforms AV in
+
+7
+
+Conference’17, July 2017, Washington, DC, USA
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+
+examining time across 2–10 input tokens, with its benefits more pronounced as token count increases. NAV signifi-
+
+token confidence or token sequence length, 𝑇𝑐 provides a comprehensive assessment of global uncertainty. It captures
+
+cantly reduces verification time for mT5-Large and LLaMa- errors more accurately due to the autoregressive nature of
+
+13B models by 8.5–9.9× at 10 tokens, attributed to NAV’s token generation.
+
+single weight swapping versus AV’s multiple swappings per token, reducing I/O overhead.
+To sum up, NAV can parallel verifying multiple tokens correctly at the cost of only one target LLM inference. LLMCad
+
+The formulation tree-cumulative confidence is as 𝑇𝑐 =
+𝑚𝑎𝑥𝑖𝑁=𝑐1𝐶𝑖 , where 𝑁𝑐 represents the number of branches in a token tree, and 𝐶𝑖 denotes the cumulative confidence of the
+𝑖-th branch. We select the maximum cumulative confidence
+
+incorporates NAV and extends it to support token tree verification, as shown in Figure 8, including two crucial steps:
+
+over minimum/average confidence because the most confident branch is more likely to yield the correct result after
+
+• Batched non-autoregressive verification. As shown in Fig- verification, and the verification process can only identity
+
+ure 8○1 , to support token tree verification, LLMCad first errors when the most confident branch is wrong.
+
+divides the token tree into several branch sequences and
+
+• self-adaptive threshold (𝛼) is utilized to determine when
+
+combines them to a mini-batch as the input of the target target LLM shall verify. It operates on the principle that the
+
+LLM. After NAV, LLMCad can obtain the correct results of memory-resident LLM, which generates outputs closely re-
+
+every position in each branch sequence. Compared with sembling those of the target LLM, should be trusted more, i.e.,
+
+the origin branch sequences, LLMCad can detect all errors of a token tree, e.g., 𝑇7′ in branch2 results. A branch correct sequence is the sub-sequence leading up to the first error
+
+a lower verification frequency by setting a lower threshold. To assess the outputs similarity, LLMCad relies on historical data regarding the accuracy of verified tokens.
+
+position, plus the rectified token, to avoid error propaga-
+
+Users can either select an initial 𝛼 value or utilize the
+
+tion. For example, branch1 correct sequence stops at the default value (0.01) provided by the system. After verifica-
+
+𝑇2, plus the 𝑇5, i.e., tokens “1, 2 and 5”. To be noted, given that the NAV is I/O-bounded, increasing batch size (e.g.,
+
+tion, LLMCad updates the self-adaptive threshold (𝛼) using the following rule:
+
+<10) has a negligible effects on verification time. • Depth-first verified sequence searching. Based on the correct
+sequences, LLMCad can build a correct token tree, as shown in Figure 8○2 . Its leaf node is either first rectified token or
+
+𝛼𝑖+1 =
+
+𝛼𝑖 ∗ 0.5
+
+𝑖 𝑓 𝑁𝑐𝑜𝑟𝑟𝑒𝑐𝑡 == 𝑁𝑎𝑙𝑙
+
+𝑁𝑎𝑙𝑙 −𝑁𝑐𝑜𝑟𝑟𝑒𝑐𝑡
+
+(3)
+
+𝛼𝑖 /𝑇𝑐 𝑁𝑎𝑙𝑙
+
+𝑖 𝑓 𝑁𝑐𝑜𝑟𝑟𝑒𝑐𝑡 < 𝑁𝑎𝑙𝑙
+
+the origin branch sequence last token. LLMCad leverages
+depth-first searching algorithm to find the longest correct
+path in the correct token tree as the verified sequence. If the verified sequence has a rectified token, e.g., 𝑇7′, LLMCad will rollback the token tree to the error position, fix
+the error, and use it as the new input for future generation.
+
+where 𝑁𝑐𝑜𝑟𝑟𝑒𝑐𝑡 and 𝑁𝑎𝑙𝑙 are the number of total tokens and correct tokens in the most matching branch during one verification. Specifically, when the verification process detects no error, LLMCad lowers 𝛼 by multiplying the current value by 0.5, the cumulative confidence of 3-5 tokens in empirical observations. In contrast, if verification identifies errors, the
+
+threshold is increased by dividing 𝛼 by the average cumula-
+
+3.3 Self-adaptive fallback strategy
+This strategy is devised to initiate the verification process promptly when the memory-resident LLM generates an incorrect token. To achieve this goal, LLMCad needs to answer two crucial questions: • Selection of Decision Metric. The decision metric should
+effectively evaluate the probability of errors within the token tree. • Threshold Values for Different Tasks. Recognizing
+
+tive confidence of all tokens subsequent to the incorrectly generated one. The rationale behind the use of an exponential function is that the tree-cumulative confidence is the product of every token’s confidence, accumulating exponentially.
+In summary, after each token generation by the memoryresident LLM, LLMCad calculates 𝑇𝑐 . If 𝑇𝑐 falls below 𝛼, a fallback occurs, and the target model begins verification. After verification, 𝛼 is updated based on the latest generation accuracy history.
+
+that a universal threshold may not be suitable for all tasks, LLMCad must establish appropriate threshold values tai-
+
+3.4 Speculative Generation Pipeline
+
+lored to specific tasks.
+
+As elaborated in §2.3, the GPU utilization undergoes cycli-
+
+To tackle these issues, LLMCad introduces two innovative cal upswings attributed to the fact that SOTA LLM engines
+
+techniques:
+
+resort to the swapping technique. To harvest the free cycles,
+
+• Tree-cumulative confidence (𝑇𝑐 ). We propose using treecumulative confidence as the decision variable for initiating
+
+LLMCad proposes speculative generation technique by allowing the memory-resident LLM to continue generating tokens
+
+fallback. Unlike prior studies [37, 41] that rely on a single during verification process. This approach is based on the
+
+8
+
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Conference’17, July 2017, Washington, DC, USA
+
+Latency (s)
+
+Alone
+
+4
+
+Parallel
+
+2
+
+0.1
+
+Alone Parallel
+
+0
+
+mT5-Large
+
+GPT2-Large 0.0
+
+mT5-Large
+
+GPT2-Large
+
+Loading
+
+Computing
+
+Platform
+Jetson TX2
+Jetson Orin NX
+Xiaomi 10
+Xiaomi 11
+
+Processor 4x Cortex-A57 Maxwell 128 CUDA cores Ampere 1024 CUDA cores + 32 Tensor Cores 1x 2.84GHz A77+3x 2.4GHz Cortex A77 +4x 1.8GHz Cortex A55 1x 3.0 GHz X2+ 3x 2.5 GHz Cortex A710 + 1.8GHz 4x Cortex-A510
+
+Software Torch-1.10
+Ubuntu 18.04 Torch-2.0
+Ubuntu 18.04 Android 10 llama.cpp Android 10 llama.cpp
+
+Mem. 8G 8G 8G 8G
+
+Figure 10: The loading and computing time of the target model execution with the memory-resident model parallelization.
+
+Targe LLM
+
+Memory upper bound
+
+L
+
+UL C
+
+Memory upper bound
+
+L
+
+UL C
+
+Memory upper bound
+
+L
+
+UL C ...
+
+Table 2: Platforms used in the experiments.
+
+Devices
+
+Tasks
+
+Memoryresident LLMs
+
+Target LLMs
+
+Speed Gap
+
+Datasets
+
+Jetson TX2 T
+
+mT5-small (0.3B) mT5-Large (1.2B) 230x IWLST17-de-en [19]
+
+Bart-base
+
+Bart-Large
+
+WMT14-de-en [15]
+
+Jetson
+
+QA
+
+mT5-small (0.3B) mT5-Large (1.2B) 230x SQuAD_v2 [56] T5-small (0.06B) T5-large (0.73B) 263x SQuAD_v2
+
+Orin NX LM GPT2 (0.14B) GPT2-Large (0.8) 214x Wikitext [47]
+
+S
+
+T5-small (0.06B) T5-large (0.73B) 263x CNN/Daily [61]
+
+Memoryresident LLM
+
+C C C ... C
+
+SC SC ... SC
+
+Fallback Speculative
+
+SC SC ... SC
+
+C ...
+
+Speculative
+
+Verification ends
+
+L
+
+Parameters loading below the memory upper bound
+
+UL
+
+Parameters loading over the memory upper bound
+
+C Computing
+
+SC
+
+Speculative computing
+
+Figure 11: LLMCad’s speculative generation.
+
+insight that sometimes the verification detects no error so the speculatively generated tokens could be used afterwards. The impacts of speculative generation on target LLM.
+
+Xiaomi 10 T
+
+Xiaomi Pro
+
+QA
+
+S
+
+Vicuna-7B (INT4)
+LLaMa2-Chat7B (INT4)
+
+Vicuna-13B (INT4)
+LLaMa2-Chat13B (INT4)
+
+Parrot
+
+59x WMT22-de-en
+
+WMT22-zh-en
+
+59x
+
+SQuAD TruthfulQA [44]
+
+CNN/Daily
+
+T, S, QA, and LM represent the generative tasks of translation, summary, question-answering, and language modeling.
+
+Table 3: Tasks, models, datasets, and their correspond-
+
+ing tested devices used in the experiments.
+
+Our preliminary experiments on TX2 using mT5-Large and GPT2-Large models shows that paralleling the memoryresident and target LLM execution increases the the target LLM computing and loading time by 2.2–2.3× and 1.05– 1.09×, respectively. The computing delay is attributed to the GPU cores contention, while the loading delay is unexpected which is because of the memory contention. Specifically, the
+
+rest of parameters for the target model (in orange) will be loaded into the memory, and then the computing of the target LLM begins. The speculative execution (in blue) will not run unless the verification process is loading parameters below the memory budget (in yellow), avoiding processors and memory contention.
+
+memory-resident LLM continually allocates memory regions for speculatively generated tokens, while the target LLM dynamically allocates memory regions for loading parameters.
+
+4 EVALUATION 4.1 Implementation and Setups
+
+Typically, negligible effects are exerted on each other unless We have fully implemented LLMCad with 4.5k SLoC (Python:
+
+the memory usage is over 90%. However, it is common for 3,500 and C/C++: 1,000). The prototype is a standalone frame-
+
+memory usage to exceed 90% or even reach 95% in the specu- work supporting LLMs exported from TensorFlow [8] and
+
+lative generation scenario, attributed to the fact that existing PyTorch [5]. LLMCad leverages llama.cpp [45] (one of the
+
+state-of-the-art LLMs engines are designed for loading as most lightweight on-device LLM engine) as the smartphone
+
+many parameters as possible from disk to the memory to backend and PyTorch [5] as the IoT device backend.
+
+reduce inference time.
+
+Hardware setup. We test the performance of LLMCad on
+
+Computing-loading pipeline. To tackle the above issue, four devices: 2 smartphones (Xiaomi 10 and Xiaomi 12) and
+
+LLMCad delicately plans the parallel execution, as shown in 2 IoT devices (Jetson TX2, and Jetson Orin), as summarized
+
+Figure 11. The main principle is that normal verification in Table 2. We run LLMs on Jetson GPUs and smartphone
+
+process cannot be influenced by the speculative execution. CPUs, since the existing LLM engines [refs] have unmature
+
+Thus, there is a memory upper bound by profiling or user support for smartphone GPU/NPU. Nevertheless, LLMCad’s
+
+defining to avoid two LLMs memory contention, and the two design is orthogonal to hardware types.
+
+LLMs computing cannot be executed in parallel.
+
+Models and datasets. We test with a range of typical LLM
+
+After feeding the input sequence, the parameters of both models with various generative tasks datasets across differ-
+
+the memory-resident and the target LLMs are loaded to the ent devices, as summarized in Table 3. On the IoT devices,
+
+memory. Once the memory-resident LLM loading finishes, we evalaute LLMCad on two translation tasks, two question
+
+it begins to generate tokens, and the target LLM parameters answering tasks, one language modeling task, and one sum-
+
+loading (in yellow) will stop before the memory upper bound marization tasks with mT5, T5, GPT2, and Bart models. All
+
+is exceeded to avoid influencing normal memory-resident the models are fine-tuned by ourselves as [37] does. For
+
+LLM generation. When the fallback condition is met, the smartphone devices, we use Vicuna-1.5 and LLaMA2 models
+
+9
+
+Conference’17, July 2017, Washington, DC, USA
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+
+with three translation tasks, one question answering task time 2.9-9.3× and 1.83–2.45×, respectively. Those benefits are
+
+and , and one summarization. All the models are downloaded attributed to the fact employing memory-resident LLMs for
+
+from hugging face repository [9] and have been quantized text generation consistently outpaces any pipeline or quan-
+
+by AutoGPTQ [10] into 4-bit format for saving memory and tization approaches of target LLMs on the mobile device,
+
+improving inference speed.
+
+where memory-resident LLM can yield a over hundredfold
+
+Baselines. We mainly compare LLMCad with 5 state-of-the- speed improvement compared to the target LLM. Besides,
+
+art baselines which can be divided into two categories:
+
+it can also improve generation accuracy by 11.1–19.0 per-
+
+• 3x Single-LLM baselines. (1) Standard (Std) always uti- centage point, compared to STI. This benefits from our tree
+
+lizes the target LLM to generate outputs, with PyTorch for non-autoregressive verification which can examine and cor-
+
+IoT and llama.cpp for smartphones. (2) Standard pipeline rect all errors by the memory-resident LLM efficiently.
+
+(StdPL): It executes a layer-wise pipeline, overlapping I/O
+
+• Generation time of LLMCad v.s. LLM collaboration base-
+
+and computation, as used by existing SOTA LLM inference lines. Compared with BLD, LLMCad can achieves a 4.5–94.5
+
+engines. (3) Speedy Transformer Inference (STI) [27]: and 9.8–96.7 percentage point generation accuracy improve-
+
+An edge NLP inference framework with quantization param- ment with a 1.1-1.4× and 1.1–1.3× speedup in per-token
+
+eter shards and fine-grained computing-loading pipeline.
+
+average generation time on IoT and smartphone devices,
+
+• 2x LLM collaboration baselines. (1) Speculative Decoding respectively. That is because, unlike BLD which speeds up
+
+(SP) [37]: A state-of-the-art framework also uses “generator the generation process by reducing the number of correc-
+
+and verifier” LLM collaboration. (2) Big Little Transformer tion (sacrificing accuracy), our self-adaptive fallback strategy
+
+Decoder (BLD) [37]: An algorithm of determining verifi- aims to minimize verification times while ensuring verifica-
+
+cation timing and rollback mechanism for “generator and tion for each token. Such an approach enhances generation
+
+verifier” LLM collaboration.
+
+speed without sacrificing accuracy. Furthermore, specula-
+
+Metrics and configurations. We mainly report genera- tive execution enables memory-resident LLM to generate
+
+tion accuracy and the per-token generation time. For clarity, texts earlier without waiting the verification results when
+
+LLMCad’s goal is to align the memory-resident LLM outputs no errors are detected by the verification process, further
+
+to the target LLM. Thus, we regard the text produced by the reducing generation latency.
+
+target LLM as the ground truth and calculate the Rouge-L
+
+Similarly, LLMCad can reduce per-token average genera-
+
+score [43], a similarity between two sequences based on the tion time by 1.93–2.00× and 1.34–1.77× on IoT and smart-
+
+longest common subsequence, as the generation accuracy.
+
+phone devices, respectively. That is because, unlike SP uses
+
+token sequence length, our self-adaptive fallback strategy
+
+4.2 Generation Speed
+
+can accurate finds when the memory-resident LLM generate errors and can reduce verification frequency.
+
+Overall performance. We first comprehensively investi-
+
+gate the generation performance of LLMCad on four tested devices. The generation accuracy and per-token generation
+
+4.3 Memory Sensitivity Analysis
+
+time results are illustrated in Table 4, Figure 12 and Figure 13, This subsection is to investigate the impact of different mem-
+
+respectively. Our key observation is that LLMCad consis- ory budgets on our approach. We further conduct experi-
+
+tently and remarkably outperforms other baselines on ments on mT5 and T5 models on TX2 and LLaMa2 on Xiaomi
+
+per-token generation time without comprising accu- 10 respectively under different memory budgets (e.g., from
+
+racy across all tested devices.
+
+4GB to 8GB on Xiaomi 10). The speedup of different baselines
+
+• Generation time of LLMCad v.s. Single-LLM baselines. are shown in Figure 14. LLMCad consistently exhibits the
+
+Compared with Std, LLMCad achieves a 2.9-9.3× and 3.47– highest speedup among all baselines from 8GB to 4GB
+
+4.67× speedup in per-token average generation time on IoT and its benefits are more prominent with the decreas-
+
+and smartphone devices, respectively, without compromis- ing memory budget.
+
+ing accuracy. Specifically, LLMCad can generating question-
+
+LLMCad reduces generation time under 6GB memory bud-
+
+answering outcomes on Xiaomi 11 at a fastest speed of 0.86 get on Jetson TX2 by 5.54×, 1.76× and 1.12× on average
+
+s/token. This achievement enables real-time token genera- for StdPL, SP and BLD, respectively; while the speedups for
+
+tion with over-10B LLM on COTS device for the first time. 4GB memory budget are 6.12×, 1.91× and 1.25×, correspond-
+
+This is attributed to the fact that LLMCad can delegate most of ingly, which are 1.29×, 1.08× and 2.1× larger than that under
+
+token generations to the memory-resident LLM and ensure 6GB on average. Similarly, LLMCad achieve a generation time
+
+correctness by non-autoregressive verification.
+
+speedup under 4GB memory budget on xiaomi 10 by 4.72×
+
+When compared with more competitive baselines like and 1.34× on average for StdPL and BLD, respectively. That
+
+StdPL and STI, LLMCad reduce per-token average generation is because when the memory budget is stricter, the inference
+
+10
+
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Conference’17, July 2017, Washington, DC, USA
+
+Models
+
+Datasets
+
+StdPL SP BLD Ours
+
+Models
+
+Datasets
+
+StdPL STI SP BLD Ours
+
+mT5-Large
+T5-Large Bart-Large GPT2-Large
+
+T: IWLST17-de-en QA: SQuAD S: CNN/Daily QA: SQuAD T: WMT14-de-en LM: Wikitext
+
+100 100 96.1 100 100 100 52.9 100 100 100 5.5 100 100 100 51.4 100 100 100 96.5 100 100 100 12.9 100
+
+Vicuna-13B (INT4)
+LLaMa2-Chat (INT4)
+
+T: Parrot T: WMT22-de-en T: WMT22-zh-en S: CNN/Daily QA: SQuAD QA: Truthful_QA
+
+100 86.7 100 89.7 100 100 87.2 100 90.2 100 100 88.1 100 80.4 100 100 81.0 100 7.96 100 100 83.2 100 3.4 100 100 85.4 100 4.7 100
+
+(a) IoT devices
+
+(b) Smartphones
+
+Table 4: The summary of the generation accuracy of LLMCad and the baseline on tested devices. T:*, S:*, QA:*, and
+
+LM:* represent the generative tasks of translation, summary, question-answering, and language modeling.
+
+Latency on Orin (s)
+
+7.20 7.06
+6
+
+7.20 7.06
+6
+
+4
+
+4
+
+2.31
+
+2
+
+1.70 1.26
+
+2
+
+1.80 1.05 0.78
+
+0 mt5_iwlst17_de_en 0 mt5_squad_v2
+
+Vanilla
+7.10 7.03
+6
+
+StdPL
+
+SP
+
+7.10 7.03
+
+6
+
+4
+
+4
+
+2.74
+
+2
+
+1.82
+
+2
+
+1.05 0.83
+
+2.01 1.38
+
+0
+
+t5_squad_v2
+
+0 t5_CNN_Daily
+
+BLD
+6 6.10 6.10
+
+Ours
+8
+
+8.00 7.69
+
+4
+
+6
+
+5.33 5.06
+
+4
+
+2
+
+2.03 1.82
+
+1.34
+
+2
+
+2.70
+
+0 bart_wmt14_de_en 0 gpt2_wikitext
+
+Latency on TX2(s)
+
+7.20 7.06
+6
+
+7.20 7.06
+6
+
+4
+
+4
+
+2.34
+
+2
+
+1.70 1.26
+
+2
+
+1.84 1.13 0.90
+
+0 mt5_iwlst17_de_en 0 mt5_squad_v2
+
+7.10 7.03
+6
+
+4
+
+2
+
+1.85
+
+1.10 0.95
+
+0
+
+t5_squad_v2
+
+7.10 7.03
+6
+
+4
+
+2.77
+
+2
+
+2.05 1.49
+
+0 t5_CNN_Daily
+
+6 6.10 6.10
+
+4
+
+2
+
+2.08 1.85 1.41
+
+0 bart_wmt14_de_en
+
+8 8.00 7.69
+
+6
+
+5.37 5.13
+
+4
+2.78
+2
+
+0 gpt2_wikitext
+
+Figure 12: Average per-token generation latency of LLMCad and the baselines under different tasks on IoT devices.
+
+15 15.214.9
+
+15 15.214.9
+
+Vanilla
+
+StdPL
+
+15 15.215.0
+
+STI
+
+SP
+
+BLD
+
+15 15.214.9
+
+15 15.214.9
+
+Ours
+15 15.214.9
+
+10
+
+8.3
+
+10
+
+8.3
+
+10
+
+8.3
+
+10.6
+10
+
+10 7.8
+
+10.6
+10
+
+5
+
+6.0
+
+3.7 3.3
+
+5
+
+6.2
+
+3.8 3.6
+
+5
+
+6.4
+
+4.5 3.4
+
+5
+
+5.5
+
+4.5 4.1
+
+5
+
+5.0 4.3 3.6
+
+5
+
+6.1 4.3 3.3
+
+Latency on Xiaomi 10 (s) Latency on Xiaomi 11 (s)
+
+0 Vicuna_Parrot
+16.215.9
+15
+
+10
+
+8.7
+
+6.4
+
+5
+
+3.9 3.6
+
+0 Vicuna_wmt22_de_en 0 Vicuna_wmt22_zh_en 0 LLaMa2_squad
+
+16.215.9
+15
+
+16.216.0
+15
+
+16.215.9
+15
+
+11.3
+
+10
+
+8.7
+
+10
+
+8.7
+
+10
+
+6.7
+
+6.8
+
+5.9
+
+5
+
+4.2 4.0
+
+5
+
+4.9 3.7
+
+5
+
+4.8 4.4
+
+0 LLaMa2_CNN_daily 0 LLaMa2_TruthfulQA
+
+16.215.9
+15
+
+16.215.9
+15
+
+11.3
+
+10
+
+10
+
+8.1
+
+5
+
+5.5 4.7 3.8
+
+5
+
+6.6 4.7 3.8
+
+0 Vicuna_Parrot
+
+0 Vicuna_wmt22_de_en 0 Vicuna_wmt22_zh_en 0 LLaMa2_squad
+
+0 LLaMa2_CNN_daily 0 LLaMa2_TruthfulQA
+
+Figure 13: Average per-token inference latency of LLMCad and the baselines under different tasks on smartphones.
+
+Models-tasks-datasets Vanilla StdPL SP BLD
+
+Ours
+
+Models-tasks-datasets Vanilla StdPL STI SP BLD
+
+Ours
+
+mT5-translation IWLST17-DE->EN T5-summary CNN/Daily T5-QA SQuAD
+
+36.9 36.2 12.0 7.7 7.7 (4.8×) 36.4 36.0 7.6 10.3 8.4 (4.3×) 36.9 36.5 15.4 9.9 4.6 (8.0×)
+
+LLaMa2-summarization CNN/Daily mail LLaMa2-QA TruthfulQA Vicuna-translation WMT22-DE-EN
+
+56.2 55.1 27.9 21.5 18.6 17.3 (3.2×) 56.2 55.1 28.1 23.9 18.3 14.3 (3.9×) 56.2 55.1 20.7 20.4 20.3 15.5 (3.6×)
+
+(a) Jetson Orin NX
+
+(b) Xiaomi 11
+
+Table 5: The summary of the energy consumption (J) of different models across different devices.
+
+11
+
+Conference’17, July 2017, Washington, DC, USA
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+
+Speedup on TX2 (x)
+
+5 4 4.0
+3.3
+3
+2 2.5
+1.0
+1
+
+Ours
+
+BLD
+
+StdPL
+
+4.3 3.4
+
+4.3
+
+4.4 4.5
+
+8
+
+7.1
+
+3.4
+
+3.4 3.4
+
+6
+
+6.4
+
+7.8 6.6
+
+4
+
+2.5 1.0
+
+2.5 1.0
+
+2.5 2.5 1.0 1.0
+
+2
+
+3.7 1.0
+
+3.8 1.0
+
+0
+
+SP
+
+7.8
+
+7.9 8.0
+
+6.6
+
+6.7 6.7
+
+3.8
+
+3.8 3.8
+
+1.0
+
+1.0 1.0
+
+5.6 5.4 5.2 5.0 4.8
+
+5.6 5.4 5.2 5.0 4.8
+
+t5_CNN_Daily
+
+t5_squad_v2
+
+Speedup on Xiaomi10 (x)
+
+Ours
+
+BLD
+
+StdPL
+
+SP
+
+STI
+
+6
+
+5.5
+
+4.8
+
+4.9
+
+4.9
+
+5.0
+
+4.7
+
+4.7
+
+4.7
+
+4.8
+
+5.1
+
+4 3.6
+
+3.6
+
+3.6
+
+3.7
+
+3.8 4 3.7
+
+3.7
+
+3.7
+
+3.7
+
+3.8
+
+3.1
+2
+
+3.1
+
+3.1
+
+3.2
+
+3.3
+
+2
+
+2.8
+
+2.8
+
+2.8
+
+2.9
+
+3.0
+
+2.1
+
+2.2
+
+1.8
+
+1.8
+
+1.1
+
+1.0
+
+1.1
+
+0.9
+
+1.0
+
+1.1
+
+8
+
+7
+
+6
+
+5
+
+4
+
+8
+
+7
+
+6
+
+5
+
+4
+
+LLaMa2_CNN_daily
+
+LLaMa2_TruthfulQA
+
+Figure 14: The speedup of different baselines under different memory budgets.
+
+Latency (s)
+
+Std 7.20
+6
+
+Std+TGV
+
+Std+TGV+SPP 7.10
+
+6
+
+Std+TGV+SPP+SF 10.20
+10
+7.5
+
+4
+
+4
+
+5
+
+3.92
+
+2
+
+1.67 1.56 1.29
+
+2
+
+1.87 1.69 1.65 2.5
+
+3.13 2.74
+
+0 mT5_iwlst17_de_en 0 T5_CNN_Daily
+
+0 LLaMA2-SQuAD
+
+4.5 Ablation Study
+Overall techniques. We further conduct a breakdown analysis of the benefit brought by each of LLMCad ’s techniques. The experiments are performed with the mT5 and T5 models on TX2 and LLaMa2 on Xiaomi 10. The results are illustrated in Figure 15. The leftmost bar is the same as baseline Vanilla, while the leftmost one is LLMCad. The three crucial technique token tree generation and verification in §3.2, selfadaptive fallback strategy§3.3 and the speculate generation in §3.4 are represented by TGV, SF and SPP correspondingly.
+We observe that all techniques make a non-trivial contribution to the improvement. First, tree non-autoregressive generationa and verification can delegete most token generations to the memory-resident LLM, leading to an 2.6–4.3 speedup for mT5, T5 and LLaMa2 models, respectively. The more benefits for mT5 model on IWLST translation dataset are because the mT5-Small model can generate more correct tokens than other two models so that more tokens can be delegated to the memory-resident LLM. Besides, speculative execution can reduce per-token generation time by up to 1.51×. That is because LLMCad can directly use the speculative results when the verification detects no error, especially true for LLaMA2 model. Lastly, Self-adaptive fallback strategy achieves a 1.08–1.20× speedup. This is achieved by leveraging tree-cumulative confidence to assess error probabilities and dynamically adjust verification timings in response to variations in task complexity.
+
+Figure 15: Ablation study of LLMCad.
+
+5 RELATED WORK
+
+speed gap between the memory-resident and target LLM is more significant, and delegating tokens to the memoryresident LLM can gain more benefits.
+
+Model collaboration is a common optimization technique utilized to reduce inference latency [40, 70]. Its key idea is to delegate most of the workloads to lightweight models to reduce inference latency while maintaining relatively high
+
+4.4 Energy Consumption Analysis
+
+accuracy. Tabi [70] is a multi-level inference engine that serves queries using various small models according to the
+
+We then evaluate the energy consumption of LLMCad with queries difficulties. MobiSR [40] and NestDNN [24] employ
+
+mT5 and T5 models on IoT devices and Vicuana and LLaMa2 the similar idea but depending on either resolutions or avail-
+
+model on smartphones. As shown in Table 5, compared with able resources. Other “early exit” works [60, 62, 73, 81], which
+
+Std, StdPL, SP and BLD, LLMCad reduces per-token energy propose adaptive exit timing relying on input data difficulties
+
+consumption by 4.35–7.96, 4.34–7.92, 1.56–3.33, and 1.05– can also be regarded as a collaboration. However, they either
+
+2.15× on Jetson Orin NX, LLMCad achieves a energy con- focus on CNN/encoder-based model architectures or must
+
+sumption reduction by 3.22–3.59, 3.18–3.56, 1.24–1.66, 1.07– modify and retrain the model, hardly fitting into on-device
+
+1.31 and 2.01–2.56,× correspondingly on Xiaomi 11, plus LLM inference. The most closely related works are specu-
+
+STI. This is because LLMCad’s two techniques can delegate lative decoding [20, 37, 41, 48], which also employs smaller
+
+as many tokens as possible to memory-resident LLM while LLMs for text generation and larger LLMs for text verifica-
+
+not sacrificing accuracy.
+
+tion. LLMCad is motivated by these works and is the first infer-
+
+Compared with the latency speedup, LLMCad’s energy con- ence engine for on-device generative NLP tasks, considering
+
+sumption is relatively lower. This situation arises because mobile devices unique challenges like the memory-bound
+
+our speculative generation parallels the memory-resident situation.
+
+and target LLM execution together, resulting in more energy Mobile ML optimization. Machine learning optimization
+
+consumption.
+
+approaches, such as model compression [25, 26, 33, 50, 52, 68,
+
+12
+
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Conference’17, July 2017, Washington, DC, USA
+
+76, 77], reducing the model size by quantization and knowledge distillation, caching [69, 74, 80], reducing computation by reusing existing results, and token pruning [16, 18, 38, 57, 66], reducing computation by pruning useless tokens, have been extensively researched to reduce the generation latency. LLMCad is orthogonal to and compatible with those algorithm-level optimizations.
+Besides, some of researchers focus on generate text in a non-autoregressive manner [35, 39]. However, these works can only apply to <1B models and have accuracy degradation problems, not the mainstream research direction. Pipeline optimization for ML. Pipeline optimization has been extensively used to accelerate ML [13, 27, 49, 67, 82]. Most of them, such as PipeDream [49], are utilized to scale out ML to multiple machines by pipelining forward/backward computation with activation/gradients synchronization to minimize bubbles of I/O and network communication. Still, there are some studies focusing on single machine/task optimization. For instance, PipeSwitch [13] introduce pipelining model transmission over the PCIe and task execution in the GPU to reduce context switching performance overhead; while STI [27] pipelines model shards loading with its computation to reduce inference latency. LLMCad is inspired by these efforts and propose an efficient speculative generation pipeline to address the challenge of I/O blocking and limited parallelism.
+6 CONCLUSIONS
+This work has proposed LLMCad, the first efficient inference engine for on-device generative NLP tasks. It breaks the memory wall and deliver LLM’s scaling ability to mobile devices It incorporates three novel techniques, including: token tree generation and verification, Self-adaptive fallback strategy and speculative generation pipeline that can exploit the waste hardware resources during the verification process. Our experiments have demonstrated that when compared to the state-of-the-art LLM engines, LLMCad can reduce average per-token generation time by 2.9–9.3× and 3.5–4.7× on IoT devices and smartphones, without comprising accuracy.
+REFERENCES
+[1] Gboard - the Google Keyboard - Apps on Google Play — play.google.com. https://play.google.com/store/apps/details?id=com. google.android.inputmethod.latin&hl=en. [Accessed 22-Jul-2023].
+[2] Google Translate - Apps on Google Play — play.google.com. https://play.google.com/store/apps/details?id=com.google.android. apps.translate&hl=en_US. [Accessed 22-Jul-2023].
+[3] iTranslate — itranslate.com. https://itranslate.com/. [Accessed 22-Jul2023].
+[4] MNN. https://github.com/alibaba/MNN. Accessed: [2023.7]. [5] PyTorch. https://pytorch.org/. Accessed: [2023.7]. [6] Siri — apple.com. https://www.apple.com/siri/. [Accessed 22-Jul-2023]. [7] TensorFlow. https://vllm.ai/. Accessed: [2023.7].
+13
+
+[8] TensorFlow. https://www.tensorflow.org/. Accessed: [2023.7]. [9] TensorFlow. https://huggingface.co/TheBloke. Accessed: [2023.7]. [10] TensorFlow. https://github.com/PanQiWei/AutoGPTQ. Accessed:
+[2023.7]. [11] Armen Aghajanyan, Lili Yu, Alexis Conneau, Wei-Ning Hsu, Karen
+Hambardzumyan, Susan Zhang, Stephen Roller, Naman Goyal, Omer Levy, and Luke Zettlemoyer. Scaling laws for generative mixed-modal language models. arXiv preprint arXiv:2301.03728, 2023. [12] Ibrahim M Alabdulmohsin, Behnam Neyshabur, and Xiaohua Zhai. Revisiting neural scaling laws in language and vision. Advances in Neural Information Processing Systems, 35:22300–22312, 2022. [13] Zhihao Bai, Zhen Zhang, Yibo Zhu, and Xin Jin. {PipeSwitch}: Fast pipelined context switching for deep learning applications. In 14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20), pages 499–514, 2020. [14] David Bau, Hendrik Strobelt, William Peebles, Jonas Wulff, Bolei Zhou, Jun-Yan Zhu, and Antonio Torralba. Semantic photo manipulation with a generative image prior. arXiv preprint arXiv:2005.07727, 2020. [15] Ondrej Bojar, Christian Buck, Christian Federmann, Barry Haddow, Philipp Koehn, Johannes Leveling, Christof Monz, Pavel Pecina, Matt Post, Herve Saint-Amand, Radu Soricut, Lucia Specia, and Ale s Tamchyna. Findings of the 2014 workshop on statistical machine translation. In Proceedings of the Ninth Workshop on Statistical Machine Translation, pages 12–58, Baltimore, Maryland, USA, June 2014. Association for Computational Linguistics. [16] Daniel Bolya, Cheng-Yang Fu, Xiaoliang Dai, Peizhao Zhang, Christoph Feichtenhofer, and Judy Hoffman. Token merging: Your vit but faster. arXiv preprint arXiv:2210.09461, 2022. [17] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. Advances in neural information processing systems, 33:1877– 1901, 2020. [18] Han Cai, Ji Lin, Yujun Lin, Zhijian Liu, Haotian Tang, Hanrui Wang, Ligeng Zhu, and Song Han. Enable deep learning on mobile devices: Methods, systems, and applications. ACM Transactions on Design Automation of Electronic Systems (TODAES), 27(3):1–50, 2022. [19] Mauro Cettolo, Marcello Federico, Luisa Bentivogli, Jan Niehues, Sebastian Stüker, Katsuhito Sudoh, Koichiro Yoshino, and Christian Federmann. Overview of the IWSLT 2017 evaluation campaign. In Proceedings of the 14th International Conference on Spoken Language Translation, pages 2–14, Tokyo, Japan, December 14-15 2017. International Workshop on Spoken Language Translation. [20] Charlie Chen, Sebastian Borgeaud, Geoffrey Irving, Jean-Baptiste Lespiau, Laurent Sifre, and John Jumper. Accelerating large language model decoding with speculative sampling. arXiv preprint arXiv:2302.01318, 2023. [21] Aidan Clark, Diego De Las Casas, Aurelia Guy, Arthur Mensch, Michela Paganini, Jordan Hoffmann, Bogdan Damoc, Blake Hechtman, Trevor Cai, Sebastian Borgeaud, et al. Unified scaling laws for routed language models. In International Conference on Machine Learning, pages 4057–4086. PMLR, 2022. [22] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021. [23] Zhengxiao Du, Yujie Qian, Xiao Liu, Ming Ding, Jiezhong Qiu, Zhilin Yang, and Jie Tang. Glm: General language model pretraining with autoregressive blank infilling. In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 320–335, 2022.
+
+Conference’17, July 2017, Washington, DC, USA
+
+Daliang Xu♦, Wangsong Yin♦, Xin Jin♦, Ying Zhang♦, Shiyun Wei⋆, Mengwei Xu , Xuanzhe Liu♦
+
+[24] Biyi Fang, Xiao Zeng, and Mi Zhang. Nestdnn: Resource-aware multitenant on-device deep learning for continuous mobile vision. In Proceedings of the 24th Annual International Conference on Mobile Computing and Networking, pages 115–127, 2018.
+[25] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. Gptq: Accurate post-training quantization for generative pre-trained transformers. arXiv preprint arXiv:2210.17323, 2022.
+[26] Hui Guan, Shaoshan Liu, Xiaolong Ma, Wei Niu, Bin Ren, Xipeng Shen, Yanzhi Wang, and Pu Zhao. Cocopie: Enabling real-time ai on off-the-shelf mobile devices via compression-compilation co-design. Communications of the ACM, 64(6):62–68, 2021.
+[27] Liwei Guo, Wonkyo Choe, and Felix Xiaozhu Lin. Sti: Turbocharge nlp inference at the edge via elastic pipelining. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2, pages 791–803, 2023.
+[28] Ellen L. Hahne. Round-robin scheduling for max-min fairness in data networks. IEEE Journal on Selected Areas in communications, 9(7):1024–1039, 1991.
+[29] Rui Han, Qinglong Zhang, Chi Harold Liu, Guoren Wang, Jian Tang, and Lydia Y Chen. Legodnn: block-grained scaling of deep neural networks for mobile vision. In Proceedings of the 27th Annual International Conference on Mobile Computing and Networking, pages 406–419, 2021.
+[30] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive multitask language understanding. arXiv preprint arXiv:2009.03300, 2020.
+[31] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685, 2021.
+[32] Chien-Chin Huang, Gu Jin, and Jinyang Li. Swapadvisor: Pushing deep learning beyond the gpu memory limit via smart swapping. In Proceedings of the Twenty-Fifth International Conference on Architectural Support for Programming Languages and Operating Systems, pages 1341–1355, 2020.
+[33] Loc N Huynh, Youngki Lee, and Rajesh Krishna Balan. Deepmon: Mobile gpu-based deep learning framework for continuous vision applications. In Proceedings of the 15th Annual International Conference on Mobile Systems, Applications, and Services, pages 82–95, 2017.
+[34] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361, 2020.
+[35] Jungo Kasai, Nikolaos Pappas, Hao Peng, James Cross, and Noah A Smith. Deep encoder, shallow decoder: Reevaluating nonautoregressive machine translation. arXiv preprint arXiv:2006.10369, 2020.
+[36] Sehoon Kim, Coleman Hooper, Thanakul Wattanawong, Minwoo Kang, Ruohan Yan, Hasan Genc, Grace Dinh, Qijing Huang, Kurt Keutzer, Michael W Mahoney, et al. Full stack optimization of transformer inference: a survey. arXiv preprint arXiv:2302.14017, 2023.
+[37] Sehoon Kim, Karttikeya Mangalam, Jitendra Malik, Michael W Mahoney, Amir Gholami, and Kurt Keutzer. Big little transformer decoder. arXiv preprint arXiv:2302.07863, 2023.
+[38] Sehoon Kim, Sheng Shen, David Thorsley, Amir Gholami, Woosuk Kwon, Joseph Hassoun, and Kurt Keutzer. Learned token pruning for transformers. In Proceedings of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining, pages 784–794, 2022.
+[39] Xiang Kong, Adithya Renduchintala, James Cross, Yuqing Tang, Jiatao Gu, and Xian Li. Multilingual neural machine translation with deep encoder and multiple shallow decoders. arXiv preprint arXiv:2206.02079, 2022.
+
+[40] Royson Lee, Stylianos I Venieris, Lukasz Dudziak, Sourav Bhattacharya, and Nicholas D Lane. Mobisr: Efficient on-device super-resolution through heterogeneous mobile processors. In The 25th annual international conference on mobile computing and networking, pages 1–16, 2019.
+[41] Yaniv Leviathan, Matan Kalman, and Yossi Matias. Fast inference from transformers via speculative decoding. In International Conference on Machine Learning, pages 19274–19286. PMLR, 2023.
+[42] Mike Lewis, Yinhan Liu, Naman Goyal, Marjan Ghazvininejad, Abdelrahman Mohamed, Omer Levy, Veselin Stoyanov, and Luke Zettlemoyer. BART: denoising sequence-to-sequence pre-training for natural language generation, translation, and comprehension. CoRR, abs/1910.13461, 2019.
+[43] Chin-Yew Lin. Rouge: A package for automatic evaluation of summaries. In Text summarization branches out, pages 74–81, 2004.
+[44] Stephanie Lin, Jacob Hilton, and Owain Evans. Truthfulqa: Measuring how models mimic human falsehoods, 2021.
+[45] llama.cpp. Port of Facebook’s LLaMA model in C/C++ Resources. https://github.com/ggerganov/llama.cpp, Year of publication. Accessed: [2023.7].
+[46] Chen Meng, Minmin Sun, Jun Yang, Minghui Qiu, and Yang Gu. Training deeper models by gpu memory optimization on tensorflow. In Proc. of ML Systems Workshop in NIPS, volume 7, 2017.
+[47] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture models, 2016.
+[48] Xupeng Miao, Gabriele Oliaro, Zhihao Zhang, Xinhao Cheng, Zeyu Wang, Rae Ying Yee Wong, Zhuoming Chen, Daiyaan Arfeen, Reyna Abhyankar, and Zhihao Jia. Specinfer: Accelerating generative llm serving with speculative inference and token tree verification. arXiv preprint arXiv:2305.09781, 2023.
+[49] Deepak Narayanan, Aaron Harlap, Amar Phanishayee, Vivek Seshadri, Nikhil R Devanur, Gregory R Ganger, Phillip B Gibbons, and Matei Zaharia. Pipedream: Generalized pipeline parallelism for dnn training. In Proceedings of the 27th ACM Symposium on Operating Systems Principles, pages 1–15, 2019.
+[50] Wei Niu, Xiaolong Ma, Sheng Lin, Shihao Wang, Xuehai Qian, Xue Lin, Yanzhi Wang, and Bin Ren. Patdnn: Achieving real-time dnn execution on mobile devices with pattern-based weight pruning. In Proceedings of the Twenty-Fifth International Conference on Architectural Support for Programming Languages and Operating Systems, pages 907–922, 2020.
+[51] Roma Patel and Ellie Pavlick. Mapping language models to grounded conceptual spaces. In International Conference on Learning Representations, 2021.
+[52] Reiner Pope, Sholto Douglas, Aakanksha Chowdhery, Jacob Devlin, James Bradbury, Jonathan Heek, Kefan Xiao, Shivani Agrawal, and Jeff Dean. Efficiently scaling transformer inference. Proceedings of Machine Learning and Systems, 5, 2023.
+[53] Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya Sutskever, et al. Improving language understanding by generative pre-training. 2018.
+[54] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI blog, 1(8):9, 2019.
+[55] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and Peter J Liu. Exploring the limits of transfer learning with a unified text-to-text transformer. The Journal of Machine Learning Research, 21(1):5485–5551, 2020.
+[56] Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and Percy Liang. SQuAD: 100,000+ Questions for Machine Comprehension of Text. arXiv e-prints, page arXiv:1606.05250, 2016.
+[57] Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie Zhou, and Cho-Jui Hsieh. Dynamicvit: Efficient vision transformers with dynamic
+
+14
+
+LLMCad: Fast and Scalable On-device Large Language Model Inference
+
+Conference’17, July 2017, Washington, DC, USA
+
+token sparsification. Advances in neural information processing systems, 34:13937–13949, 2021. [58] Scott Reed, Zeynep Akata, Xinchen Yan, Lajanugen Logeswaran, Bernt Schiele, and Honglak Lee. Generative adversarial text to image synthesis. In International conference on machine learning, pages 1060–1069. PMLR, 2016. [59] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 10684–10695, 2022. [60] Tal Schuster, Adam Fisch, Jai Gupta, Mostafa Dehghani, Dara Bahri, Vinh Tran, Yi Tay, and Donald Metzler. Confident adaptive language modeling. Advances in Neural Information Processing Systems, 35:17456–17472, 2022. [61] Abigail See, Peter J. Liu, and Christopher D. Manning. Get to the point: Summarization with pointer-generator networks. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1073–1083, Vancouver, Canada, July 2017. Association for Computational Linguistics. [62] Thierry Tambe, Coleman Hooper, Lillian Pentecost, Tianyu Jia, En-Yu Yang, Marco Donato, Victor Sanh, Paul Whatmough, Alexander M Rush, David Brooks, et al. Edgebert: Sentence-level energy optimizations for latency-aware multi-task nlp inference. In MICRO-54: 54th Annual IEEE/ACM International Symposium on Microarchitecture, pages 830–844, 2021. [63] FP Team. Generative AI: Advantages, Disadvantages, Limitations, and Challenges — fact.technology. https://fact.technology/learn/ generative-ai-advantages-limitations-and-challenges/. [Accessed 22Jul-2023]. [64] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, MarieAnne Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971, 2023. [65] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems, 30, 2017. [66] Hanrui Wang, Zhekai Zhang, and Song Han. Spatten: Efficient sparse attention architecture with cascade token and head pruning. In 2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA), pages 97–110. IEEE, 2021. [67] Shibo Wang, Jinliang Wei, Amit Sabne, Andy Davis, Berkin Ilbeyi, Blake Hechtman, Dehao Chen, Karthik Srinivasa Murthy, Marcello Maggioni, Qiao Zhang, et al. Overlap communication with dependent computation via decomposition in large deep learning models. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1, pages 93–106, 2022. [68] Wenhui Wang, Furu Wei, Li Dong, Hangbo Bao, Nan Yang, and Ming Zhou. Minilm: Deep self-attention distillation for task-agnostic compression of pre-trained transformers. Advances in Neural Information Processing Systems, 33:5776–5788, 2020. [69] Xiaofei Wang, Yiwen Han, Victor CM Leung, Dusit Niyato, Xueqiang Yan, and Xu Chen. Convergence of edge computing and deep learning: A comprehensive survey. IEEE Communications Surveys & Tutorials, 22(2):869–904, 2020. [70] Yiding Wang, Kai Chen, Haisheng Tan, and Kun Guo. Tabi: An efficient multi-level inference system for large language models. In Proceedings of the Eighteenth European Conference on Computer Systems, pages 233–248, 2023. [71] Jason Wei, Yi Tay, Rishi Bommasani, Colin Raffel, Barret Zoph, Sebastian Borgeaud, Dani Yogatama, Maarten Bosma, Denny Zhou, Donald
+
+Metzler, et al. Emergent abilities of large language models. arXiv preprint arXiv:2206.07682, 2022. [72] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in Neural Information Processing Systems, 35:24824–24837, 2022. [73] Ji Xin, Raphael Tang, Jaejun Lee, Yaoliang Yu, and Jimmy Lin. Deebert: Dynamic early exiting for accelerating bert inference. arXiv preprint arXiv:2004.12993, 2020. [74] Mengwei Xu, Mengze Zhu, Yunxin Liu, Felix Xiaozhu Lin, and Xuanzhe Liu. Deepcache: Principled cache for mobile deep vision. In Proceedings of the 24th annual international conference on mobile computing and networking, pages 129–144, 2018. [75] Linting Xue, Noah Constant, Adam Roberts, Mihir Kale, Rami AlRfou, Aditya Siddhant, Aditya Barua, and Colin Raffel. mt5: A massively multilingual pre-trained text-to-text transformer. arXiv preprint arXiv:2010.11934, 2020. [76] Zhewei Yao, Reza Yazdani Aminabadi, Minjia Zhang, Xiaoxia Wu, Conglong Li, and Yuxiong He. Zeroquant: Efficient and affordable post-training quantization for large-scale transformers. Advances in Neural Information Processing Systems, 35:27168–27183, 2022. [77] Zhao You, Shulin Feng, Dan Su, and Dong Yu. Speechmoe2: Mixtureof-experts model with improved routing. In ICASSP 2022-2022 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP), pages 7217–7221. IEEE, 2022. [78] Gyeong-In Yu, Joo Seong Jeong, Geon-Woo Kim, Soojeong Kim, and Byung-Gon Chun. Orca: A distributed serving system for {Transformer-Based} generative models. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22), pages 521–538, 2022. [79] Aohan Zeng, Xiao Liu, Zhengxiao Du, Zihan Wang, Hanyu Lai, Ming Ding, Zhuoyi Yang, Yifan Xu, Wendi Zheng, Xiao Xia, et al. Glm-130b: An open bilingual pre-trained model. arXiv preprint arXiv:2210.02414, 2022. [80] Wuyang Zhang, Zhezhi He, Luyang Liu, Zhenhua Jia, Yunxin Liu, Marco Gruteser, Dipankar Raychaudhuri, and Yanyong Zhang. Elf: accelerate high-resolution mobile deep vision with content-aware parallel offloading. In Proceedings of the 27th Annual International Conference on Mobile Computing and Networking, pages 201–214, 2021. [81] Wangchunshu Zhou, Canwen Xu, Tao Ge, Julian McAuley, Ke Xu, and Furu Wei. Bert loses patience: Fast and robust inference with early exit. Advances in Neural Information Processing Systems, 33:18330–18341, 2020. [82] Zhe Zhou, Xuechao Wei, Jiejing Zhang, and Guangyu Sun. {PetS}: A unified framework for {Parameter-Efficient} transformers serving. In 2022 USENIX Annual Technical Conference (USENIX ATC 22), pages 489–504, 2022.
+
+15
+

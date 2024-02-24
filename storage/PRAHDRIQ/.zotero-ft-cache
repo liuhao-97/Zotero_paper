@@ -1,0 +1,439 @@
+Neural Architecture Search for Improving
+Latency-Accuracy Trade-off in Split Computing
+Shoma Shimizu∗, Takayuki Nishio†, Shota Saito∗ ‡, Yoichi Hirose∗, Chen Yen-Hsiu∗, Shinichi Shirakawa∗ ∗Graduate School of Environment and Informations Sciences Yokohama National University, Yokohama, Japan
+{shimizu-shoma-kr, saito-shota-bt, hirose-youichi-kc, chen-yen-hsiu-tx}@ynu.jp, shirakawa-shinichi-bg@ynu.ac.jp †School of Engineering, Tokyo Institute of Technology, Tokyo, Japan nishio@ict.e.titech.ac.jp ‡SkillUp AI, Co., Ltd., Tokyo, Japan
+
+arXiv:2208.13968v1 [cs.LG] 30 Aug 2022
+
+Abstract—This paper proposes a neural architecture search (NAS) method for split computing. Split computing is an emerging machine-learning inference technique that addresses the privacy and latency challenges of deploying deep learning in IoT systems. In split computing, neural network models are separated and cooperatively processed using edge servers and IoT devices via networks. Thus, the architecture of the neural network model signiﬁcantly impacts the communication payload size, model accuracy, and computational load. In this paper, we address the challenge of optimizing neural network architecture for split computing. To this end, we proposed NASC, which jointly explores optimal model architecture and a split point to achieve higher accuracy while meeting latency requirements (i.e., smaller total latency of computation and communication than a certain threshold). NASC employs a one-shot NAS that does not require repeating model training for a computationally efﬁcient architecture search. Our performance evaluation using hardware (HW)-NAS-Bench of benchmark data demonstrates that the proposed NASC can improve the “communication latency and model accuracy” trade-off, i.e., reduce the latency by approximately 40–60% from the baseline, with slight accuracy degradation.
+Index Terms—Neural Architecture Search, Split Computing, Machine Learning, Deep Learning, Distributed Inference, Wireless Networks
+I. INTRODUCTION
+Combining the physical sensing of IoT devices with deep learning-based data analysis has been gained considerable attention to enable multiple novel applications. However, the strict privacy and latency demands of IoT applications pose challenges. For example, IoT sensors (e.g., visual and audio sensors) in smart home applications obtain privacysensitive data that should not be exposed [1], and the latency requirements for the factory automation and smart grids are less than 10 ms and 20 ms, respectively [2].
+Split computing, which provides an intermediate option between edge computing and local computing, has been proposed to address the privacy and latency challenges of deploying deep learning in IoT systems. In the split computing,
+This work was supported in part by JST PRESTO under Grant JPMJPR2035 and JPMJPR2133, and a project commissioned by NEDO (JPNP18002).
+
+a well-trained deep neural network (DNN) is divided into subDNNs, and the IoT devices and the edge server collaboratively execute the sub-DNNs by exchanging information (e.g., intermediate outputs) via IoT networks. Because the computation to execute the DNN is partially ofﬂoaded to the edge server, and the privacy-sensitive data are processed and converted into an intermediate representation, the split computing can reduce the computation latency and data leakage risk in the DNNbased IoT applications.
+However, split computing poses a new research challenge: the “communication latency vs. model accuracy” trade-off. The payload size of the intermediate output is typically larger than that of the raw input or output of the original model, which requires introducing a “bottleneck structure” between the head and tail networks. Narrowing the bottleneck allows for a smaller payload size but may result in signiﬁcant performance degradation during inference. This is the “communication latency vs. model accuracy” trade-off.
+Many studies have been conducted to improve the “communication latency vs. model accuracy” trade-off. Eshratifar et al. have studied the bottleneck injection, called BottleNet, and demonstrated that BottleNet can improve end-to-end latency and reduce mobile energy consumption compared with the cloud-based computation without signiﬁcant degradation of model accuracy [3]. Matsubara et al. have proposed a method to train the head network to maintain the model accuracy, called head network distillation [4]. Head network distillation employs knowledge distillation to transfer the knowledge of the head network generated from a well-trained original DNN into a compressed head network employing a bottleneck structure. Itahara et al. have proposed a COMtune, which can improve the model’s robustness against lossy compression of intermediate outputs and packet loss in the IoT networks [5].
+As also mentioned in the survey [6], although many studies have investigated split computing, many research challenges still need to be addressed. In this study, we focused on optimizing head and tail network design. The previous works used a handmade architecture of the head and tail networks. However, the architecture of the head and tail networks is of considerable importance in split computing because they
+
+have a signiﬁcant impact on the payload size, model accuracy, and computation load. The smaller the bottleneck structure, the less trafﬁc there is, but the lower the model accuracy. Moreover, because IoT devices generally have limited computational resources, the head network must be lightweight enough to satisfy latency constraints. Although few studies have addressed the optimization of the split point and bottleneck placement [7], further performance improvements can be still achieved by optimizing the overall model structure.
+To this end, we propose a neural architecture search (NAS) [8] method for split computing, referred to as NASC. The proposed NASC algorithm is based on one-shot NAS and employs an adaptive stochastic natural gradient (ASNG) [9] method as the search algorithm to efﬁciently search for the optimal model architecture and split point jointly that achieves higher accuracy while meeting latency requirements (i.e., smaller total latency of computation and communication than a certain threshold). One-shot NAS including our method trains the weights of a supernetwork that contains all candidate architectures only once during the search process and can drastically reduce the search cost. We conducted a performance evaluation using hardware (HW)-NAS-Bench [10], which is benchmark data obtained using resource-constrained devices, and demonstrated that the proposed NASC can reduce the latency to less than a certain threshold with slight accuracy degradation.
+II. NASC: NAS FOR SPLIT COMPUTING
+We propose a method for obtaining a model architecture that achieves high accuracy with low latency in the split computing via lossy wireless links. In the following sections, we ﬁrst summarize several assumptions regarding our proposal and then present NASC in more detail.
+A. Assumptions
+We consider a networked computing system consisting of a cloud server, an edge server, and end devices. The cloud server searches for and trains a deep neural network that works well in split computing. The edge server and devices collaboratively conduct inferences with the sensing data obtained by the devices and the model trained by the cloud server in a split computing manner.
+A trained neural network model is split into a head and tail networks in split computing. The output of the head network (i.e., the intermediate representation) is transmitted from the device to the edge server via a wireless network. In this study, we assume that the wireless link is stable but unreliable; that is, the throughput for transmitting the model output does not change, but the packet can be dropped problematically, which can cause part of the intermediate representation to be missing.
+Moreover, we assume that the computational power of end devices and throughput between the edge server and devices are limited because of resource-constrained IoT devices and networks. This causes non-negligible latency in calculations at the end devices and data transfer between the edge server and devices.
+
+B. Mathematical Formulation
+As with existing studies on NAS, we address the following optimization problem:
+
+minimize f (x, a) ,
+x∈X ,a∈A
+
+(1)
+
+where f : X × A → R is an objective function, such as a loss function, x ∈ X and a ∈ A are the weight and architecture parameters of a neural network model, respectively.
+Let the neural network model be deﬁned as N (·|x, a) = Nh(·|xh, ah) ◦ Nt(·|xt, at), where Nh(·|xh, ah) and Nt(·|xt, at) denote the head and tail network parameterized by (xh, ah) and (xt, at), respectively. f (·) ◦ g(·) denotes the composite function of f (·) and g(·). Thus, the optimization problem NASC addresses can be written as
+
+minimize f (xh, ah, xt, at) .
+xh,xt∈X ,ah,at∈A
+
+(2)
+
+In contrast to the existing NAS problem where model loss is minimized, NASC must consider computation and communication latency due to resource-constrained devices. We deﬁne the computational latency of a model N (·|x, a) processed by computing node i as Ticomp(a). Because the computational processes of the head and tail networks are independent, the computation latency for the head and tail networks can be written as Ticomp(ah) and Tjcomp(at), respectively. In split computing, the node processing tail network is often an edge or cloud server with much higher computation power than end devices such as Raspberry Pi and Jetson. Thus, searching ah that can achieve low latency without signiﬁcantly degrading the accuracy is essential.
+On one hand, we deﬁne the communication latency of split computing with Nh(·|xh, ah) and Nt(·|xt, at) conducted by computing nodes i and j as Tic,ojmm(xh, ah, xt, at). Communication latency mainly depends on the communication throughput between computing node i and j and the data size of the output of the head network Nh(·|xh, ah). Because a larger data size increases the communication latency, we need to ﬁnd ah to achieve small output size (i.e., bottleneck architecture) without degrading accuracy. Moreover, as reported in [5], in the same model architecture, model training that incorporates dropout can suppress accuracy degradation when data are dropped on the communication channel in split computing, which enables the communication system to employ less reliable but fewer latency protocols (i.e., UDP).
+The end-to-end latency of the split computing with nodes i and j is then written as
+
+T = Ticomp(ah) + Tic,ojmm(xh, ah, xt, at) + Tjcomp(at) . (3)
+
+As mentioned in Sect. I, the objective of NASC is to improve the trade-off between the latency and model accuracy. To reduce communication latency, we must introduce a narrow bottleneck architecture that may induce accuracy degradation. The accuracy degradation caused by the bottleneck may be compensated by the large head and tail networks, but it will
+
+increase the computation latency. Moreover, the effect of communications on model accuracy, that is, accuracy degradation due to packet loss, must also be considered.
+In this paper, we introduce a penalty that increases when the threshold is exceeded and deﬁne the objective function as a weighted sum of the model loss function and latency penalty. Finally, the optimization problem solved in NASC is written as follows:
+
+minimize losslSC(xh, ah, xt, at) + latτ
+
+(4a)
+
+xh,xt∈X ,
+
+ah ,at ∈A
+
+subject to τ = max(0, T − Tth),
+
+(4b)
+
+T = Ticomp(ah) + Tjcomp(at) + Tic,ojmm (4c)
+
+where loss and lat denote the weights for model loss and
+latency penalty, respectively, lSC denotes the loss function of
+the split computing model when causing packet loss, Tth is the threshold for the latency causing the penalty, and Tic,ojmm is a shorthand notation for Tic,ojmm(xh, ah, xt, at).
+
+C. Algorithm
+
+To optimize the weight and architecture parameters in the loss function (4a), we applied the one-shot NAS method based on an adaptive stochastic natural gradient neural architecture search (ASNG-NAS) [9]. ASNG-NAS considers the probability distribution Pθ(a) that generates the architecture parameters, and we optimize the weight parameters x and the distribution parameters θ by minimizing the expected objective function EPθ(a) [f (x, a)]. More details on the ASNG-NAS can be found in [9].
+For solving NASC using the ASNG-NAS, we consider optimizing the weight and architecture parameters of the large neural network before splitting it, rather than optimizing the head and tail networks separately. Therefore, we introduce a split point k ∈ K and redeﬁne the neural network model as N (·|x, a, k). The split point k represents the layer or block number, and the model N is divided into the head and tail networks based on k. We aim to optimize x, a and k based on the ASNG-NAS. The split point k is sampled from the probability distribution Pθ as well as the architecture parameters. Therefore, we denote a = (a, k) ∈ A × K as a random variable that follows Pθ(a), and the expected objective function of ASNG-NAS for NASC is written as J (x, θ) = EPθ(a)[ losslSC(x, a) + latτ ]. In this paper, we use lSC(x, a) = p∈P L(x, a, p)/|P| where L(x, a, p) is a loss function such as cross-entropy by inserting a dropout at the split point k using a dropout rate p and P = {0.0, 0.1, 0.2, 0.3, 0.4, 0.5} is a set of dropout rates, and loss = lat = 1.
+Algorithm 1 summarizes the proposed method. To run the algorithm, we set a supernet, a model whose all submodels are equivalent to all the models in A. The architecture and split point are represented by the following D dimensional categorical variable: α = (α1, α2, . . . , αD) where αd possesses Kd categories. Note that α1, . . . , αD−1 and αD are tied to the architecture and split point, respectively.
+
+Algorithm 1 ASNG-NAS for NASC
+
+Require: α = 1.5, δθ0 = 1, λx = λθ = 2 1: initialize the weight parameters x and the distribution
+
+parameters θ
+
+2: repeat
+
+weight pre-training
+
+3: sample λx pair of architecture and split point from a
+
+uniform distribution and update x using (5)
+
+4: until termination conditions are met
+
+5: ∆ = 1, γ = 0, s = 0, t = 0
+
+6: repeat
+
+distribution update
+
+7:
+
+δθ = δθ0/∆, β = δθ/n1θ/2
+
+8: update θt+1 with (7), then force θt+1 ∈ Θ by
+
+projection
+
+9:
+
+θ = δθ/ G (θt) F(θt)
+
+10:
+
+s ← (1 − β)s +
+
+β(2
+
+−
+
+β)
+
+F(θt
+
+)
+
+1 2
+
+G(θt )
+
+G(θt)
+F(θt )
+
+11: γ ← (1 − β)2γ + β(2 − β)
+
+12: ∆ ← min ∆max, ∆ exp β γ − s 2/α
+
+13: until termination conditions are met
+
+14: sample the most likely architecture and split point a∗ =
+
+arg maxa Pθ(a), and update the weight parameters weight re-training
+
+We treat architecture and split point as one-hot vectors
+
+a = (a1, a2, . . . aD) where ad = (ad,1, ad,2, . . . ad,Kd )T ∈
+
+{0, 1}Kd such that
+
+Kd k=1
+
+ad,k
+
+=
+
+1.
+
+Also,
+
+we
+
+set
+
+a
+
+D
+
+dimen-
+
+sional categorical distribution Pθ(a) =
+
+D d=1
+
+Kd k=1
+
+(θd,k
+
+)ad,k
+
+where θd,k ∈ [0, 1] is the probability of being ad,k = 1
+
+such that
+
+Kd k=1
+
+θd,k
+
+=
+
+1, and the distribution parame-
+
+ters is represented by θ = (θ1, θ2, . . . , θD) ∈ Θ where
+
+θd = (θd,1, θd,2, . . . , θd,Kd )T, and the number of distribution
+
+parameters is nθ =
+
+D d=1
+
+Kd k=1
+
+1.1
+
+The proposed algorithm consists of three stages; weight pre-
+
+training, distribution update2, and weight re-training.
+
+Weight Pre-training: In the weight pre-training stage, we optimize the weight parameters x in the supernet to minimize J(x, θ). The gradient of weight parameters is given by ∇xJ (x, θ) = EPθ(a)[∇x losslSC(x, a)]. In most cases, it is difﬁcult to compute analytically ∇xJ(x, θ). In addition, computing lSC requires |P| times forward propagation, which is expensive for computation cost. Therefore, ∇xJ(x, θ) is approximated using Monte-Carlo method with λx(= 2) samples a(1), a(2), . . . , a(λx) sampled from the uniform distribution and lSC(x, a) ≈ L(x, a, p = 0.5) to reduce the computation cost of training the weights (the same applies to the re-training
+stage). The approximated gradient of weight parameters is
+
+1We can omit the distribution parameter for the last categorical element
+
+owing to the condition of
+
+Kd k=1
+
+θd,k
+
+=
+
+1.
+
+2The original ASNG-NAS alternates between updating weight and distri-
+
+bution parameters. However, we observed improved results in preliminary
+
+experiments when the weights and distribution parameters were updated
+
+sequentially, as in [11].
+
+TABLE I: The candidate blocks in the FBNet search space.
+
+Block type k3 e1
+k3 e1 g2 k3 e3 k3 e6 k5 e1
+k5 e1 g2 k5 e3 k5 e6 skip
+
+expansion (e) 1 1 3 6 1 1 3 6 -
+
+Kernel (K) 3 3 3 3 5 5 5 5 -
+
+Group 1 2 1 1 1 2 1 1 -
+
+TABLE II: The additional candidate blocks in the extended search space.
+
+Block type k3 e1/2 k3 e1/4 k3 e1/8 k5 e1/2 k5 e1/4 k5 e1/8
+
+expansion (e) 1/2 1/4 1/8 1/2 1/4 1/8
+
+Kernel (K) 3 3 3 5 5 5
+
+Group 1 1 1 1 1 1
+
+given by
+
+G(xt+1) = 1 λx λx i=1
+
+loss∇xL(xt, a(i), p = 0.5)
+
+,
+
+(5)
+
+where t is a time step. We note that the weight parameters x
+
+can be updated using any stochastic gradient descent (SGD)
+
+method with (5). We repeat this process for 30 epochs.
+
+Distribution Update: In the distribution update stage, we
+in turn optimize the distribution parameters θ under the trained weight parameters x∗. We use the natural gradient ∇˜ θJ (x∗, θ) = EPθ(a)[( losslSC(x∗, a) + latτ )∇˜ θ log Pθ(a)] to update the distribution parameters. Here, ∇˜ θ = F(θ)−1∇θ where F(θ) is the Fisher information matrix (FIM), and ∇˜ θ log Pθ(a) is given by a − θ under the categorical distribution [9]. However, ∇˜ θJ(x∗, θ) is difﬁcult to compute analytically as with the weight parameters. Therefore, ∇˜ θJ(x∗, θ) is also approximated using Monte-Carlo method with λθ(= 2)
+samples, and the distribution parameters is updated as follow-
+ing:
+
+G(θt) = 1
+
+λθ
+u(i)(a(i) − θt) ,
+
+(6)
+
+λθ i=1
+
+θt+1 = θt + θG(θt) ,
+
+(7)
+
+where u(i) is the utility value based on the objective value i-th sample, and θ is an adaptive learning rate updated according to line 9 in Algorithm 1. When λθ = 2, the value of the better sample is assigned 2, and that of the worse sample is −2. As for the termination condition, this study simply set the end of the update at 90 epochs.
+
+Weight Re-training: In the weight re-training stage, we sample the most likely architecture and split point a∗ =
+arg maxa Pθ(a), and train the weight parameters from scratch to minimize L(x, a∗, p = 0.5) for 300 epochs.
+
+III. EXPERIMENTAL EVALUATION
+A. Setups
+Dataset and search space: We conducted experiments using the CIFAR-100 dataset and HW-NAS-Bench [10], a hardware performance dataset for hardware-aware NAS. HWNAS-Bench provides the computation latency and energy cost of all the network architectures in the search spaces of both NAS-Bench-201 [12] and FBNet [13] on speciﬁc hardware
+
+such as Raspberry Pi 4, FPGA, and Edge GPU. In this experiment, we considered the FBNet search space [13] and leveraged the latency performance of Rasberry Pi 4 and Edge GPU as those of an end device and edge server, respectively.
+FBNet search space is a layer-wise search space constructed with a ﬁxed macro architecture that deﬁnes the number of layers and each layer’s input/output dimensions. For better accuracy and efﬁciency, each layer of the network can independently choose different blocks from the candidate block, except for the ﬁrst and last three layers with ﬁxed operators. Each candidate block contains three operations: a 1×1 convolution, a K×K depthwise convolution, where K denotes the kernel size, and another 1×1 convolution. It is important to note that only the ﬁrst 1×1 convolution and the depthwise convolution are followed by ReLU activation functions, and there is no activation function following the last 1×1 convolution. Furthermore, to control the block, we use an expansion ratio to determine the input/output channel size expansion of the K×K depthwise convolution. Each candidate block in the search space can choose a different expansion ratio, kernel size, and the number of groups for the group convolution. In the experiment, there were twenty-two layers that we needed to search for from nine predeﬁned candidate blocks, as listed in Table I. The block “skip” means that there is no operation in that layer. Consequently, it contains 922 ≈ 1021 possible architectures in FBNet search space.
+This study also searched for a split point in addition to searching for candidate blocks. We set 23 candidate split points: 22 after each block and one after the ﬁrst convolution layer. Fig. 1a shows the candidate block’s operations and the split point. The skip connection is inserted when the input and output sizes of the block are the same. We set Tth = 30 (ms) in the FBNet search space. Note that the FBNet search space originally supported only the ImageNet dataset; however, the work of [10] created a macro-architecture for CIFAR-100.
+Additionally, we consider an extension of FBNet search space, where the computation latency is approximated from the amount of computation (FLOPs) using HW-NAS-Bench. The extented search space introduces candidate blocks with an expansion ratio of less than one into the FBNet search space in order to utilize the bottleneck structure. Table II lists the additional candidate blocks in the extended search space. The additional blocks change the split point immediately after the K×K depthwise convolution and remove the skip connection to reduce the transfer data size. Fig. 1b shows the additional block’s operations and split positions. We set Tth = 15 (ms)
+
+1x1 (group) Conv
+
+1x1 (group) Conv
+
+KxK DWConv
+
+KxK DWConv
+
+1x1 (group) Conv
++
+Split
+
+Split 1x1 (group) Conv
+
+(a) The candidate block in the (b) The additional candidate
+
+FBNet search space.
+
+block in the extended search
+
+space.
+
+Fig. 1: The candidate blocks in the FBNet search space and the extended search space. Red lines indicate the split points.
+
+TABLE III: Devices’ estimated computation power
+
+device EdgeGPU
+Raspi4
+
+computation power (GFLOPS) 8.0213 2.3562
+
+in the extended search space.
+
+Because the measured latency cannot be obtained from
+
+HW-NAS-Bench owing to the additional blocks, we used
+
+the latency estimated using FLOPs instead. We assume that
+
+the device has a speciﬁc computation power and that the
+
+latency is determined by the model’s FLOPs and the device’s
+
+computation power. In particular, we assume that the latency T comp is determined as follows:
+
+T comp
+
+=
+
+C comp .
+
+(8)
+
+Π
+
+Here, Ccomp is the model’s computation cost (i.e., FLOPs),
+
+and Π is the device’s computation power. We estimated
+
+the computation power using the latency in HW-NAS-Bench
+
+using the following equation:
+
+22 9
+
+Π = arg min
+
+π
+
+l=1 k=1
+
+Tlc,okmp
+
+−
+
+Clc,okmp π
+
+2
+,
+
+(9)
+
+where Tlc,okmp and Clc,okmp denote the measured latency and FLOPs of the k-th block in the l-th layer, respectively. Table
+
+III lists the devices’ estimated computation power.
+
+Note that HW-NAS-Bench [10] points out that the correla-
+
+tion between FLOPs and EdgeGPU latency is small. However,
+
+this experiment was conducted to verify that this method can
+
+be applied when the latency is obtained in some way and the
+
+precision of the latency is not critical.
+
+Assumptions on communications: An end device and an edge server were assumed to be connected via a lossy IoT
+
+Fig. 2: Accuracy vs. latency of each model searched in FBNet search space when p = 0.2 and Tth = 30 ms.
+
+network abstracted as a communication link in which the packets were randomly dropped with the probability p. Hence, a proportion p of the elements of the intermediate representation (i.e., the output of the head network) transmitted by the device were randomly dropped. We also assumed a stable throughput r for the communication link. Thus, the communication latency between the device and server is calculated as
+
+T comm = D(ah) ,
+
+(10)
+
+r
+
+where D(ah) denotes the data size of the output of the head network Nh(·|xh, ah). The data size depends on the number of units in the output layer, the data type, and the compression method. In this evaluation, to calculate the communication latency simply, the data size is calculated as q × nh where q and nh represent the quantization bit rate and the number of output units in the head network, respectively. Assuming a data type of 32 bit ﬂoat, q was set to 32. The throughput of the communication link (including MAC and network layer overheads) r was set to 8.0 Mbit/s, which is in the throughput range for wireless LANs based on the IEEE 802.11 standards.
+
+Compared methods: We compared NASC with a hardwareaware NAS protocol modiﬁed for this split computing scenario. We refer to this protocol as HWNAS. The HWNAS employs a split point optimization method simpliﬁed from [7] and model tuning leveraging dropout [5] to reduce latency and improve robustness against packet loss. The HWNAS conducts conventional NAS, model split, and model re-training sequentially. Speciﬁcally, HWNAS ﬁrst performs an architecture search assuming the entire model is on the end device; that is, it calculates the latency assuming T = Ticomp(ah) + Ticomp(at) and assumes that packet loss does not occur in (4a). Then, the model is split into head and tail networks at a point that minimizes the same objective
+
+IV. CONCLUSION
+In this paper, we propose a NAS for split computing, called NASC. The NASC employs the adaptive stochastic natural gradient method to jointly explore the optimal model architecture and split point to achieve higher accuracy with low end-to-end latency, that is, to minimize the weighted sum of the model loss and total latency on communication and computation in the end device and edge server. The performance evaluation using HW-NAS-Bench demonstrates that the proposed NASC reduces the latency by approximately 40–60% from the baseline with slight accuracy degradation.
+
+REFERENCES
+
+Fig. 3: Accuracy vs. latency of each model searched in extended search space when p = 0.2 and Tth = 15 ms.
+function (4a) as NASC to minimize the latency and accuracy degradation by split computing. Finally, in the HWNAS w/ dropout, the head and tail networks are re-trained using the dropout technique, whereas the HWNAS w/o dropout simply re-trains the networks without dropout.
+B. Results
+Fig. 2 shows scatter plots of accuracy vs. latency for the 15 models obtained by the proposed method and the compared methods in the FBNet search space when p = 0.2. Five models were obtained for each method. As shown in Fig. 2, only the proposed method can obtain a model that satisﬁes the latency constraints. This is because that NASC searches a model that minimizes the total latency of computation and communication, while HWNAS does not consider communication latency when searching for model architectures. However, the model accuracy of NASC was slightly lower than HWNAS. Speciﬁcally, the medians of the model accuracy for NASC, HWNAS w/ Dropout, and HWNAS w/o Dropout were 73.30%, 73.35%, and 73.63%, respectively. This is because of the trade-off between the model accuracy and latency.
+Fig. 3 shows scatter plots of the accuracy vs. latency when considering the extended search space when p = 0.2. As in the FBNet search space, all the models obtained by the proposed method achieved lower latency than the threshold, whereas each baseline obtained only one model that achieves lower latency than the threshold. On the one hand, the median of the accuracy of NASC was slightly lower than baselines, which were 63.20%, 63.69%, and 64.50% for NASC, HWNAS w/ Dropout, and HWNAS w/o Dropout, respectively.
+These results demonstrate that NASC can signiﬁcantly reduce latency while slightly decreasing model accuracy, thereby improving the accuracy-latency trade-off.
+
+[1] H. Lin and N. W. Bergmann, “IoT Privacy and Security Challenges for Smart Home Environments,” Information, vol. 7, no. 3, 2016.
+[2] P. Schulz, M. Matthe, H. Klessig, M. Simsek, G. Fettweis, J. Ansari, S. A. Ashraf, B. Almeroth, J. Voigt, I. Riedel, A. Puschmann, A. Mitschele-Thiel, M. Muller, T. Elste, and M. Windisch, “Latency Critical IoT Applications in 5G: Perspective on the Design of Radio Interface and Network Architecture,” IEEE Communications Magazine, vol. 55, no. 2, pp. 70–78, 2017.
+[3] A. E. Eshratifar, A. Esmaili, and M. Pedram, “BottleNet: A Deep Learning Architecture for Intelligent Mobile Cloud Computing Services,” in Proc. IEEE/ACM International Symposium on Low Power Electronics and Design (ISLPED), 2019, pp. 1–6.
+[4] Y. Matsubara, D. Callegaro, S. Baidya, M. Levorato, and S. Singh, “Head Network Distillation: Splitting Distilled Deep Neural Networks for Resource-Constrained Edge Computing Systems,” IEEE Access, vol. 8, pp. 212 177–212 193, 2020.
+[5] S. Itahara, T. Nishio, Y. Koda, and K. Yamamoto, “CommunicationOriented Model Fine-Tuning for Packet-Loss Resilient Distributed Inference Under Highly Lossy IoT Networks,” IEEE Access, vol. 10, pp. 14 969–14 979, 2022.
+[6] Y. Matsubara, M. Levorato, and F. Restuccia, “Split computing and early exiting for deep learning applications: Survey and research challenges,” ACM Comput. Surv., 2022.
+[7] G. Li, L. Liu, X. Wang, X. Dong, P. Zhao, and X. Feng, “Auto-tuning Neural Network Quantization Framework for Collaborative Inference Between the Cloud and Edge,” in Proc. International Conference on Artiﬁcial Neural Networks (ICANN), 2018.
+[8] T. Elsken, J. H. Metzen, and F. Hutter, “Neural Architecture Search: A Survey,” Journal of Machine Learning Research, vol. 20, no. 55, pp. 1–21, 2019.
+[9] Y. Akimoto, S. Shirakawa, N. Yoshinari, K. Uchida, S. Saito, and K. Nishida, “Adaptive Stochastic Natural Gradient Method for OneShot Neural Architecture Search,” in Proc. International Conference on Machine Learning (ICML), 2019, pp. 171–180.
+[10] C. Li, Z. Yu, Y. Fu, Y. Zhang, Y. Zhao, H. You, Q. Yu, Y. Wang, C. Hao, and Y. Lin, “HW-NAS-Bench: Hardware-Aware Neural Architecture Search Benchmark,” in Proc. International Conference on Learning Representations (ICLR), 2021.
+[11] Y. Noda, S. Saito, and S. Shirakawa, “Efﬁcient Search of Multiple Neural Architectures with Different Complexities via Importance Sampling,” in Proc. International Conference on Artiﬁcial Neural Networks (ICANN), 2022, (to appear).
+[12] X. Dong and Y. Yang, “NAS-Bench-201: Extending the Scope of Reproducible Neural Architecture Search,” in International Conference on Learning Representations (ICLR), 2020.
+[13] B. Wu, X. Dai, P. Zhang, Y. Wang, F. Sun, Y. Wu, Y. Tian, P. Vajda, Y. Jia, and K. Keutzer, “FBNet: Hardware-Aware Efﬁcient ConvNet Design via Differentiable Neural Architecture Search,” in Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2019.
+

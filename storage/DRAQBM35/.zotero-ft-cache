@@ -1,0 +1,1181 @@
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+1513
+
+CrowdVision: A Computing Platform for Video Crowdprocessing Using Deep Learning
+
+Zongqing Lu , Member, IEEE, Kevin Chan , Member, IEEE, Shiliang Pu, and Thomas La Porta , Fellow, IEEE
+
+Abstract—Mobile devices such as smartphones are enabling users to generate and share videos with increasing rates. In some cases, these videos may contain valuable information, which can be exploited for a variety of purposes. However, instead of centrally collecting and processing videos for information retrieval, we consider crowdprocessing videos, where each mobile device locally processes stored videos. While the computational capability of mobile devices continues to improve, processing videos using deep learning, i.e., convolutional neural networks, is still a demanding task for mobile devices. To this end, we design and build CrowdVision, a computing platform that enables mobile devices to crowdprocess videos using deep learning in a distributed and energy-efﬁcient manner leveraging cloud ofﬂoad. CrowdVision can quickly and efﬁciently process videos with ofﬂoad under various settings and different network connections and greatly outperform the existing computation ofﬂoad framework (e.g., with a 2Â speed-up). In doing so, CrowdVision tackles several challenges: (i) how to exploit the characteristics of the computing of deep learning for video processing; (ii) how to parallelize processing and ofﬂoading for acceleration; and (iii) how to optimize both time and energy at runtime by just determining the right moments to ofﬂoad.
+
+Index Terms—Crowdprocessing, video, ofﬂoad, convolutional neural networks
+Ç
+
+1 INTRODUCTION
+MOBILE devices such as smartphones are enabling users to generate and share videos with increasing rates. In some cases, these videos may contain valuable information, which can be exploited for a variety of purposes.
+In this paper, we consider a video classiﬁcation problem where a task issuer asks the crowd to identify relevant videos about a speciﬁc object or target. This requires object detection to be performed on videos to detect these objects of interest within the frames of the videos. The limitations of mobile devices for these types of applications are well known. The most obvious challenge is the computational requirement. Although it continues to improve, video processing using deep learning, i.e., Convolutional Neural Networks (CNNs), is still a demanding task for mobile devices [1].
+We anticipate that video processing can be performed within a network of mobile devices and a powerful cloud environment. Individuals have the option to process the videos locally or ofﬂoad them to a highly capable computing unit in the cloud. Coupled with the computation limitation is the cost to transmit, whether it be via WiFi or
+ Z. Lu is with the Department of Computer Science, Peking University, Beijing 100871, China. E-mail: zongqing.lu@pku.edu.cn.
+ K. Chan is with the Army Research Laboratory, Adelphi, MD 20783-1138. E-mail: kevin.s.chan.civ@mail.mil.
+ S. Pu is with Hikvision, Hangzhou 310052, China. E-mail: pushiliang@hikvision.com.
+ T. La Porta is with the Department of Computer Science and Engineering, Pennsylvania State University, State College, PA 16801. E-mail: tlp@cse.psu.edu.
+Manuscript received 21 Dec. 2017; revised 13 June 2018; accepted 26 July 2018. Date of publication 7 Aug. 2018; date of current version 31 May 2019. (Corresponding author: Zongqing Lu.) For information on obtaining reprints of this article, please send e-mail to: reprints@ieee.org, and reference the Digital Object Identiﬁer below. Digital Object Identiﬁer no. 10.1109/TMC.2018.2864212
+
+cellular (4G LTE). Transmitting videos to the cloud over wireless links consumes considerable energy. Additionally, when using cellular networks, there may be data budgets that limit data transfer without incurring extra expenses. As a result, we consider the coupled problem of constrained resources of computing, data transmission, and battery.
+Due to these limitations, users may be reluctant to participate in such requested video processing tasks. However, users could be motivated by various incentive mechanisms, such as [2], which are not the focus of this paper. For this paper, we consider a variation on a crowdsensing-type scenario, crowdprocessing [3], [4]. Instead of users collecting and sharing data to solve a larger problem, we explore the computing capability of mobile devices and allow individuals to process some (or all) of the data rather than having some centralized entity process everything [5].
+We design and build CrowdVision, a computing platform that enables mobile devices to crowdprocess videos using deep learning in a distributed and energy-efﬁcient manner leveraging cloud ofﬂoad. In doing so we tackle several challenges. First, to design a computing platform specifically for video processing using deep learning, we should take into account the characteristics of the computing of deep learning. By deploying and measuring the computing of CNNs on mobile devices, we identify batch processing, which makes deep learning different from common computational tasks and can be exploited for computing acceleration. Second, as frames extracted from a video arrive at a certain rate, to take advantage of the batch processing towards optimizing the processing time, we need to determine when to perform each batch with how many frames. However, the problem turns out to be a NP-hard problem. By carefully balancing the waiting time for frames to be available and the processing time incurred by each
+
+1536-1233 ß 2018 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See ht_tp://www.ieee.org/publications_standards/publications/rights/index.html for more information.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+1514
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+additional processing batch, we are able to determine the batch processing to optimize the processing parallelized by ofﬂoading, even with an energy constraint that is imposed by the user. Third, When the data rate for ofﬂoading varies widely, it is hard for mobile devices to acknowledge when ofﬂoad beneﬁts. By correlating signal strength, data rate, and power based on ofﬂoading attempts, we are able to sense and seize the right moments when ofﬂoading beneﬁts both processing time and energy at runtime. To the best of our knowledge, this is the ﬁrst work that takes into consideration batching processing in computational ofﬂoad for the computing of deep learning.
+We envision CrowdVision to be useful for a variety of applications that require content information of videos from the crowd. One common use case is emergency response situations, where municipal agencies ask the public to assist in identifying terrorists or criminals through scanning of their videos, as the FBI did after the Boston Marathon bombing. CrowdVision could handle this request in a smart and automatic way; i.e., it ﬁrst ﬁlters videos based on location and timestamp, and then collectively performs deep learning to ﬁnd the object of interest.
+Contributions. (i) We measure and characterize the processing time and resource usage for each component of video processing using deep learning (Section 3). (ii) We design a split-shift algorithm that parallelizes frame ofﬂoad and local detection to optimize the processing time by taking advantage of batch processing and two algorithms that optimize the processing time with an energy constraint (Section 4). (iii) We design an adaptive algorithm featured with a backoff mechanism, which determines the ofﬂoading at runtime towards optimizing both completion time and energy (Section 5). (iv) We implement CrowdVision on Android with a GPUenabled server for ofﬂoad (Section 6). (v) We show experimentally that CrowdVision greatly outperforms the existing computation ofﬂoad framework (e.g., with a 2Â speed-up) and improves speed and energy usage of video crowdprocessing, and the split-shift algorithm closely approximates the optimum (Section 7).
+2 RELATED WORK
+There are several examples of crowdsensing frameworks similar to CrowdVision. Medusa [6] is a platform that performs crowdsensing tasks through the transfer and processing of media (text, images, videos). Pickle [7] is a crowdsensing application to conduct collaborative learning. GigaSight [8] is a cloud architecture for continuous collection of crowdsourced video from mobile devices. In contrast to these frameworks, CrowdVision is a computing platform for video crowdprocessing using deep learning rather than the system or platform that motivates users and collects sensed data. For the crowdprocessing task, CrowdVision attempts to optimize the performance of the task execution while considering the energy usage and data usage of the participating mobile devices through computation ofﬂoad.
+There is a large body of work that studies computation ofﬂoad for mobile devices [9]. These can be summarily classiﬁed into two categories: building general models for computation ofﬂoad such as [10], [11], [12], [13], [14] and computation ofﬂoad based applications such as [15], [16], [17]. MAUI [10] investigates code ofﬂoad to reserve energy for computation, while Hermes [13] investigates optimal
+
+task assignment in mobile ofﬂoading. The feasibility of computation ofﬂoad is studied in [11] in term of communications networks. COSMOS is presented in [12], which bridges the gap between quick response requests by mobile devices and the long setup time of cloud frameworks. Resource allocation for mobile-edge computation ofﬂoading in cellular networks is considered in [14]. Computation ofﬂoad has been considered and implemented in various applications, e.g., for interactive perception applications [16], social sensing [15] and wearables [17]. In addition to ofﬂoading, Tango [18] considers application replication on mobile devices and servers, where the active instance of the application switches between the two systems to accelerate network-intensive applications. These existing works on computation ofﬂoad consider regular computing tasks. However, as will be discussed in the next section, the computing of deep learning has the unique characteristic (i.e., batch processing) that differentiates it from regular computing tasks. Thus, these works cannot be applied effectively to our application. Moreover, unlike traditional ofﬂoading problems where the cloud has to return the result of the computation to the mobile device, in crowdprocessing, mobile devices are queried from the cloud and the results are gathered at the cloud. This makes the problem different from these existing works.
+Optimizing the computing of deep learning applications on mobile devices has been recently investigated by compressing parameters of CNNs [19], by distributing computation to heterogeneous processors on-board [20], [21], by trading off accuracy and resource usage [22], by mobile GPUs [23], and by ﬁne-tuned cp-decomposition [24]. However, currently, these approaches require custom software or hardware. Nevertheless, these potential processing approaches can be easily integrated with CrowdVision whenever they are available for off-the-shelf mobile devices.
+Splitting the computing of CNN layers between mobile device and cloud is considered in [25]. However, based our experiments on AlexNet, VGGNet, GoogleNet and ResNet [1], the most intensive layers are the ﬁrst few layers of CNNs and later layers cost much less. Moreover, the separation of the layers will break the computing pipeline of CNNs, which could cost longer compute time, especially on GPUs.
+Detecting objects in real-time for augmented reality applications is considered in [26], where the ofﬂoad decision is made for each individual frame. However, we consider videos stored on mobile devices, which means ofﬂoading decision is made on a large number of frames and by determining the optimal batch processing. Therefore, the simple policy in [26] does not work in our case. In addition, energy-efﬁcient scheduling for real-time systems using deep reinforcement learning is investigated in [27]. A more detailed review of deep learning on big data is given in [28].
+3 OVERVIEW
+CrowdVision is a distributed computing platform that enables mobile devices to participate in the crowdprocessing of videos. In this environment, a task issuer initiates a query by which mobile devices are requested to identify some object of interest within its locally stored videos. We consider a crowdprocessing approach to perform object detection/classiﬁcation of videos. This task includes ﬁltering of videos based on metadata, and then processing the videos to perform object detection (note that we currently do not
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+LU ET AL.: CROWDVISION: A COMPUTING PLATFORM FOR VIDEO CROWDPROCESSING USING DEEP LEARNING
+
+1515
+
+Fig. 1. Overview of CrowdVision.
+consider multi-frame video classiﬁcation such as [29]). This takes several steps as described below. Caffe [30], [31], a deep learning framework, is currently employed to perform object detection on frames extracted from videos. Although CrowdVision is currently built on top of Caffe, it is compatible with other deep learning frameworks, e.g., Torch [32] and TensorFlow [33].
+The details of the query can be of varying speciﬁcity (e.g., “ﬁnd people wearing red hats walking a dog in the park on Tuesday evening”). These details may allow for the individuals to ﬁlter out irrelevant videos (based on location or timestamp). At the expense of some energy usage, the user can ofﬂoad the videos to the cloud, where high performance computing can quickly process the videos without energy usage concerns. Alternatively, the user can process some of the frames locally and ofﬂoad others.
+Once these videos are processed using deep learning either locally on the mobile device or remotely on the cloud, the task issuer will receive information about the videos related to the query. For frames that are processed on the mobile devices, the user will forward either the tags, the frames of interest, or the entire video to the cloud.
+Two important aspects of this process are not in the scope of this paper. First, incentive mechanisms for crowdprocessing are important but not the focus of this paper. Second, participation in the task may reveal personal information and intrude on users’ privacy, but users are allowed to ﬁlter out their personal videos. More sophisticated and rigorous treatment of security and privacy control is left as future work.
+The overview of CrowdVision is depicted in Fig. 1. A mobile device has several options to perform object detection on each related video. Performing object detection in a video entails two main steps. First, video frames must be extracted from the video and turned into images. Second, object detection is performed on the images. These two functions may be performed locally on a mobile device, or in the cloud, or distributed between the two systems.
+As illustrated in Fig. 1, by considering several input parameters and constraints, e.g., network connections, battery life, and data budget, a mobile device can perform (i) video ofﬂoad by sending the whole video to the cloud. Alternatively, the user may perform frame extraction locally and then ofﬂoad speciﬁc frames to the cloud. In this case, it needs to determine whether each frame is processed by (ii) frame ofﬂoad in which the frame is sent to the cloud for detection or (iii) local detection where the frame is detected on the mobile device.
+In CrowdVision, we consider both the task issuer’s query requirements and the resource usages of mobile devices. From the perspective of the task issuer, the quality of
+
+CrowdVision’s response to the query can be evaluated by two metrics. First is the timeliness of the response, measuring the time required to process all related videos on each mobile device. Second, the accuracy of the response is measured by the frames identiﬁed as containing the event that actually contains the event, which is determined by the CNN model. In this work, we consider timeliness. From the users’ perspective, its primary criteria is the resource efﬁciency. Moreover, although the computational capability of mobile devices continues to improve, video processing using deep learning on mobile devices is still limited and resource intensive. Therefore, the cloud is provided by task issuers to assist in video processing.
+When mobile devices perform video processing with offloading, they may be connected to the cloud via WiFi or cellular networks. In these two circumstances, users may have different priorities in terms of budgeting resources. When using WiFi, users may not care about the resource usage as long as video processing does not affect the normal use of their mobile devices; or they may only care about battery life when battery recharging is not accessible. When using cellular networks, battery life and data usage may become the primary concerns since it is usually inconvenient to recharge mobile device when connected cellular networks and cellular data plans may be limited. Therefore, the design of CrowdVision takes both of these into consideration.
+Through the characterization of processing time, energy, and cellular data usage for video processing, we design CrowdVision. By considering inputs from the processing task, constraints of users, and various network scenarios, we optimize cloud-assisted video crowdprocessing as a function of these design parameters. CrowdVision determines how to quickly and efﬁciently process each video and takes advantage of some actions that can be done in parallel or pipelined. In the following, we describe each of these processing components.
+3.1 Frame Extraction
+Frame extraction is used to take individual video frames and transform them into images upon which object detection may be performed. To target objects with different dynamics within the video, the task issuer may request a different frame extraction rate. For example, for an object moving at a high speed like a car, the rate should be high enough to not miss the object. For a slowly moving object like a pedestrian, a lower frame extraction rate can be used, which eases the computing burden. The setting of the frame extraction rate for object detection is important but it is not the focus of this paper. CrowdVision takes frame extraction rate as a parameter deﬁned by the task, denoted as er frame per second (fps).
+Figs. 2a and 2b, respectively, illustrate the total processing time and the processing time per frame for frame extraction using a hardware codec (H.264 [34]) with different extraction rates on a 30-second 1080p video (30fps) on a Galaxy S5 (unless stated otherwise all measurements are performed on the Galaxy S5). In Fig. 2a, the total processing time for extracting all the frames takes about 13 seconds, and it decreases as the extraction rate reduces. The processing time per frame, as illustrated in Fig. 2b, slightly and linearly increases as the extraction rate decreases, because it takes longer time to seek a frame when fewer frames are extracted. The average is about 16 ms. Moreover, as shown in Table 1, the power of frame extraction is about 1 W, and
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+1516
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+TABLE 1 Power and CPU Usage of Frame Extraction and
+Object Detection on Smartphone
+
+Fig. 2. Processing time of different extraction rates on a 30-second 1080P video using DSP on smartphone.
+
+Frame Extraction Object detection
+
+Power
+1,178 mW 2,191 mW
+
+CPU usage
+4% 25%
+
+the CPU usage is only about 4 percent. The power and energy is measured by Monsoon power monitor [35].
+
+3.2 Detection
+Detection is the process of determining if the object of interest is in a frame. For detection, we currently use AlexNet [36], a 8-layer CNN (totally 729 M FLOPS), on Caffe to perform classiﬁcation, but we do not have any restriction on CNN models.1 Although Caffe can be accelerated by CUDAenabled GPUs [37], it is currently not supported by GPUs on off-the-shelf mobile devices. Caffe in both the cloud and mobile devices is the same, but the cloud is equipped with powerful CUDA-enabled GPUs and can perform object detection hundreds of times faster than mobile devices.
+We ﬁnd that the processing time of detection is affected by the batch size, e.g., processing two frames in a batch takes less time than that of two frames that are detected individually. Fig. 3 shows the measured processing time of detection performed individually and in a batch. The processing time grows linearly with the increase of the number of frames for both cases. However, batch processing performs much better, where the intercept (a) is about 240 ms and the slope (b) is 400 ms. That means if we process ten frames one by one, it takes about 6.4 s, while if ten frames are processed in a batch, it takes about 4.24 s. The difference grows with the increase of the number of frames. For detection, it is better to put more frames in a batch to reduce processing time. However, the system must wait longer to get the extracted frames from the video. Therefore, it is difﬁcult to determine the best batch size.
+This characteristic of batch processing commonly exists in the computing of CNNs on both CPUs and GPUs, and it also drives the design of CrowdVision’s modules of local detection and frame ofﬂoad. Although CrowdVision is designed based on the detection using mobile CPUs, it can be easily adapted to mobile GPUs when they are available for the acceleration of deep learning on off-the-shelf mobile devices, because this just requires a change of system parameters. Moreover, despite the fact that mobile GPUs can perform several times faster than CPUs, ofﬂoading may still be needed since CNN models go deeper and computing becomes much more difﬁcult (e.g., the state-of-the-art CNN, ResNet [38], has more than a thousand layers).
+Table 1 gives the measured power and CPU usage of performing detection on the smartphone. The power is 2191 mW, while the CPU usage is 25 percent (occupied one of four cores). Although object detection requires
+1. The processing time of detection varies over different CNN models. However, the processing time of detection is just a system parameter in CrowdVision and CrowdVision supports any CNN model run on Caffe. The AlexNet model used in this paper is trained on the ImageNet dataset, and the top-5 accuracy is about 80 percent.
+
+Fig. 3. Processing time of detection performed individually or in batch on smartphone.
+considerable computation, together with frame extraction, it will not affect the normal operations of mobile devices, and thus we also consider performing video processing on mobile devices locally.
+3.3 Ofﬂoading Mobile devices can choose between video ofﬂoad and local processing as depicted in Fig. 1. When choosing local processing, they then decide between frame ofﬂoad and local detection. These decisions are all affected by network conditions that lead to divergent throughput and power. Moreover, mobile devices can be connected to the cloud via either WiFi or cellular. Each may have different characteristics, and users may also have different concerns in each scenario. Therefore, we separate these two scenarios throughout the design of CrowdVision for easy of presentation. However, it does not mean that the solution introduced for one scenario works exclusively in that scenario. It depends on situational characteristics.
+Note that due to the characteristic of batch processing, none of existing ofﬂoading schemes can directly and effectively apply to deep learning for video processing because they cannot take advantage of batch processing to reduce the completion time and energy expenditure.
+4 PROCESSING UNDER WIFI
+When mobile devices are connected to the cloud with WiFi, energy usage may or may not be the concern. Therefore, in this section, we study the optimization of the processing time on a mobile device, and then we investigate the optimization while also considering energy usage as a constraint, which can be imposed by the user to govern the amount of energy the device uses for each task.
+4.1 Optimizing Completion Time When a mobile device receives a task, it ﬁrst parses the task to ﬁnd the related videos based on metadata, such as location information, or timestamp. The completion time is the time spent processing these related videos. We say a video is processed when the video is ofﬂoaded to the cloud, or frames are extracted and processed by some combination of the cloud and local device. In CrowdVision, multiple videos
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+LU ET AL.: CROWDVISION: A COMPUTING PLATFORM FOR VIDEO CROWDPROCESSING USING DEEP LEARNING
+
+1517
+
+are processed in serial; i.e., we do not consider parallel video ofﬂoading and local processing, since it is not resource-efﬁcient. For example, given local processing and video ofﬂoading, one of them is more energy-efﬁcient. Parallelizing video ofﬂoading and local processing will cost more energy than selecting the more energy-efﬁcient way and process videos in serial. As videos are processed in serial, optimizing the completion time of all related videos on a mobile device is equal to minimizing the completion time of each video. Therefore, for each video, Crowd Vision ﬁrst estimates and compares the completion time of video ofﬂoad and local processing.
+Mobile devices are usually connected to WiFi when users are at home or at work. In such environments, the channel conditions commonly vary slightly. Therefore, similar to MAUI [10], for the processing under WiFi, the data rate between a mobile device and cloud can be considered to be stable during a short period time. Note that the environment with a highly dynamic WiFi data rate can be handled by the adaptive algorithm discussed in Section 5. Like MAUI, mobile devices probe the data rate by sending 10 KB data to the cloud periodically. Let r denote the data rate.
+For each video, the processing time of video ofﬂoad can be easily estimated. However, for local processing, we have to consider the time spent on extracting a frame, ofﬂoading a frame, and detecting a frame, and then choose between frame ofﬂoad and local detection wisely for each frame to obtain minimal completion time of local processing.
+Processing Time on Frame Extraction. As shown in Fig. 2b, the processing time of extracting a frame linearly increases as extraction rate decreases. Given an extraction rate deﬁned by the task, we can easily obtain the processing time to extract a frame from a speciﬁc video. Note that videos with different resolutions (e.g., 720, 1080 p, 4 K) have varied processing times due to different decoding workload. However, the processing time on the frames from videos with the same speciﬁcations varies only slightly based on our experiments.
+Processing Time on Local Detection. As illustrated in Fig. 3, the processing time of frame detection can be calculated as a þ bx, where x is the number of frames included in a processing batch. However, since extracted frames do not become available at the same time, and batch processing requires all the frames to be processed to be available before processing, the optimized processing time of multiple extracted frames cannot be simply computed as above. This problem turns out to be non-trivial.
+Assume there will be totally n frames extracted from a video. Each frame will be available at a time interval g (i.e., the time to extract a frame). To minimize the processing time, we need to optimally determine how to process these frames, i.e., how many processing batches are needed and how many frames each batch should process.
+To mathematically formulate the problem, let us assume the number of batches is also n (n can be seen as the maximum number of batches needed to process the frames) and let yi denote the number of frames for batch i 2 ½1; n, where yi ! 0 (yi ¼ 0 means batch i does not process any frame). Let xi denote the time interval between the start times of batch i and i þ 1, x0 denote the waiting time before processing the ﬁrst batch, xn denote the processing time of the last batch. Note that if yi and yiþ1 are both zero, xi is also zero. Then,
+
+our problem can be formulated as an Integer Linear Programming (ILP) problem as following:
+
+min s:t:
+
+Xn xi
+i¼0
+
+Xn yi ¼ n;
+i¼1
+
+Xk
+
+X kþ1
+
+xi ! gyi;
+
+i¼0
+
+i¼1
+
+(1)
+
+(2)
+
+k ¼ 0; . . . ; n À 1
+
+(3)
+
+xi þ bia ! a þ byi; nð1 À biÞ ! yi ! 0;
+
+i ¼ 1; . . . ; n
+
+(4)
+
+i ¼ 1; . . . ; n
+
+(5)
+
+bi ¼ f0; 1g;
+
+i ¼ 1; . . . ; n:
+
+(6)
+
+Constraint (2) regulates that all frames are processed. Constraint (3) makes sure that the number of frames to be processed by a batch are available before the start of the batch. Moreover, the previous batch must have been completed already before processing a batch, which can be represented as xi ! a þ byi if yi > 0 and else xi ! 0. Constraints (4), (5), and (6) are the workaround for this. If yi > 0, bi is zero according to constraint (5). If yi ¼ 0, constraint (4) is equal to xi þ bia ! a. As our problem is a minimization problem, b will be equal to one. Since the problem (1) is ILP (NPhard), the optimal solution of minimizing the processing time on detection costs too much, even for a small n. For example, for a instance of n ¼ 100 with parameters obtained from Figs. 2 and 3, GLPK takes 217 seconds to solve the problem optimally on a 16-core workstation.
+Processing Time on Frame Ofﬂoad. Besides detecting frames locally, mobile devices can also choose to ofﬂoad frames to the cloud to accelerate the processing. Let d denote the time a mobile device spends ofﬂoading a frame, where d ¼ df =r and df is the data size of an extracted frame. Note that the extracted frame may be resized to feed different CNN models and thus df is not a ﬁxed size. When ofﬂoading a frame takes less time than extracting a frame (i.e., d g), the completion time of local processing is about gn, which is the processing time of frame extraction. However, when d > g (the most common case), there will be frame backlog and local detection is needed. However, as discussed above, minimizing the processing time of local detection is already an NP-hard problem. The problem that considers both frame ofﬂoading and local detection to minimize the processing time of local processing is even more difﬁcult to solve. Therefore, we propose a split-shift algorithm to solve the problem.
+4.2 Split-Shift Algorithm
+For each extracted frame, we have two options: frame offload and local detection, which are two processes working in parallel to reduce the completion time of a video. Intuitively, the ofﬂoading process should keep sending extracted frames to the cloud. For the detection process, it is better to reduce the number of processing batches (i.e., increase batch sizes), since each additional batch incurs more processing time. However, as the batch processing requires the input frames be available before the processing starts, it is better to not wait too long for the extracted frames. Based on this intuition, we design the split-shift algorithm.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+1518
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+Fig. 4. Workﬂow of the split-shift algorithm.
+
+If only frame ofﬂoad is deployed, the completion time is dn (accurately it is dn þ g, but g is small and cannot be reduced and thus we consider dn for simplicity). We treat the detection process as a helper to reduce dn. The main idea is to shift the workload from the ofﬂoading process to the detection process to balance the completion times of these two processes by determining the number of processing batches and the number of frames to be processed in each batch.
+First, let us assume that all frames are available at the beginning. Then, let nÃp denote the number of frames to be detected locally that minimizes the completion time, and we have
+dðn À nÃpÞ ¼ a þ bnÃp;
+which can be employed to approximate the case where d ) g and a ) g. Moreover, nÃp can be seen as the maximum number of frames to detect for all cases. As frames are extracted at a certain rate, the number of frames for location detection should be less than nÃp.
+Since the ofﬂoading process keeps sending frames to the cloud, for the detection process, the extracted frame arrives every ddÀgg, denoted by g0. Then, frame detection can be determined by the following steps. Let b denote the number of processing batches and initially b ¼ 1.
+1. First, we compare nÃpg0 and a. If nÃpg0 a, then we can calculate np by solving
+dðn À npÞ ¼ npg0 þ a þ bnp;
+
+where np ¼ bgd0þnÀbþadc. For this case, there is only one
+processing batch and np frames. 2. If nÃpg0 > a, which means the waiting time before nÃp
+frames are available is more than the processing
+time for an additional processing batch (i.e., a), it is
+better to schedule more than one batch. Therefore, we increase b by one. Then, n1p, i.e., the number of frames of the ﬁrst processing batch, will be calcu-
+lated by
+
+n1pg0 þ a þ bn1p ! nÃpg0:
+
+to guarantee available for
+
+tdhaetteacltlioonthaefrtefrranm1pesis(i.per.,ocneÃpsÀsedn,1p)
+
+are and
+
+n1p ¼ dngÃpg0þ0Àbae.
+
+3. However, there may still be n1pg0 > a. If so, it is better
+
+to split the ﬁrst processing batch into two, similar to
+
+the previous step. The split process continues until n1pg0 a and then we have the number of scheduled
+batches and also the number of frames for each batch. 4. nÃp is derived based on the assumption stated above.
+
+However, the frames to be locally detected must be
+
+less than nÃp. Therefore, we need to rebalance the completion time between these two processes by
+
+Fig. 5. Power of WiFi in terms of different uplink rates on smartphone.
+
+shifting frames from local detection to frame ofﬂoading. To do so, ﬁrst we calculate np by
+
+dðn À npÞ ¼ n1pg0 þ ab þ bnp:
+
+If
+
+Pb
+i¼1
+
+nip
+
+À
+
+np
+
+!
+
+nbp,
+
+decrease
+
+b
+
+by
+
+one
+
+and
+
+recalcu-
+
+lPatbie¼1thniips
+
+equation. À np < nbp
+
+The and
+
+snhbpifitspsreotcteossnbpisþrenpp eÀatPedbi¼u1nntipil.
+
+Finally, local detection will process total np frames by b batches, and each batch i will process nip frames. The workﬂow of the split-shift algorithm is illustrated in
+
+Fig. 4. The computational complexity of the algorithm is
+
+OðnÞ, which is desirable for mobile devices. Moreover, it is
+
+also easy to be implemented on mobile devices; i.e., the off-
+
+loading process simply keeps sending frames one by one
+
+until frame queue is empty, while the detection process ini-
+
+tiates batch processing when the number of frames required
+
+by each batch are available in the frame queue.
+
+Overall, for each video, a mobile device ﬁrst estimates
+
+the completion time of video ofﬂoad and local processing,
+
+respectively, and then chooses the approach that has a bet-
+
+ter completion time.
+
+4.3 Optimization with Energy Constraint
+In this section, we ﬁrst look into the energy consumption of each processing module and then investigate the problem of optimizing the completion time with an energy constraint.
+Fig. 5 shows the measured power of WiFi transmission in terms of different data rates on the smartphone. The power linearly increases with the data rate, similar to that shown in [39]. From the experiment, the sending state of WiFi consumes about 1W, denoted by ei, and the power increases about 25 mW for every 1 Mbits/s increase in data rate, denoted by De. For a video v with data rate dv and length lv, the energy consumption of ofﬂoading video v using WiFi can be represented as
+
+Ev
+
+¼
+
+dvlv r
+
+ðei
+
+þ
+
+rDeÞ:
+
+Let ee denote the power of frame extraction and ep denote the power of frame detection, which are measured on the smartphone and shown in Table 1. Then, the energy consumption of frame extraction is
+
+Eve ¼ lvregee:
+The minimal energy consumption of locally detecting all frames extracted from video v is
+
+Evp ¼ ða þ blvreÞep:
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+LU ET AL.: CROWDVISION: A COMPUTING PLATFORM FOR VIDEO CROWDPROCESSING USING DEEP LEARNING
+
+1519
+
+Local detection can yield Evp only when all frames are processed in one batch. Moreover, the energy cost of ofﬂoading
+all frames extracted from video v is
+
+Evo
+
+¼
+
+lvredf r
+
+ðei
+
+þ
+
+rDeÞ:
+
+When considering energy consumption only, it is better to
+
+ofﬂoad frames rather than to perform local detection when
+
+Evp > Evo. Also, it is straightforward to decide between video ofﬂoading and local processing based on Ev, Eve, Evp and Evo. However, the optimization of energy consumption may not necessarily optimize the completion time; i.e., we
+
+cannot always optimize the energy consumption and com-
+
+pletion time simultaneously.
+
+Since the minimum and the maximum energy consump-
+
+tion for video processing can be easily calculated, we will
+
+let users to choose between the minimum and maximum
+
+amount of energy to be consumed. Then, the selected amount of energy E0 can be used as a constraint to optimize
+
+the completion time.
+
+Let Ep denote the sum of Eve and Evp, Eo denote the sum of Eve and Evo, Emin ¼ minfEv; Ep; Eog, and Tmin ¼ minfT Ã; Tvg, where T Ã denotes the minimum completion time of local
+
+processing and Tv denotes the completion time of video off-
+
+loading. Since the processing option that consumes the
+
+most energy may not be the fastest one and video process-
+
+ing can only be accelerated locally by parallelizing frame
+
+ofﬂoading and local detection, we choose the energy con-
+
+sumption of the fastest processing as the maximum energy
+
+consumption, denoted as Emax ¼ EðTminÞ. By doing so, we
+
+can guarantee that, given an energy constraint, the comple-
+
+tion time can be optimized.
+
+In general, the solution to optimize the completion time
+
+with an energy constraint works as follows. First, we can
+
+easily calculate the energy consumption of each processing option and leverage the split-shift algorithm to compute T Ã, and accordingly EðT ÃÞ. Then, by comparison, we have Tmin,
+Emin, and Emax. When Emin ¼ Ev and Tmin ¼ Tv, video off-
+
+loading is the most efﬁcient and fastest way; i.e., it opti-
+
+mizes the energy consumption and completion time simultaneously. When Emin ¼ Ev and Tmin ¼ T Ã, then we
+
+need to obtain the minimum completion time for local processing with the energy constraint E0. Let TminðE0Þ denote the minimum completion time. If TminðE0Þ > Tv, video ofﬂoad-
+
+ing will be selected, otherwise, the local processing that produces TminðE0Þ is chosen. When Emin ¼ Eo or Emin ¼ Ep, we need to compare the local processing that yields TminðE0Þ with video ofﬂoading. If TminðE0Þ ! Tv and E0 ! Ev, video
+
+ofﬂoading is preferred, otherwise, local processing is
+
+selected.
+
+Therefore, we can see that to process each video, we have
+
+to solve the optimization problem that minimizes the com-
+
+pletion time of local processing with an energy constraint.
+
+This problem is non-trivial when Emin < E0 < Emax and
+
+df r
+
+>
+
+g.
+
+To
+
+solve
+
+the
+
+problem,
+
+we
+
+need
+
+to
+
+consider
+
+two
+
+cases: Emin ¼ Eo and Emin ¼ Ep.
+
+Frame Ofﬂoading with Extra Energy. When Emin ¼ Eo, then
+
+Eo < Ep, which generally means ofﬂoading a frame con-
+
+sumes less energy than detecting a frame. Therefore, the
+
+problem is how to maximally reduce the completion time
+
+by parallelizing local detection with frame ofﬂoading by
+
+exploiting the extra energy DE ¼ E0 À Emin. The local detection can be determined as follows to obtain TminðE0Þ.
+
+1. The spending of the extra energy can be represented as
+
+DE
+
+¼
+
+ðba
+
+þ
+
+bnmaxÞep
+
+À
+
+nmax
+
+df r
+
+ðei
+
+þ
+
+rDeÞ:
+
+(7)
+
+The ﬁrst part of the r.h.s of (7) is the energy cost to perform detection on nmax frames and the second part is the energy to ofﬂoad nmax frames. From (7), the maximum number of locally detected frames can be calculated as
+
+$
+
+%
+
+nmax ¼
+
+DE À baep
+
+bep
+
+À
+
+df ei r
+
+À
+
+df De
+
+:
+
+Note that nmax frames are processed by b batches,
+where b is set to one initially. 2. Let Tmp inðnmax; bÞ denote the optimized completion
+time of local detection, which can be obtained by
+
+solving (1) and approximated by the split process
+
+of the split-shift algorithm. If Tmp inðnmax; bÞ ðnÀ
+
+nmaxÞ
+
+df r
+
+,
+
+TminðE0Þ
+
+¼
+
+ðn
+
+À
+
+nmaxÞ
+
+df r
+
+.
+
+3.
+
+If Tmp in nmax g 0
+
+ðnmax; bÞ a, the
+
+>
+
+ðn
+
+À
+
+nmax
+
+Þ
+
+df r
+
+and
+
+b¼
+
+local detection completion
+
+1, when time can-
+
+not be reduced by increasing the number of process-
+
+ing batches. Therefore, we ensure nmaxg0 þ a þ bnmax
+
+need ðn À
+
+tnomarxeÞddruf caenndmatxhetno
+
+4.
+
+we have
+
+nmaxÞ
+
+df r
+
+.
+
+If Tmp inðnmax;
+
+nmax bÞ >
+
+¼ bdfnþdrfbÀþarrg0c
+
+ðn
+
+À
+
+nmaxÞ
+
+df r
+
+,
+
+and b¼1
+
+TminðE0Þ ¼ ðnÀ and nmaxg0 > a,
+
+or if Tmp inðnmax; bÞ
+
+>
+
+ðn
+
+À
+
+nmax
+
+Þ
+
+df r
+
+and b
+
+>
+
+1, we need
+
+to examine whether the increase of the number of
+
+processing batches can reduce the local detection
+
+completion time. If the completion time cannot be reduced, TminðE0Þ ¼ Tmp inðnmax; bÞ; otherwise, b is increased by one. Since increasing the processing
+
+batches increases the energy consumption in order
+
+to process nmax frames (by the additional a), we need
+
+to recalculate nmax according to (7) and thus the pro-
+
+cess has to be repeated. The process stops until
+
+TTmmpp iinn
+
+ðnmax ðnmax
+
+; ;
+
+bÞ cannot b þ 1Þ.
+
+be
+
+decreased,
+
+i.e.,
+
+Tmp inðnmax;
+
+bÞ
+
+Local Detection with Extra Energy. When Emin ¼ Ep, the
+
+extra energy DE ¼ E0 À Ep can be utilized to increase the
+
+number of processing batches, and it can also be used for
+
+frame ofﬂoading. Therefore, we need to compare these two
+
+options in terms of energy cost and completion time, which
+
+can be determined as follows.
+
+1. Initially, since Evp is the minimal energy consumption of local detection, we have one processing batch and
+
+n frames to be processed; i.e., b ¼ 1 and nmax ¼ n.
+
+2.
+
+For each iteration, ﬁrst we calculate g0 (i.e.,
+
+and Tmp inðnmax;bÞ. Then, we
+
+Tmp inðnmax;bþ1Þ aep
+
+and df ðeiþrrDbeÞÀrbep,
+
+compare
+
+Tmp inðnmax aep
+
+which represent
+
+ddÀgg) ;bÞ À
+the
+
+efﬁciency of increasing the processing batch and
+
+frame ofﬂoading, respectively, to reduce the comple-
+
+tion time in terms of energy cost.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+1520
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+3. We will choose the more efﬁcient option for each
+
+iteration. If the processing batch is selected, we
+
+reduce DE by aep and increase b by one, and then repeat the process. If frame ofﬂoading is more efﬁ-
+
+cient, we ﬁrst decrease nmax by one and then determine whether n À nmax frames can be ofﬂoaded
+
+before nmax frames are detected locally. If so, we
+
+need to update d to recalculate g0. Due
+
+, Tmp inðnmax;bÞ
+nÀnmax
+
+which
+
+to the change of
+
+will be g0, we
+
+used need
+
+to to
+
+reset
+
+b¼1
+
+and
+
+DE
+
+¼
+
+E0
+
+À
+
+epða
+
+þ
+
+bnmaxÞ
+
+À
+
+df r
+
+ðnÀ
+
+nmaxÞðei þ derÞ, and repeat the process.
+
+4. The process stops when DE 0 or when n À nmax frames cannot be ofﬂoaded within Tmp inðnmax; bÞ.
+
+Finally, local detection will process nmax frames
+
+using b batches, n À nmax frames will be ofﬂoaded, and TminðE0Þ ¼ Tmp inðnmax; bÞ.
+
+The solutions of both cases have low computational com-
+
+plexity Oðn2Þ and can be easily implemented on mobile
+
+devices to obtain the completion time of a video with energy
+
+constraints.
+
+For all these solutions under WiFi, the storage space a
+
+mobile device needs is at most the size of a video to be proc-
+
+essed. That is because in the worst case the mobile device need
+
+store all extracted frames from the video. However, the data
+
+size of all the extracted frames must be less or equal to the size
+
+of video, otherwise the mobile device will choose to ofﬂoad
+
+the video instead. Therefore, the storage complexity of our sol-
+
+utions is the size of the largest video related to the query.
+
+5 PROCESSING UNDER CELLULAR
+When mobile devices have only cellular connections, it is better to not ofﬂoad videos, due to the limitation of cellular uplink speed and limitations on data usage. Since data transmission rates may vary widely over time, e.g., due to movement, the solution for processing under WiFi may not be valid for the cellular scenario.
+Obviously, if all frames are detected locally, there is no cellular data usage. However, this may consume signiﬁcant amounts of energy and severely increase completion time. Although users may be more sensitive about data usage rather than energy, energy usage is a concern. Data usage can be easily controlled, while the energy cost of frame offload varies with data transmission rate and signal strength, and thus it is hard to tell how much energy will be consumed to ofﬂoad a frame beforehand.
+Therefore, for processing under cellular, we consider the problem of optimizing both completion time and energy consumption with a data usage constraint so that decisions are made while considering tradeoffs between these two objectives. However, due to the variation of cellular data rates, we cannot solve the problem traditionally by Pareto optimal solutions. Thus, we design an adaptive algorithm that makes a decision on each extracted frame (i.e., between frame ofﬂoad and local detection) towards optimizing both objectives.
+To perform video processing under cellular, users must specify a data usage constraint D0 between zero and a maximum, which can be easily calculated, i.e., video duration Â frame extraction rate Â frame data size. If D0 is equal to zero, the problem is trivial and all extracted frames are detected locally. If the user does not care data usage, D0 is
+
+Fig. 6. Power of LTE in terms of different uplink rates on smartphone.
+simply set to the maximum. In the following, we consider the case that D0 is greater than 0.
+5.1 Estimation of Uplink Rate and Power
+Before deciding between detection and ofﬂoading for each frame, we need to know the cost in terms of processing time and energy. For frame detection, both processing time and power are stable and can be accurately estimated, although the processing time varies with the number of processing batches. The difﬁculty lies in estimating these for frame offload. The ofﬂoading time and power are related to many factors, such as signal strength, channel conditions and network trafﬁc. However, from measurements on the smartphone, we can see the power of LTE uplink exhibits an approximately linear relationship with data rates as depicted in Fig. 6. Similar results are also found in [40]. Therefore, during a short period time, we can explore the history of previous frame ofﬂoads to correlate data rates and power. Moreover, among the factors that affect cellular uplink rates, signal strength, which is mainly impacted by the users’ location and movement, can be treated as an indicator of data rate during a short period of time, where the coefﬁcients of the linear relation between data rates and power are steady.
+To estimate the uplink data rate and power, ﬁrst we record the data rate and energy consumption for each offloaded frame. Then, these records can be exploited to derive the linear relation between data rate and power using regression, to maintain an up-to-date correlation estimate. Moreover, we also record the cellular signal strength level during each frame ofﬂoad. Since generally data rate has a linear relationship with signal strength during short periods of time, we can exploit current signal strength level to roughly estimate current data rate based on the records of previously offloaded frames. Then, the estimated data rate is exploited to gauge energy consumption to ofﬂoad a frame.
+5.2 Adaptive Algorithm
+As aforementioned, we try to optimize completion time and energy consumption together. However, due to the dynamics of cellular uplink data rate and power, we propose a tailored solution for this speciﬁc problem rather than a scalar treatment of these two objectives.
+For the processing under cellular, we have two options: frame ofﬂoad and local detection. Frame ofﬂoad may improve completion time or energy consumption or both, depending on the cellular data rate and power consumed by cellular during ofﬂoading. For a number of frames, local detection can be exploited to reduce the completion time by increasing the number of processing batches, although this incurs an additional energy cost. Moreover, local detection usually takes multiple frames as input, and once it starts
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+LU ET AL.: CROWDVISION: A COMPUTING PLATFORM FOR VIDEO CROWDPROCESSING USING DEEP LEARNING
+
+1521
+
+processing, the frames should not to be ofﬂoaded to avoid
+
+duplicate processing. Therefore, it is difﬁcult to determine
+
+the number of frames included in batch processing, since
+
+ofﬂoading frames may improve performance during batch
+
+processing.
+
+Frame ofﬂoad may be exploited to reduce both comple-
+
+tion time and energy consumption simultaneously; local
+
+detection cannot optimize these two objectives together,
+
+and hence it may be preferred only when both completion
+
+time and energy cannot beneﬁt from frame ofﬂoad. In addi-
+
+tion, unlike the processing under WiFi, we do not parallel-
+
+ize frame ofﬂoad and local detection, since this always
+
+sacriﬁces one objective for another. Based these considera-
+
+tions, we design an adaptive algorithm for the processing
+
+under cellular, towards optimizing both completion time
+
+and energy cost with the cellular data usage constraint,
+
+which works as follows.
+
+Frames are continuously extracted from a video into a
+
+frame queue. When a frame is available, a mobile device
+
+will ofﬂoad a frame to the cloud. If both the ofﬂoading time
+
+and energy consumption are less than those estimated for
+
+local detection, this ofﬂoading is called a successful attempt;
+
+otherwise, it is referred to as an unsuccessful attempt.
+
+After the ﬁrst successful attempt, the mobile device will
+
+ofﬂoad another frame. If this is also a successful attempt,
+
+then we can derive the linear relationship between data rate
+
+and energy consumption, and the relation between signal
+
+strength and data rate. For subsequent ofﬂoads, the mobile
+
+device can estimate the completion time and energy con-
+
+sumption based on current signal strength and the linear
+
+functions. If both are less than those estimated for local
+
+detection, it will ofﬂoad another frame.
+
+Whenever an attempt is unsuccessful, or the estimate
+
+indicates an unsuccessful attempt will occur, the mobile
+
+device will switch to local detection and set a backoff timer to
+
+v for frame ofﬂoad (i.e., frame ofﬂoad will not be performed
+
+during v). Let Tmp inðnrÞ denote the minimal completion time
+
+if all the remaining frames nr are detected locally, no denote
+
+the number of previously ofﬂoaded frames, and nd denote
+
+the maximum number of frames that can be ofﬂoaded to the
+
+cloud Then,
+
+under the
+
+v
+
+¼
+
+Tmp inðnr nd Àno
+
+Þd2aut,awuhseargeeucoisnstthreainnut mDb0,ewr hoef rceonndse¼cubtDdifv0ce.
+
+unsuccessful attempts.
+
+For local detection, each time the mobile device will pro-
+
+cess as many frames from the frame queue (it may wait for
+
+frames to be extracted from a video), which can be com-
+
+pleted within v. After a timeout of the backoff timer, the
+
+mobile device will switch back to frame ofﬂoad. The process
+
+iterates until frame ofﬂoad reaches the limit nd or all frames are processed. If limit is reached, then local detection will be
+
+the only option to process the remaining frames.
+
+Frame ofﬂoad and local detection are performed alter-
+
+nately to ﬁnd the moments when frame ofﬂoad can improve
+
+both energy and completion time, or when local detection
+
+should be performed. The backoff timer exponentially
+
+increases with the number of consecutive unsuccessful
+
+attempts. This is designed to capture different network con-
+
+ditions. When the network condition is constantly poor, off-
+
+loading is less frequently attempted and the frequency is
+
+exponentially reduced. When the network condition varies,
+
+ofﬂoading is attempted more frequently to seize the mome-
+
+nts when frame ofﬂoad beneﬁts both.
+
+Fig. 7. Illustration of video processing under cellular.
+
+We use Fig. 7 as an example to illustrate how the adap-
+
+tive algorithm works. Since the ﬁrst ofﬂoading attempt is
+
+successful, it ofﬂoads the second frame. However, the off-
+
+loading time is more than detecting a frame locally. Thus,
+
+the
+
+frame
+
+ofﬂoading
+
+backoff
+
+timer
+
+is
+
+set
+
+at
+
+v
+
+¼
+
+2Tmp inðnÀ2Þ nd À2
+
+and
+
+local detection is performed instead during v. After the
+
+timeout, another frame is ofﬂoaded, but it fails. Therefore,
+
+the mobile device switches to local detection again, and the
+
+backoff
+
+timer
+
+is
+
+set
+
+to
+
+22Tmp inðnÀ6Þ nd À3
+
+since
+
+there
+
+are
+
+two
+
+consecu-
+
+tive attempt failures. After switching back to frame ofﬂoad,
+
+several successful attempts are made, and hence the mobile
+
+device can estimate the data rate and the energy to be con-
+
+sumed based on the signal strength. However, a subsequent
+
+estimate indicates that the next attempt will be unsuccessful
+
+and hence it performs local detection instead.
+
+Instead of parallelizing frame ofﬂoad and local detection,
+
+we choose to perform them alternatively. Frame ofﬂoad is
+
+employed to optimize both completion time and energy con-
+
+sumption. However, due to the variation of network condi-
+
+tions, frame ofﬂoad is selected only if it outperforms local
+
+detection in terms of both completion time and energy and
+
+meets the data usage constraint. The adaptive algorithm is
+
+simple and efﬁcient, and it can also be easily implemented.
+
+Moreover, under cellular, we do not consider video off-
+
+loading and it implicitly means the data size of all extracted
+
+frames of a video is smaller than the video itself. Thus, the
+
+required storage for the adaptive algorithm is also the size
+
+of the largest video related to the query.
+
+6 IMPLEMENTATION
+We have implemented CrowdVision on Android and a workstation with a GTX TITAN X GPU as the cloud to assist mobile devices for video crowdprocessing. Tasks are issued from the workstation to mobile devices through Google Cloud Messaging. Messaging between the cloud and mobile devices are implemented using Protocol Buffers. The architecture and App of CrowdVision are illustrated in Fig. 8. The implementation of CrowdVision on mobile devices consists of three components: core services, monitors, and a GUI.
+Core Services. Core services contain an executor service, a frame extraction callable, a Caffe callable, an ofﬂoading callable, a multithreaded frame queue, and a video database. The video database stores the metadata of local videos such that CrowdVision can quickly screen videos for the processing task. The Multithreaded frame queue stores extracted frames from videos and supports multithreading access. The executor servce is able to call any of the callables to perform frame extraction, Caffe for frame detection, or ofﬂoading of a frame or video. The executor service takes inputs from tasks, GUI and monitors, and employs the selected strategy to process each video.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+1522
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+Fig. 8. Architecture and app of CrowdVision.
+
+Monitors. There are two monitors to measure network state and battery level, which provide inputs to the core services. The network monitor tells the cores services current network connection with distinct metrics for WiFi or cellular networks. For WiFi, it measures the uplink data rate from a mobile device to cloud using probing data. For cellular, it monitors the signal strength level. The battery monitor measures the energy consumption for each ofﬂoaded frame for the cellular case.
+GUI. The GUI allows mobile users to conﬁgure the energy usage, cellular data usage, and access to videos. Energy control ranges from the minimum to the maximum energy cost of local video processing. It is enabled using WiFi. For cellular, the data usage limits can be speciﬁed by users. Additionally, users can select videos to not be processed by CrowdVision, for privacy concerns or any other manual ﬁltering requirements.
+7 EVALUATION
+In this section, we evaluate the performance of CrowdVision. We ﬁrst compare CrowdVision against alternatives under various system settings based on empirically gathered measurements to understand when and why CrowdVision outperforms alternatives and then conﬁrm the gains of CrowdVision through experiments on our testbed. We also investigate how the split-shift algorithm approximates the optimum for determining processing batches.
+7.1 Performance under Various Settings
+We ﬁrst use empirically gathered measurements of processing time and energy taken from a Galaxy S5 to investigate the impact of system parameters, such as WiFi/ cellular data rate, frame data size and frame extraction rate. These parameters are set to correspond their values in real applications. Under WiFi, CrowdVision is compared against MAUI [10] (the most popular generic computation ofﬂoad system). Since MAUI chooses to ofﬂoad all computations with default settings to preserve energy. Therefore, we adapt MAUI to optimize the completion time rather than energy. Under cellular, MAUI has to repetitively recalculate the solver at runtime to adapt to varying data rate. However, the MAUI solver is not easy and indeed an ILP problem. Since the number of frames is large, the MAUI solver itself takes long time to complete and thus cannot be easily adapted to the scenario under cellular, where the transmission rate dynamically changes and the
+
+ofﬂoad decision need to be made at runtime. Therefore, CrowdVision is compared against basic processing options (i.e., solely frame ofﬂoad and solely local detection). The simulation is carried out on a 1080p 30-second video. Note that the video speciﬁcation and duration do not affect their relative performance.
+WiFi. Fig. 9a illustrates the completion time of MAUI and CrowdVision in terms of WiFi data rate, where the frame data size df is 500 KB and frame extraction rate re is 6 fps. When the WiFi data rate is high enough, e.g., 2,620 KB/s in Fig. 9a, video ofﬂoad costs the least and both MAUI and CrowdVision choose video ofﬂoad and hence perform the same. Similarly, when the WiFi data rate is low enough, local detection will be selected by both MAUI and CrowdVision and thus they perform equivalently again, e.g., 20 KB/s in Fig. 9a. Note that when the WiFi data rate is less than 1,000 KB, the completion time of MAUI is the same, because under these WiFi data rates MAUI chooses local detection (no ofﬂoading). When between these two rates, CrowdVision outperforms MAUI. This is because the split-shift algorithm employed by CrowdVision can improve completion time by taking advantage of batch processing and by parallelizing frame ofﬂoad and local detection. The completion time of CrowdVision is as low as 60 percent of MAUI as depicted in Fig. 9a.
+Since CNN models may require different resolutions of images as input, which depends how a CNN is architected, we also investigate the effect of frame data size on the completion time. As illustrated in Fig. 9b, when frame data size is small, frame ofﬂoad is the best option. When frame data size is large enough, it is better to ofﬂoad videos since the WiFi data rate is high 2000 KB/s. In both regions, MAUI and CrowdVision perform equally. However, between them, CrowdVision always outperforms MAUI as depicted in Fig. 9b due to the same reason discussed above. To detect different objects, different frame extraction rates may be deﬁned by the task issuer. CrowdVision still outperforms MAUI as shown in Fig. 9c. Note that when the frame extraction rate is high, both CrowdVision and MAUI perform video ofﬂoad, since only the completion time of video offload is not impacted by the frame extraction rate.
+Fig. 10 illustrates the completion time with different energy constraints between Emin and Emax. In Fig. 10a, Emin ¼ Eo (i.e., frame ofﬂoad consumes the least energy), Emax is the energy consumption of the fastest processing option. When the energy constraint increases from Emin to Emax (i.e., from 80 to 120 J), the completion time gradually
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+LU ET AL.: CROWDVISION: A COMPUTING PLATFORM FOR VIDEO CROWDPROCESSING USING DEEP LEARNING
+
+1523
+
+Fig. 9. Performance of CrowdVision and MAUI under WiFi in terms of WiFi data rate, frame data size, and frame extraction rate.
+
+decreases from 75 seconds to 35 seconds. Fig. 10b shows the case that Emin ¼ Ep (i.e., local detection consumes the least energy). As the energy constraint is relaxed, the completion time approaches the minimum. From Figs. 10 and 10b, we can see that our solution acts as a linear function to correlate completion time and energy constraint. Unlike MAUI that can only optimize the completion time (or energy), CrowdVision can also trade off between completion time and energy consumption.
+Cellular. Based on the measurements of the LTE module on a Galaxy S5 under different uplink rates, as illustrated in Fig. 6, we perform the evaluation over cellular networks.
+To model the dynamics of cellular data rate, we adopt a Markov chain [41]. Let R denote a vector of transmission rates R ¼ ½r0; r1; . . . ; rl, where ri < riþ1. The Markov chain advances at each time unit. If the chain is currently in rate ri, then it can change to adjacent rate riÀ1 or riþ1, or remain in ri, but staying in current rate has a larger probability than changing. Therefore, for a given vector, e.g., of ﬁve rates, the transition matrix is deﬁned as
+
+2 r0
+
+r1
+
+r2
+
+r3
+
+r4 3
+
+r0 2=3 1=3 0 0 0
+
+P
+
+¼
+
+r1 r2
+
+r3
+
+66664
+
+2=9 0 0
+
+5=9 2=9
+0
+
+2=9 5=9 2=9
+
+0 2=9 5=9
+
+0 0 2=9
+
+77775
+
+:
+
+r4
+
+0 0 0 1=3 2=3
+
+In the experiments, we consider two vectors of cellular data rates, which are R1 = [20, 100, 150, 250, 400] (KB/s) and R2 =
+
+[20, 100, 150, 500, 600] (KB/s), and the time unit of the Markov chain is two seconds. Moreover, we set the data usage constraint of CrowdVision to half of total extracted frames.
+Figs. 11a and 11b illustrate their performance under R1 and R2, respectively. As depicted in Fig. 11a, CrowdVision outperforms frame ofﬂoad in terms of both completion time and energy; its performance is similar to local detection. When cellular data rates increase to R2 in Fig. 11b, frame offload performs better than before as expected. Since cellular data rates do not affect local detection, its performance remains the same. CrowdVision performs the best. It has less completion time than others and slightly less energy consumption than frame ofﬂoad, with half of cellular data usage.
+CrowdVision outperforms frame ofﬂoad and local detection under different cellular data rates, because the adaptive algorithm of CrowdVision is designed to adopt different processing options according to real-time cellular data rate and energy to be consumed. Generally, when the cellular data rate is high, it tends to ofﬂoad frames, otherwise, it is apt to perform local detection. Moreover, the backoff mechanism of the adaptive algorithm avoids unnecessary frame ofﬂoad when the cellular data rate is low.
+7.2 Performance on Testbed
+Testbed. We deployed CrowdVision on a Galaxy S5, which can connect to the Internet using either WiFi or cellular. The workstation can be reached by a public IP address. For the experiment using WiFi, we conﬁgured a WiFi router with different 802.11 protocols to get different uplink data rates. The experiments under cellular (4g LTE) were carried out at three different locations (i.e., a lab, a lobby, and a restaurant in downtown) to acquire different signal strengths, uplink data rates, and trafﬁc conditions. The performance is
+
+Fig. 10. Optimized completion time with energy constraint, where
+(a) r ¼ 500 KB/s, df ¼ 200 KB, re ¼ 6 fps, and (b) r ¼ 40 KB/s, df ¼ 200 KB, re ¼ 6 fps.
+
+Fig. 11. Performance under different cellular data rates, where df ¼ 100 KB, re ¼ 6 fps.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+1524
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+Fig. 12. System performance of different processing options with various settings and different WiFi data rates.
+
+evaluated based on the processing of a 1080p 30-second video under different settings in terms of completion time and energy, where energy is measured by the Monsoon power monitor [35].
+WiFi. Fig. 12 illustrates the completion time of MAUI and CrowdVision. The experiments are conducted using the following parameters: uplink data rates (0.7, 1.66 and 4.93 MB/s), frame data sizes (72, 252, and 519 KB, which are the sizes of JPG images with resolutions 640 Â 360, 1280 Â 720 and 1920 Â 1080, respectively), and frame extraction rates (1, 5, 10 fps). Figs. 12a, 12b and 12c depict the completion time in terms of WiFi uplink data rate, frame data size and frame extraction, respectively. They exhibit the similar pattern as depicted in Figs. 9a, 9b and 9c. CrowdVision outperforms MAUI in all the settings. For example, when WiFi uplink data rate is 0.7 MB/s, the completion time of CrowdVision is less than a half of MAUI (i.e., 2x speed-up). These experiments further conﬁrm the gain of CrowdVision over MAUI. Moreover, as shown in Fig. 12d, the estimated completion time is very close to the measured completion time. Therefore, CrowdVision can reliably make the best decision based on the estimate. When an energy constraint is imposed, CrowdVision can improve the completion time as the energy constraint is relaxed, and vice versa, as illustrated in Fig. 12e, which conﬁrms the effectiveness of the optimization with energy constraints.
+Cellular. We measured the average uplink data rates at the three locations and correlated the performance with these rates, as illustrated in Fig. 13. When the data rate is low, CrowdVision outperforms frame ofﬂoad in terms of both completion time and energy. Since CrowdVision has to send some frames to acknowledge the current cellular data rate, it incurs slightly longer completion time and uses more energy than local detection. When the data rate increases, CrowdVision and frame ofﬂoad perform better than before. CrowdVision has similar completion time with local detection but uses less energy. When the data rate further increases, CrowdVision is faster and uses less energy than the others. When the data rate is sufﬁciently high such that ofﬂoading a frame commonly outperforms locally detecting a frame in
+Fig. 13. System performance of different processing options under different cellular uplink rates, where df ¼ 252 KB, re ¼ 1 fps.
+
+both completion time and energy cost, CrowdVision tends to ofﬂoad more frames but avoids the time when the data rate is low. Therefore, CrowdVision adapts to different cellular data rates to reduce completion time and save energy.
+7.3 Performance of Split-Shift
+Although the split-shift algorithm is designed to handle the local processing under WiFi, it can also be exploited to solve the ILP problem (1) by assuming d ! þ1 (recall d is the time spent to ofﬂoad a frame). The ILP problem is meaningful. It can be employed to minimize the processing time of deep learning on frames extracted from videos, no matter the processing is performed on CPUs or GPUs. Therefore, we investigate the performance of the split-shift algorithm on (1), comparing to the optimum obtained by GLPK using LP relaxation and integer optimization on a small scale.
+Fig. 14a illustrates their comparison with the parameters of batch processing on the CPU of Galaxy S5. We can see split-shift achieves the optimum under this setting. In Fig. 14b, we use the parameters of Tegra K1 GPU on performing AlexNet, where a and b is close to g (the time spent to extract a frame from a video). Under this setting, although split-shift continuously deviates from the optimum with the increase of the frame number, split-shift is still close to the optimum. The different performance of split-shift under these two settings can be explained intuitively as: (i) when detecting a frame takes much longer time than extracting a frame from a video, it is relatively easy to determine the optimal batch processing; (ii) when they are close, it is much more difﬁcult to do so. This is also evidenced by GLPK, which spent much more time on ﬁnding the optimal solution under the setting of Fig. 14b than Fig. 14a for the same number of frames (minutes versus hours). In summary, split-shift, a suboptimal algorithm with the complexity OðnÞ, is practical and affordable to solve the ILP problem, which commonly exists in optimizing the performance of deep learning applications.
+8 DISCUSSION
+Crowdprocessing. Unlike crowdsourcing or crowdsensing, we deﬁne crowdprocessing as a computing-oriented approach. Instead of simply sensing and sharing data, we focus on exploring the computing capability of mobile devices; i.e., mobile devices process their own data using deep learning and results are centrally collected to solve problems. For crowdprocessing, the key problem, which is also the focus of this paper, is to enable resource-constrained mobile devices to efﬁciently perform such complex computing. In this paper, we consider to optimize the completion time with/without energy constraint and optimzie them together. For other use cases, it is indeed important to preserve battery and reduce local computation on
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+LU ET AL.: CROWDVISION: A COMPUTING PLATFORM FOR VIDEO CROWDPROCESSING USING DEEP LEARNING
+
+1525
+
+ACKNOWLEDGMENTS
+This work was supported in part by the Army Research Laboratory under grant W911NF-09-2-0053, Pengcheng Laboratory, NSF China under grant 61872009, and Hikvision. A preliminary version of this work appeared in the Proceedings of INFOCOM 2018 [42].
+
+Fig. 14. Comparison between optimum and split-shift.
+users’ devices. Enabling CrowdVision for other use cases involves optimizing different metrics and needs a set of carefully designed solutions and will be considered in our further work.
+Scalability. When there are a large number of users who have the video related to the query, the bandwidth of the cloud seems the bottleneck if most users choose to ofﬂoad computation. However, as the data rate between mobile device and cloud decreases, the mobile device will in turn perform more computation locally. Moreover, we argue that the provision of computational capability of the cloud is the responsibility of the task issuer. Each individual device makes ofﬂoading decisions without considering the computational capability of the cloud. Therefore, our system has good scalability.
+Compatibility. CrowdVision is currently built on top of Caffe. However, as shown in Fig. 8, Caffe works only as a callable to perform detection on mobile device and cloud. Therefore, it can be easily replaced by other deep learning frameworks. Moreover, CrowdVision can be easily adapted to mobile GPUs when they are available for the acceleration of deep learning on off-the-shelf mobile devices, because it is just the change of system parameters. It is worth noting that the computing capability of mobile devices even equipped with mobile GPUs is still far behind GPU-accelerated cloud.
+Generality. The characteristic of batch processing commonly exists in the computing of deep learning, not just for convolutional neural networks. Therefore, CrowdVision that is particularly designed to take advantage of batch processing can be used for other applications with minor modiﬁcations. Moreover, the split-shift algorithm can be exploited to determine batch processing so as to optimize the performance and resource usage in these applications with/without computation ofﬂoad.
+9 CONCLUSIONS
+In this paper, we present CrowdVision, a computing platform for crowdprocessing videos using deep learning. CrowdVision is designed to optimize the performance on mobile devices with computational ofﬂoad and by taking into consideration the characteristics of the computing of deep learning for video processing. CrowdVision is implemented and evaluated on the off-the-shelf smartphone. Experimental results demonstrate that CrowdVision greatly outperforms the existing computational ofﬂoad system or basic processing options under various settings and network conditions. We envision CrowdVision to be a great computing framework for crowdprocessing applications using deep learning.
+
+REFERENCES
+[1] Z. Lu, S. Rallapalli, K. Chan, and T. La Porta, “Modeling the resource requirements of convolutional neural networks on mobile devices,” in Proc. ACM Multimedia Conf., 2017, pp. 1663–1671.
+[2] D. Yang, G. Xue, X. Fang, and J. Tang, “Crowdsourcing to smartphones: Incentive mechanism design for mobile phone sensing,” in Proc. 18th Annu. Int. Conf. Mobile Comput. Netw., 2012, pp. 173–184.
+[3] D. Geiger, M. Rosemann, E. Fielt, and M. Schader, “Crowdsourcing information systems: Deﬁnition, typology and design,” in Proc. 33rd Int. Conf. Inf. Syst., 2012, pp. 1–11.
+[4] B. Morschheuser, J. Hamari, and J. Koivisto, “Gamiﬁcation in crowdsourcing: A review,” in Proc. 49th Hawaii Int. Conf. Syst. Sci., 2016, pp. 4375–4384.
+[5] D. P. Anderson, “BOINC: A system for public-resource computing and storage,” in Proc. 5th IEEE/ACM Int. Workshop Grid Comput., 2004, pp. 4–10.
+[6] M.-R. Ra, B. Liu, T. L. Porta, and R. Govindan, “Medusa: A programming framework for crowd-sensing applications,” in Proc. 10th Int. Conf. Mobile Syst. Appl. Serv., 2012, 337–350.
+[7] B. Liu, Y. Jiang, F. Sha, and R. Govindan, “Cloud-enabled privacypreserving collaborative learning for mobile sensing,” in Proc. 10th ACM Conf. Embedded Netw. Sensor Syst., 2012, 57–70.
+[8] P. Simoens, Y. Xiao, P. Pillai, Z. Chen, K. Ha, and M. Satyanarayanan, “Scalable crowd-sourcing of video from mobile devices,” in Proc. 11th Annu. Int. Conf. Mobile Syst. Appl. Serv., 2013, 139–152.
+[9] K. Kumar, J. Liu, Y.-H. Lu, and B. Bhargava, “A survey of computation ofﬂoading for mobile systems,” Mobile Netw. Appl., vol. 18, no. 1, pp. 129–140, 2013.
+[10] E. Cuervo, A. Balasubramanian, D.-K. Cho, A. Wolman, S. Saroiu, R. Chandra, and P. Bahl, “MAUI: Making smartphones last longer with code ofﬂoad,” in Proc. 8th Int. Conf. Mobile Syst. Appl. Serv., 2010, pp. 49–62.
+[11] M. Barbera, S. Kosta, A. Mei, and J. Stefa, “To ofﬂoad or not to ofﬂoad? the bandwidth and energy costs of mobile cloud computing,” in Proc. IEEE INFOCOM, 2013, pp. 1285–1293.
+[12] C. Shi, K. Habak, P. Pandurangan, M. Ammar, M. Naik, and E. Zegura, “COSMOS: Computation ofﬂoading as a service for mobile devices,” in Proc. 15th ACM Int. Symp. Mobile Ad Hoc Netw. Comput., 2014, 287–296.
+[13] Y.-H. Kao, B. Krishnamachari, M.-R. Ra, and F. Bai, “Hermes: Latency optimal task assignment for resource-constrained mobile computing,” IEEE Trans. Mobile Comput., vol. 16, no. 11, pp. 3056– 3069, Nov. 2017.
+[14] C. You, K. Huang, H. Chae, and B.-H. Kim, “Energy-efﬁcient resource allocation for mobile-edge computation ofﬂoading,” IEEE Trans. Wireless Commun., vol. 16, no. 3, pp. 1397–1411, Mar. 2017.
+[15] K. K. Rachuri, C. Mascolo, M. Musolesi, and P. J. Rentfrow, “SociableSense: Exploring the trade-offs of adaptive sampling and computation ofﬂoading for social sensing,” in Proc. 17th Annu. Int. Conf. Mobile Comput. Netw., 2011, pp. 73–84.
+[16] M.-R. Ra, A. Sheth, L. Mummert, P. Pillai, D. Wetherall, and R. Govindan, “Odessa: Enabling interactive perception applications on mobile devices,” in Proc. 9th Int. Conf. Mobile Syst. Appl. Serv., 2012, 43–56.
+[17] J. Huang, A. Badam, R. Chandra, and E. B. Nightingale, “WearDrive: Fast and energy-efﬁcient storage for wearables,” in Proc. USENIX Conf. Usenix Annu. Tech. Conf., 2015, 613–625.
+[18] M. S. Gordon, D. K. Hong, P. M. Chen, J. Flinn, S. Mahlke, and Z. M. Mao, “Accelerating mobile applications through ﬂip-ﬂop replication,” in Proc. 13th Annu. Int. Conf. Mobile Syst. Appl. Serv., 2015, pp. 137–150.
+[19] J. Wu, C. Leng, Y. Wang, Q. Hu, and J. Cheng, “Quantized convolutional neural networks for mobile devices,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., 2016, pp. 4820–4828.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+
+1526
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 18, NO. 7, JULY 2019
+
+[20] N. D. Lane, S. Bhattacharya, P. Georgiev, C. Forlivesi, L. Jiao, L. Qendro, and F. Kawsar, “DeepX: A software accelerator for low-power deep learning inference on mobile devices,” in Proc. 15th ACM/IEEE Int. Conf. Inf. Process. Sensor Netw., 2016, pp. 1–12.
+[21] P. Georgiev, N. D. Lane, K. K. Rachuri, and C. Mascolo, “LEO: Scheduling sensor inference algorithms across heterogeneous mobile processors and network resources,” in Proc. 22nd Annu. Int. Conf. Mobile Comput. Netw., 2016, pp. 320–333.
+[22] S. Han, H. Shen, M. Philipose, S. Agarwal, A. Wolman, and A. Krishnamurthy, “MCDNN: An approximation-based execution framework for deep stream processing under resource constraints,” in Proc. 14th Annu. Int. Conf. Mobile Syst. Appl. Serv., 2016, pp. 123–136.
+[23] S. Rallapalli, H. Qiu, A. J. Bency, S. Karthikeyan, R. Govindan, B. S. Manjunath, and R. Urgaonkar, “Are very deep neural networks feasible on mobile devices?” in Proc. Int. Workshop Mobile Comput. Syst. Appl., 2016, pp. 1–7.
+[24] V. Lebedev, Y. Ganin, M. Rakhuba, I. Oseledets, and V. Lempitsky, “Speeding-up convolutional neural networks using ﬁne-tuned CP-decomposition,” arXiv:1412.6553, 2014.
+[25] Y. Kang, J. Hauswald, C. Gao, A. Rovinski, T. Mudge, J. Mars, and L. Tang, “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge,” in Proc. 22nd Int. Conf. Archit. Support Program. Lang. Operating Syst., 2017, pp. 615–629.
+[26] X. Ran, H. Chen, Z. Liu, and J. Chen, “Delivering deep learning to mobile devices via ofﬂoading,” in Proc. Workshop Virtual Reality Augmented Reality Netw., 2017, pp. 42–47.
+[27] Q. Zhang, M. Lin, L. T. Yang, Z. Chen, and P. Li, “Energy-efﬁcient scheduling for real-time systems based on deep Q-learning model,” IEEE Trans. Sustainable Comput., vol. 4, no. 1, pp. 132–141, Jan.-Mar. 2019.
+[28] Q. Zhang, L. T. Yang, Z. Chen, and P. Li, “A survey on deep learning for big data,” Inf. Fusion, vol. 42, pp. 146–157, 2018.
+[29] A. Karpathy, G. Toderici, S. Shetty, T. Leung, R. Sukthankar, and L. Fei-Fei, “Large-scale video classiﬁcation with convolutional neural networks,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., 2014, pp. 1725–1732.
+[30] Caffe, [Online]. Available: http://caffe.berkeleyvision.org/, accessed in 2017.
+[31] Y. Jia, E. Shelhamer, J. Donahue, S. Karayev, J. Long, R. Girshick, S. Guadarrama, and T. Darrell, “Caffe: Convolutional architecture for fast feature embedding,” in Proc. 22nd ACM Int. Conf. Multimedia, 2014, pp. 675–678.
+[32] Torch, [Online]. Available: http://torch.ch/, accessed in 2017. [33] Tensorﬂow, [Online]. Available: http://www.tensorﬂow.org/,
+accessed in 2017. [34] H.264, [Online]. Available: https://www.itu.int/rec/T-REC-
+H.264, accessed in 2017. [35] Monsoon power monitor, [Online]. Available: http://www.
+msoon.com/, accessed in 2017. [36] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “ImageNet classiﬁ-
+cation with deep convolutional neural networks,” in Proc. 25th Int. Conf. Neural Inf. Process. Syst., 2012, pp. 1097–1105. [37] CUDA, [Online]. Available: http://www.nvidia.com/, accessed in 2017. [38] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., 2016, pp. 770–778. [39] R. Friedman, A. Kogan, and Y. Krivolapov, “On power and throughput tradeoffs of WiFi and bluetooth in smartphones,” IEEE Trans. Mobile Comput., vol. 12, no. 7, pp. 1363–1376, Jul. 2013. [40] J. Huang, F. Qian, A. Gerber, Z. M. Mao, S. Sen, and O. Spatscheck, “A close examination of performance and power characteristics of 4G LTE networks,” in Proc. 10th Int. Conf. Mobile Syst. Appl. Serv., 2012, 225–238. [41] A. Fu, P. Sadeghi, and M. Medard, “Dynamic rate adaptation for improved throughput and delay in wireless network coded broadcast,” IEEE/ACM Trans. Netw., vol. 22, no. 6, pp. 1715–1728, Dec. 2014. [42] Z. Lu, K. Chan, and T. La Porta, “A computing platform for video crowdprocessing using deep learning,” in Proc. IEEE Int. Conf. Comput. Commun., 2018, pp. 1–9.
+
+Zongqing Lu received the BS and MS degrees from Southeast University, China, and the PhD degree from Nanyang Technological University, Singapore, 2014. He is an assistant professor with the Department of Computer Science, Peking University. Prior to joining Peking University in 2017, he was a postdoc with the Department of Computer Science and Engineering, Pennsylvania State University. His current research interests include mobile/edge computing and learning to cooperate. He is a member of the IEEE.
+Kevin Chan received the BS degree in ECE/EPP from Carnegie Mellon University, and the PhD degree in electrical and computer engineering (ECE) and MSECE from the Georgia Institute of Technology. He is research scientist with the Computational and Information Sciences Directorate at the US Army Research Laboratory. Previously, he was an ORAU postdoctoral research fellow at ARL. His research interests are in network science and dynamic distributed computing, with past work in dynamic networks, trust and distributed decision making, and quality of information. He has been an active researcher in ARL’s collaborative programs, the Network Science Collaborative Technology Alliance and Network and Information Sciences International Technology Alliance. He is a member of the IEEE.
+Shiliang Pu received the PhD degree in applied optics from the University of Rouen, MontSaint-Aignan, France, in 2005. He is currently the executive vice director of the Research Institute with Hikvision, Hangzhou, China. He is also responsible for the company’s technology research and development work on video intelligent analysis, image processing, coding, and decoding. His current research interests include image processing and pattern recognition.
+Thomas La Porta received the BSEE and MSEE degrees from The Cooper Union, New York, NY, and the PhD degree in electrical engineering from Columbia University, New York, NY. He is the director of the School of Electrical Engineering and Computer Science at Penn State University. He is an Evan Pugh professor and the William E. Leonhard chair professor with the Computer Science and Engineering Department. He joined Penn State in 2002. He was the founding director of the Institute of Networking and Security Research at Penn State. Prior to joining Penn State, he was with Bell Laboratories where was the director of the Mobile Networking Research Department. He is an IEEE Fellow and Bell Labs Fellow. He also won two Thomas Alva Edison Patent Awards. He was the founding editor-in-chief of the IEEE Transactions on Mobile Computing. He has published numerous papers and holds 39 patents.
+" For more information on this or any other computing topic, please visit our Digital Library at www.computer.org/publications/dlib.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 12:27:37 UTC from IEEE Xplore. Restrictions apply.
+

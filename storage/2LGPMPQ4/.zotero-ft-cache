@@ -1,0 +1,968 @@
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+197
+
+Learning Task-Oriented Communication for Edge Inference: An Information Bottleneck Approach
+Jiawei Shao, Student Member, IEEE, Yuyi Mao , Member, IEEE, and Jun Zhang , Fellow, IEEE
+
+Abstract— This paper investigates task-oriented communication for edge inference, where a low-end edge device transmits the extracted feature vector of a local data sample to a powerful edge server for processing. It is critical to encode the data into an informative and compact representation for low-latency inference given the limited bandwidth. We propose a learning-based communication scheme that jointly optimizes feature extraction, source coding, and channel coding in a task-oriented manner, i.e., targeting the downstream inference task rather than data reconstruction. Speciﬁcally, we leverage an information bottleneck (IB) framework to formalize a rate-distortion tradeoff between the informativeness of the encoded feature and the inference performance. As the IB optimization is computationally prohibitive for the high-dimensional data, we adopt a variational approximation, namely the variational information bottleneck (VIB), to build a tractable upper bound. To reduce the communication overhead, we leverage a sparsity-inducing distribution as the variational prior for the VIB framework to sparsify the encoded feature vector. Furthermore, considering dynamic channel conditions in practical communication systems, we propose a variable-length feature encoding scheme based on dynamic neural networks to adaptively adjust the activated dimensions of the encoded feature to different channel conditions. Extensive experiments evidence that the proposed task-oriented communication system achieves a better rate-distortion tradeoff than baseline methods and signiﬁcantly reduces the feature transmission latency in dynamic channel conditions.
+Index Terms— Task-oriented communication, edge inference, information bottleneck, variational inference.
+I. INTRODUCTION
+T HE recent revival of artiﬁcial intelligence (AI) has led to their adaptations in a broad spectrum of application domains, ranging from speech recognition [1] and natural language processing (NLP) [2], to computer vision [3] and augmented/virtual reality (AR/VR) [4]. Most recently, the potential of AI technologies has also been exempliﬁed in communication systems [5], [6]. Aiming at delivering data with extreme levels of reliability and efﬁciency, various design problems of data-oriented communication, including transceiver structures [7], source/channel coding [8], signal detection [9], and radio resource management [10], have been revisited intensively using AI techniques, especially
+Manuscript received January 1, 2021; revised March 8, 2021; accepted June 7, 2021. Date of publication November 8, 2021; date of current version December 17, 2021. (Corresponding author: Jun Zhang.)
+Jiawei Shao and Jun Zhang are with the Department of Electronic and Computer Engineering, The Hong Kong University of Science and Technology, Hong Kong (e-mail: jiawei.shao@connect.ust.hk; eejzhang@ust.hk).
+Yuyi Mao is with the Department of Electronic and Information Engineering, Hong Kong Polytechnic University, Hong Kong (e-mail: yuyi-eie.mao@ polyu.edu.hk).
+Color versions of one or more ﬁgures in this article are available at https://doi.org/10.1109/JSAC.2021.3126087.
+Digital Object Identiﬁer 10.1109/JSAC.2021.3126087
+
+deep neural networks (DNNs), breeding the emerging area of “learning to communicate.” It is widely perceived that learning-driven techniques are critical complements to traditional model-driven approaches for communication system designs that rely heavily on expert knowledge, and will undoubtedly transform the wireless networks toward the next generation [11].
+Meanwhile, emerging AI applications also raise new communication problems [12], [13]. To provide immersive user experience, DNN-based mobile applications need to be performed within the edge of wireless networks, which eliminates the excessive latency incurred by routing data to the Cloud, and is referred to as edge inference [13], [14]. Edge inference can be implemented by deploying DNNs at an edge server located in close proximity to mobile devices, known as edgeonly inference. However, the transmission latency remains a bottleneck for applications with stringent delay requirements [4], [15], [16], as a huge volume of data (e.g., 3D images, high-deﬁnition videos, and point cloud data) need to be uploaded. On the other hand, the resource-demanding nature of DNNs often makes it infeasible to be deployed as a whole locally for device-only inference due to the limited on-device computational resources [17].
+Device-edge co-inference appears to be a prominent solution for fast edge inference [14], [18], [19], which reduces the communication overhead by harvesting the available computational resources at both the edge servers and mobile devices. A mobile device ﬁrst extracts a compact feature vector from the raw input data using an affordable neural network and then uploads it for server-based processing. Nevertheless, most existing device-edge co-inference proposals simply split a pre-trained DNN into two subnetworks to be deployed at a device and a server, leaving feature compression and transmission to a traditional communication module [19]. Such kind of decoupled treatment ignores the interplay between wireless communications and the inference tasks, and thus fails to exploit the full beneﬁts of collaborative inference since the communication strategies can be adaptive to speciﬁc tasks. To address this limitation and improve the inference performance, in this paper, we propose a task-oriented communication principle for edge inference and develop an innovative learning-driven approach under the framework of information bottleneck (IB) [20].
+A. Related Works and Motivations
+The line of research on “learning to communicate” stems from the introductory article on deep learning for the physical layer design in [7], where information transmission was
+
+0733-8716 © 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+198
+
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+viewed as a data reconstruction task, and a communication system can thus be modeled by a DNN-based autoencoder with the wireless channel simulated by a non-trainable layer. The autoencoder-based framework for communication systems was later extended to a deep joint source-channel coding (JSCC) architecture for wireless image transmission in [8], which enjoys signiﬁcant improvement of image reconstruction quality over separate source/channel coding techniques. JSCC has also been applied to natural language processing for text transmission, which was accomplished by incorporating the semantic information of sentences using recurrent neural networks [21]. It is worth noting that the aforementioned works focus on data-oriented communication, which targets at transmitting data reliably given the limited radio resources.
+Nevertheless, the shifted objective of feature transmissions for accurate edge inference with low latency is not aligned with that of data-oriented communication, as it regards a part of the raw input data (e.g., nuisance, task-irrelevant information) as meaningless. Thus, recovering the original data sample with high ﬁdelity at the edge server results in redundant communication overhead, which leaves room for further compression. This insight is also supported by a basic principle from representation learning [22]: A good representation should be insensitive (or invariant) to nuisances such as translations, rotations, occlusions. Thus, we advocate for task-oriented communication for applications such as edge inference, to improve the efﬁciency by transmitting sufﬁcient but minimal information for the downstream task.
+There have been recent studies on feature compression for efﬁcient transmission in edge inference [23]–[27]. In particular, for the image classiﬁcation task, an end-to-end architecture was proposed in [25] to jointly optimize the feature compression and encoding by integrating deep JSCC. In contrast to data-oriented communication that concerns the data recovery metrics (e.g., the l2-distance or bit error rate), the proposed method was directly trained with the cross-entropy loss for the targeted classiﬁcation task and ignored the data reconstruction quality. The end-to-end training facilitates the mapping of task-relevant information to the channel symbols and omits the irrelevance. Similar ideas were utilized to design feature compression and encoding schemes for image retrieval tasks at the wireless network edge in [28] and for point cloud data processing in [29].
+While the end-to-end learning-driven architectures for task-oriented communication have been proven effective in saving communication bandwidth, there remain multiple restrictions unsolved in order to unleash their highest potentials: First, there lacks a systematic way to quantify the informativeness of the encoded feature vector and its impact on the inference tasks, hindering to achieve the best inference performance given the available resources; Besides, the dynamic wireless channel condition necessitates adaptive encoding scheme for reliable feature transmission, which has received less attention in existing frameworks (e.g. [25]–[27], [30]). These form the main motivations of our study.
+Data-oriented communication relies on classical source coding and channel coding theory, which, however, is not optimized for task-oriented communication. Recently,
+
+an information theoretical design principle, named information bottleneck (IB) [20], has been applied to investigate deep learning, which seeks the right balance between data ﬁt and generalization by using the mutual information as both a cost function and a regularizer. Particularly, the IB framework maximizes the mutual information between the latency representation and the label of the data sample to promote high accuracy, while minimizing the mutual information between the representation and the input sample to promote generalization. Such a tradeoff between preserving the relevant information and ﬁnding a compact representation ﬁts nicely with bandwidth-limited edge inference, and thus will be adopted as a main design principle in our study for task-oriented communication. The IB framework is inherently related to the communication problem of remote source coding (RSC) [31]. It has recently attracted great attentions from both the machine learning and information theory communities [32]–[35]. Nevertheless, applying it to task-oriented communication demands additional optimization, which forms the main technical contributions of our study.
+B. Contributions
+In this paper, we develop effective methods for task-oriented communication for device-edge co-inference based on the IB principle [20]. Our major contributions are summarized as follows:
+• We design the task-oriented communication system by formalizing a rate-distortion tradeoff using the IB framework. Our formulation aims at maximizing the mutual information between the inference result and the encoded feature, meanwhile, minimizing the mutual information between the encoded feature and input data. Thus, it addresses the objectives of improving the inference accuracy, while reducing the communication overhead, respectively. To the best of our knowledge, this is the ﬁrst time that IB is introduced to design wireless edge inference systems.
+• As the mutual information terms in the IB formulation are generally intractable for DNNs with high-dimensional features, we leverage the variational approximation, known as variational information bottleneck (VIB), to devise a tractable upper bound. Besides, by selecting a sparsity-inducing distribution as the variational prior, the VIB framework identiﬁes and prunes the redundant dimensions of the encoded feature vector to reduce the communication overhead. The proposed method is named as variational feature encoding (VFE).
+• We extend the proposed task-oriented communication scheme to dynamic communication environments by enabling ﬂexible adjustment of the transmitted signal length. In particular, we develop a variable-length variational feature encoding (VL-VFE) based on dynamic neural networks that can adaptively adjust the active dimensions according to different channel conditions.
+• The effectiveness of the proposed task-oriented communication schemes is validated in both static and dynamic channel conditions on image classiﬁcation tasks. Extensive simulation results demonstrate that VFE
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: LEARNING TASK-ORIENTED COMMUNICATION FOR EDGE INFERENCE: IB APPROACH
+
+199
+
+Fig. 1. Two kinds of communication schemes for device-edge co-inference: Learning-based data-oriented and task-oriented communication. The green region
+corresponds to a mobile device, and the red region corresponds to an edge server. In data-oriented communication (top), a mobile device transmits the encoded feature z of the original data x (e.g., an image). Then, an edge server attempts to decode the data xˆ based on the noise-corrupted feature zˆ, and further utilizes xˆ as input to obtain the inference result yˆ (e.g., the label of input data). In contrast, task-oriented communication (bottom) extracts and encodes useful information z jointly by the on-device network, and the receiver directly leverages zˆ to obtain the inference result yˆ, without recovering the original data. Therefore, z could be a highly compressed representation since the task-unrelated information can be discarded.
+
+and VL-VFE outperform the traditional communication design and existing learning-based joint source-channel coding for data-oriented communication.
+C. Organization
+The rest of the paper is organized as follows. Section II introduces the system model and describes the design objective of task-oriented communication. Section III and Section IV propose the task-oriented communication schemes in static and dynamic channel conditions, respectively. In Section V, we provide extensive simulation results to evaluate the performance of the proposed task-oriented communication schemes. Finally, Section VI concludes the paper.
+D. Notations
+Throughout this paper, upper-case letters (e.g. X and Y ) and lower-case letters (e.g. x and y) stand for random variables and their realizations, respectively. The entropy of Y and the conditional entropy of Y given X are denoted as H(Y ) and H(Y |X), respectively. The mutual information between X and Y is represented as I(X, Y ), and the Kullback-Leibler (KL) divergence between two probability distributions p(x) and q(x) is denoted as DKL (p||q). The statistical expectation of X is denoted as E (X). We further denote the Gaussian distribution with mean μ and covariance matrix Σ as N (μ, Σ) and use I to represent the identity matrix.
+
+are deployed at the mobile device1 and the edge server respectively so that they can cooperate to perform inference tasks, e.g., image classiﬁcation and object detection. The input data x and its target variable y (e.g., label) are deemed as different realizations of a pair of random variables (X, Y ). The encoded feature, received feature (noise-corrupted feature), and the inference result are respectively instantiated by random variables Z, Zˆ and Yˆ . These random variables constitute the following probabilistic graphical model:
+
+Y → X → Z → Zˆ → Yˆ ,
+
+(1)
+
+which satisﬁes p(yˆ|x) = pθ(yˆ|zˆ)pchannel(zˆ|z)pφ(z|x), with DNN parameters θ and φ to be discussed below.
+As shown in Fig. 1b, the on-device network deﬁnes the conditional distribution pφ(z|x) parameterized by φ, which consists of a feature extractor and a JSCC encoder. The extractor ﬁrst identiﬁes the task-relevant feature from the raw input x, and then the JSCC encoder maps the feature values to the channel input symbols z. Since both the extractor and encoder are parameterized by DNNs, these two modules can be jointly trained in an end-to-end manner. Then, the encoded feature z is transmitted to the server over the noisy wireless channel, and the server receives the noise-corrupted feature zˆ. In this paper, we assume a scalar Gaussian channel between the mobile device and the edge server for simplicity, which is modeled as a non-trainable layer with the transfer function
+
+II. SYSTEM MODEL AND PROBLEM DESCRIPTION A. System Model
+We consider task-oriented communication in a device-edge co-inference system as shown in Fig. 1b, where two DNNs
+
+1While two components, i.e., a feature extractor and a JSCC encoder, are shown in Fig. 1b at the device, they can be regarded as a single DNN. We consider resource-constrained devices that can only afford light DNNs, which are unable to complete the inference task with sufﬁcient accuracy. More details of the adopted neural network architecture will be discussed in Section V.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+200
+
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+denoted as zˆ = z + . The additive channel noise is sampled from a zero-mean Gaussian distribution with σ2 as the noise variance, i.e., ∼ N(0, σ2I). To account for the limited transmit power at the mobile device, we constrain the
+power of each dimension of the encoded feature vector to be below P , i.e., zi2 ≤ P, ∀i = 1, · · · , n with n as the encoded feature vector dimension. Thus, the channel condition can be
+characterized by the peak signal-to-noise ratio (PSNR) deﬁned as follows:
+P PSNR = 10 log σ2 (dB).
+Note that although we assume a scalar Gaussian channel
+model for simplicity, the system can be extended to other
+channel models as long as we can estimate the channel transfer function [36] and the distribution pchannel(zˆ|z). Finally, the server-based network leverages zˆ for further processing and outputs the inference result yˆ with the distribution pθ(yˆ|zˆ) parameterized by θ.
+
+B. Problem Description
+
+The communication overhead is characterized by the number of nonzero dimensions of the output of the JSCC encoder. Intuitively, if symbols over more dimensions are transmitted, the edge server will get a high-quality feature vector, which leads to higher inference accuracy, but it will induce a higher communication overhead and latency. So there is an inherent tradeoff between the inference performance and the communication overhead, which is a key ingredient for the design of task-oriented communication. This can be regarded as a new and special kind of rate-distortion tradeoff. Therefore, we resort to the information bottleneck (IB) principle [20] to formulate an optimization problem that minimizes the following objective function2:
+
+LIB(φ) = −I(Zˆ, Y ) +β I(Zˆ, X)
+
+Distortion
+
+Rate
+
+= Ep(x,y) Epφ(zˆ|x)[− log p(y|zˆ)]
+
++ βDKL (pφ(zˆ|x) p(zˆ)) − H(Y )
+
+≡ Ep(x,y) Epφ(zˆ|x)[− log p(y|zˆ)]
+
++ βDKL (pφ(zˆ|x) p(zˆ)) ,
+
+(2)
+
+where the equivalence in the last row is in the sense of
+optimization, ignoring the constant term H(Y ). The objective
+function is a weighted sum of two mutual information terms
+with β > 0 controlling the tradeoff. Speciﬁcally, the quantity I(Zˆ, X) is comprehended as the preserved information in Zˆ given X and measured by the minimum description
+length [37] (or rate). Besides, since the entropy of Y , i.e.,
+H(Y ), is a constant related to the input data distribution, minimizing the term −I(Zˆ, Y ) is equivalent to minimizing the conditional entropy H(Y |Zˆ), which characterizes the uncer-
+tainty (distortion) of the inference result Y given the received noise-corrupted feature vector Zˆ. Thus, the IB principle for-
+malizes a rate-distortion tradeoff for edge inference systems,
+
+2Note that the IB objective function is unrelated to the parameter θ since the distribution p(y|zˆ) is deﬁned by p(x, y), pφ(z|x), and pchannel(zˆ|z).
+
+and minimizes the conditional mutual information I(X, Zˆ|Y ), which corresponds to the amount of redundant information that needs to be transmitted. Compared with data-oriented communication, the IB framework retains the task-relevant information and results in I(Zˆ, X) that is much smaller than H(X), which reduces the communication overhead.
+C. Main Challenges
+The IB framework is promising for task-oriented communication as it explicitly quantiﬁes the informativeness of the encoded feature vector and offers a formalization of the ratedistortion tradeoff in edge inference. However, there are three main challenges when applying it to develop practical feature encoding methods, listed as follows.
+• Estimation of mutual information: The computation of mutual information terms for high-dimensional data with unknown distributions is challenging since the empirical estimate for the probability distribution requires the sampling number to increase exponentially with the dimension [38]. Therefore, developing a tractable estimator for mutual information is critical to make the problem solvable.
+• Effective control of the communication overhead: Minimizing the mutual information between the input data and the feature vector indeed reduces the redundancy about task-unrelated information. However, there is no direct link between redundancy reduction and feature sparsiﬁcation, which controls the communication overhead with a JSCC encoder. Thus, to reduce the communication overhead, an effective method is needed to aggregate the nuisance to the expandable dimensions so that the number of symbols to be transmitted is minimized.
+• Dynamic channel conditions: The hostile wireless channel always poses signiﬁcant challenges for communication systems. Particularly, the channel dynamics have to be accounted for. Dynamically adjusting the encoded feature length based on the DNNs is nontrivial, as the neural network structure is ﬁxed since initialization. Changing the activation of neurons according to the channel conditions calls for other control modules.
+The following two sections will tackle these challenges, and develop effective methods for task-oriented communications. The effectiveness of the proposed methods will be tested in Section V.
+III. VARIATIONAL FEATURE ENCODING
+In this section, we develop a variational information bottleneck (VIB) framework to resolve the difﬁculty of mutual information computation of the original IB objective in (2). Besides, we show that by selecting a sparsity-inducing distribution as the variational prior, minimizing the mutual information between the raw input data X and the noise-corrupted feature Zˆ facilitates the sparsiﬁcation of Zˆ by pruning the taskirrelevant dimensions. Such an activation pruning scheme, i.e., removing neurons in a DNN, is effective in reducing the overhead of task-oriented communication. Based on this idea,
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: LEARNING TASK-ORIENTED COMMUNICATION FOR EDGE INFERENCE: IB APPROACH
+
+201
+
+we name our proposed method as variational feature encoding (VFE). This section assumes a static channel condition, while dynamic channels will be treated in Section IV.
+
+In the next subsection, we illustrate that minimizing the VIB objective helps to prune the redundant dimensions in the encoded feature vector, and thus it serves as a suitable and tractable objective for task-oriented communication.
+
+A. Variational Information Bottleneck Reformulation
+The variational method is a natural way to approximate
+intractable computations based on some adjustable parameters (e.g., weights in DNNs), and it has been widely applied in
+machine learning, e.g., the variational autoencoder [39]. In the
+VIB framework, the central idea is to introduce a set of approximating densities to the intractable distribution.
+Revisiting the probabilistic graphical model in (1), the distribution pφ(zˆ|x) is determined by the on-device DNN and the channel model, i.e., pφ(zˆ|x) = pφ(z|x)pchannel(zˆ|z; ). Particularly, as we adopt a deterministic on-device network, pφ(z|x) can be regarded as a Dirac-delta function. Then, we have pφ(zˆ|x) = N zˆ|z(x; φ), σ2I , where the deterministic function z(x; φ) maps x to z parameterized by φ. For notational simplicity, we rewrite pφ(zˆ|x) = N zˆ|z(x; φ), σ2I as pφ(zˆ|x) = N zˆ|z, σ2I .
+With a known distribution pφ(zˆ|x) and the joint data distribution p(x, y), the distributions p(zˆ) and p(y|zˆ) are fully characterized by the underlying Markov chain Y ↔ X ↔ Zˆ. Unfortunately, these two distributions are intractable due to the following high-dimensional integrals:
+
+p(zˆ) = p(x)pφ(zˆ|x)dx,
+
+p(y|zˆ) =
+
+p(x,
+
+y)pφ(zˆ|x) p(zˆ)
+
+dx.
+
+To overcome this issue, we apply two variational distributions q(zˆ) and qθ(y|zˆ) to approximate the true distributions p(zˆ) and p(y|zˆ), respectively, where θ is the parameters of
+the server-based network shown in Fig. 1b that computes the inference result yˆ. Therefore, we recast the objective function in (2) as follows:
+
+LV IB(φ, θ) = Ep(x,y) Epφ(zˆ|x) [− log qθ(y|zˆ)] + βDKL (pφ(zˆ|x) q(zˆ)) . (3)
+
+The above formulation is termed as the variational information bottleneck (VIB) [35], which invokes an upper bound on the IB objective function in (2). Details of the derivations are deferred to the Appendix A. By further applying the reparameterization trick [39] and Monte Carlo sampling, we are able to obtain an unbiased estimate of the gradient and hence optimize the objective using stochastic gradient descent. In particular, given a mini-batch of data {(xi, yi)}M i=1 and sampling the channel noise L times for each pair (xi, yi), we have the following empirical estimation:
+
+LV IB(φ, θ)
+
+1M M m=1
+
+1 L
+
+L
+
+[− log qθ (ym|zˆm,l)]
+
+l=1
+
++ βDKL (pφ (zˆ|xm) q(zˆ)) , (4)
+
+where zˆm,l = zm + m,l and m,l ∼ N 0, σ2I .
+
+B. Redundancy Reduction and Feature Sparsiﬁcation
+
+As we leverage the IB principle instantiated via a vari-
+
+ational approximation, minimizing the KL-divergence term
+
+DKL (p(zˆ|x) q(zˆ)) shall reduce the redundancy in feature Zˆ. However, it does not guarantee sparse activations in the
+
+feature encoding process. For example, if the reduced redun-
+
+dancy is distributed equally across all dimensions and each
+
+dimension still preserves task-related information, the encoded
+
+feature vector may have a high dimension that leads to a
+
+high communication overhead. To obtain a feature vector Zˆ that aggregates the task-irrelevant information into certain
+
+expendable dimensions through end-to-end training, we adopt
+
+the log-uniform distribution as the variational prior, i.e., q(zˆ),
+
+to induce sparsity [40]. In particular, we choose the mean-ﬁeld
+
+variational approximation [39] to alleviate the computation
+
+complexity, i.e., given an n-dimensional zˆ, q(zˆ) =
+
+n i
+
+q(zˆi
+
+).
+
+Speciﬁcally, for each dimension zˆi, the variational prior dis-
+
+tribution is chosen as:
+
+q (log |zˆi|) = constant.
+
+Since pφ(zˆ|x) =
+
+n i
+
+pφ(zˆi
+
+|x),
+
+the
+
+KL-divergence
+
+term
+
+in (3) can be decomposed into a summation:
+
+n
+DKL (pφ(zˆ|x) q(x)) = DKL (pφ (zˆi|x) q (zˆi)) . (5)
+i=1
+
+Nevertheless, as the KL-divergence term in (5) does not have a closed-form expression, we utilize the approximation proposed in [41] as follows:
+
+−DKL (pφ (zˆi|x) q (zˆi)) 1
+= 2 log αi − E ∼N(1,αi) log | | + C ≈ k1S (k2 + k3 log αi) − 0.5 log 1 + α−i 1 + C, (6)
+where
+σ2 αi = zi2 k1 = 0.63576 k2 = 1.87320 k3 = 1.48695,
+and C is a constant. Besides, zi is the i-th dimension in z, and S(·) denotes the sigmoid function. It can be veriﬁed that the approximate KL-divergence approaches its minimum when αi goes to inﬁnite (i.e., zi goes to zero), and minimizing this term encourages the value of zi to be small. Empirical results in Section V show that the selected sparsity-inducing distribution sparsiﬁes some dimensions in z, i.e., zi ≡ 0 for arbitrary input, which can be pruned to reduce the communication overhead.
+
+C. Variational Pruning on Dimension Importance
+While the selected variational prior helps to promote sparsity in the feature vector, we still need an effective method to determine which of the dimensions can be pruned. Maintaining zi ≡ 0 requires all the weights and the bias corresponding
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+202
+
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+Algorithm 1 Training Variational Feature Encoding (VFE)
+
+Input: T (number of iterations), n (number of output dimension
+
+of encoder), L (number of channel noise samples per datapoint),
+
+batch size M , channel variance σ2, and threshold γ0.
+
+1: while epoch t = 1 to T do
+
+2: 3:
+
+Select a mini-batch of Compute the encoded
+
+fdeaattaur{e(xvemct,oyr m{z)m }M m}=M m1=1
+
+based
+
+on
+
+(8)
+
+4: Compute the appropriate KL-divergence based on (6)
+
+5: while m = 1 to M do
+
+6:
+
+Sample the noise { m,l}Ll=1 ∼ N(0, σ2I)
+
+7: end while
+
+8: Compute the loss LV IB(φ, θ) based on (4) 9: Update parameters φ, θ through backpropagation.
+
+10: while i = 1 to n do
+
+11:
+
+if γi ≤ γ0 then
+
+12:
+
+Prune the i-th dimension in the encoded feature vector
+
+13:
+
+end if
+
+14: end while
+
+15: end while
+
+to zi in this layer converge to zero. However, checking each parameter is time-consuming in a large-scale DNN. To develop an efﬁcient solution, we introduce a dimension importance vector γ to denote the importance of each output neuron.
+Revisiting the fully-connected (FC) layer, each neuron has full connections to its input a, and their activations can thus be computed with a matrix multiplication with W followed by an offset b as follows:
+
+FC(a) = W a + b = W a˜,
+
+(7)
+
+where W = [W, b] is an augmented weight matrix, and
+
+a˜ = [aT , 1]T is an augmented input vector. By denoting the
+
+i-th row in the augmented weight matrix W as Wi· and the
+
+i-th dimension in γ as γi, we rewrite the augmented weight
+
+matrix as Wi· = γi
+
+Wi· , where γ
+Wi· 2
+
+corresponds to the scale
+
+factor for each row. The proposed VFE method deﬁnes the
+
+mapping from the input x to the encoded feature z according
+
+to the following formula:
+
+zi = Tanh
+
+γi
+
+Wi· f (x) Wi· 2
+
+,
+
+(8)
+
+where zi is the i-th dimension of z, and Tanh(·) is the activation function. Besides, function f (·) is deﬁned by the previous on-device layers, and its output f (x) is the input of the fully-connected layer (i.e., a = f (x) in (7)). As the weight vector Wi· is normalized by its l2-norm, the magnitude of zi is highly dependent on the scale factor γi. When γi is close to zero, zi is also close to zero, and the corresponding pφ(zˆ|x) degrades to the channel noise distribution without valid information. Based on this idea, we eliminate the redun-
+dant channels when the parameter γi is less than a threshold γ0. Since the Tanh activation function has an output range from −1 to 1, the peak transmitted power P is constrained
+to 1. Note that the formula in (8) can be easily extended
+to convolutional layers by replacing the matrix multiplication
+with convolution. Such a variational pruning process is one
+of the main components of the proposed VFE method. The
+training procedures for VFE are illustrated in Algorithm 1.
+
+IV. VARIABLE-LENGTH VARIATIONAL FEATURE ENCODING
+The task-oriented communication scheme developed in Section III assumes static wireless channels. In practice, wireless data transmission may experience changes due to various factors such as beam blockage and signal attenuation. This necessitates instant link adaptation to improve the efﬁciency of feature encoding for low-latency inference. In this section, we extend our ﬁndings in Section III and propose a new encoding scheme, namely variable-length variational feature encoding (VL-VFE), by designing a dynamic neural network, which admits ﬂexible control of the encoded feature dimension.
+A. Background on Dynamic Neural Networks
+Dynamic neural networks are able to adapt their architectures to the given input and effective in improving the efﬁciency of the network processing via selective execution. For example, several prior works (e.g. [42]–[44]) proposed to learn a binary gating module to adaptively skip layers or prune channels based on the input data. Besides, there are also some variants of dynamic neural networks, including the slimmable neural networks and the “Once-for-All” architecture. In particular, inventors of the slimmable neural networks [45] proposed to train a single model to support layers with arbitrary widths; while authors of [17] proposed the “Once-for-All” architecture with a progressive shrinking algorithm which trains one network that supports diverse sub-networks. In this work, we employ the idea of selective activation, as shown in Fig. 2, to learn a set of neurons that can adjust the number of activated neurons according to the channel conditions.
+B. Selective Activation for Dynamic Channel Conditions
+We propose the variable-length variational feature encoding (VL-VFE), which is empowered with the capability of adjusting its output length under different channel conditions. Such kinds of channel-adaptive feature encoding schemes favor the following two properties:
+• The activated dimensions of the feature z can be adjusted in the DNN forward propagation according to the channel conditions. More dimensions should be activated during the bad channel conditions and vice versa.
+• The activated dimensions start consecutively from the ﬁrst dimension (shown in Fig. 2b), which avoids transmitting the indexes of the activated dimensions using extra communication resources.
+In practical communication systems, the mobile device could be aware of the channel condition via a feedback channel. Therefore, the channel condition can be incorporated in the feature encoding process. Because the amplitude of the encoded feature vector is constrained to 1 by Tanh function, the noise variance σ2 sufﬁces to represent the PSNR and is adopted as an extra input of the feature encoder. In the training process, the noise variance σ2 is regarded as a random variable distributed within a range to model the dynamic channel conditions. For simplicity, we sample the channel
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: LEARNING TASK-ORIENTED COMMUNICATION FOR EDGE INFERENCE: IB APPROACH
+
+203
+
+Fig. 2. Two types of selective activations: Random activation and consecutive activation. In different channel conditions (e.g., different PSNRs), the same DNN can be executed with different activated dimensions to balance the achievable inference performance and the incurred communication overhead. Random activation does not require the dimensions to be activated in order, while consecutive activation forces the activated dimensions to be consecutive starting from the ﬁrst dimension.
+
+variance σ2 from the uniform distribution p(σ2). As the noise variance p(σ2) is independent to the dataset, we have p(x, y, σ2) = p(x, y)p(σ2). The loss function in (3) is thus
+revised as follows:
+
+LV IB(φ, θ) = Ep(x,y,σ2) Epφ(zˆ|x,σ2) [− log qθ(y|zˆ)] + βDKL pφ(zˆ|x, σ2) q(zˆ) . (9)
+
+Similarly, we adopt Monte Carlo sampling as in (4) to estimate LV IB. The formula is as follows:
+
+LV IB(φ, θ)
+
+1M M
+
+1 L
+
+L
+
+[− log qθ (ym|zˆm,l)]
+
+m=1
+
+l=1
+
++ βDKL pφ(zˆ|xm, σm2 ) q(zˆ) , (10)
+
+where zˆm,l = zm + m,l, σm2 ∼ p(σ2), and m,l ∼ N(0, σm2 I), and for a given zm, the channel noise is sampled L times. Then, as the encoding scheme should be channeladaptive, we have pφ zˆ|x, σ2 = N(zˆ|z(x; φ, σ2), σ2I), where the function z(x; φ, σ2) determined by the on-device network incorporates σ2 as an input variable. Hence, the
+function in (8) is modiﬁed as follows:
+
+zi = Tanh
+
+γi(σ2)
+
+Wi· f (x) Wi· 2
+
+,
+
+(11)
+
+where the dimension importance γi(σ2) (i.e., the i-th element in γ(σ2)) is the function of the channel condition (i.e., channel noise variance σ2). Rather than directly training a
+gating network to control the activated dimensions like other dynamic neural networks (e.g., [42]–[44]), γ(σ2) can adap-
+tively prune the redundant dimensions in the encoded feature vector for different σ2 due to the intrinsic sparsity discussed in
+Section III. As a result, in the device-edge co-inference system,
+the activated dimensions of the encoded feature vector can be easily decided by setting a threshold for γ(σ2). Besides,
+as VL-VFE needs to meet the consecutive activation property, we deﬁne the function γ(σ2) to induce a particular group sparsity pattern, and for the i-th element γi(σ2), the expression
+
+Algorithm 2 Training Variable-Length Variational Feature
+
+Encoding (VL-VFE)
+
+Input: T (number of iterations), n (number of output dimension
+
+of encoder), L (number of channel noise samples per datapoint),
+
+batch size M , noise variance distribution p(σ2), and threshold γ0.
+
+1: while epoch t = 1 to T do
+
+2: 3: 4:
+
+GSCaoemmt papluemtetihnteih-becahetacnnhcnooedlfevddaafrteiaaan{tuc(rexem ¨vσe,m c2ytom ©rM m){}=zM m1m=∼}1 M mp(=σ12)based on (11)
+
+5: while m = 1 to M do
+
+6:
+
+Sample the channel noise { m,l}Ll=1 ∼ N(0, σm 2 I)
+
+7:
+
+while i = 1 to n do
+
+8:
+
+if γi(σm 2 ) ≤ γ0 then
+
+9:
+
+Deactivate the i-th dimension of zm in this epoch
+
+10:
+
+end if
+
+11:
+
+end while
+
+12: end while
+
+13: Compute the appropriate KL-divergence based on (6)
+
+14: Compute loss LV IB(φ, θ) based on (10) 15: Update parameters φ, θ through backpropagation
+
+16: end while
+
+is constructed as follows:
+
+n
+
+γi(σ2) = gj(σ2),
+
+(12)
+
+j=i
+
+where gj(·) denotes the j-th output dimension of the function g( · ), which is parameterized by a lightweight
+multi-layer perceptron (MLP). By constraining the range of parameters in the MLP, each function gj(σ2) can be a non-negative increasing function, which naturally leads to γi(σ2) ≥ γj(σ2), ∀j > i and γi(σ2) ≥ γi(σ¯2), ∀σ2 ≥ σ¯2. Therefore, given a threshold γ0, the VL-VFE method summarized in Algorithm 2 can activate the dimensions
+consecutively, and more dimensions can be activated during
+the adverse channel conditions. Details of the MLP structure
+and parameter constraints are deferred to Appendix B.
+
+C. Training Procedure for the Dynamic Neural Network
+To train a dynamic neural network with the selective activation under different channel conditions, we naturally
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+204
+
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+average losses sampled from different cases. In each training iteration, for simplicity, we uniformly sample σ2 from the
+possible PSNR range. Different from the training procedure
+in Algorithm 1, VL-VFE deactivates each dimension with γi σ2 ≤ γ0, rather than permanently pruning it, as the function γ(σ2) is not stable until convergence. More details
+about the algorithm are summarized in Algorithm 2.
+
+TABLE I THE DNN STRUCTURE FOR MNIST CLASSIFICATION TASK
+
+V. PERFORMANCE EVALUATION
+In this section, we evaluate the performance of the proposed task-oriented communication schemes on image classiﬁcation tasks and investigate the rate-distortion tradeoff for both static and dynamic channel conditions. An ablation study is also conducted to illustrate the importance of an appropriate choice of the variational prior distribution discussed in Section III, i.e., a sparsity-inducing prior distribution can force some dimensions of the encoded feature vector to zero without over-shrinking other dimensions.
+
+A. Experimental Setup
+1) Datasets: In this section, we select two benchmark datasets for image classiﬁcation, including MNIST [46] and CIFAR-10 [47]. The MNIST dataset of handwritten digits from “0” to “9” has a training set of 60,000 sample images and a test set of 10,000 sample images. The CIFAR-10 dataset consists of 60,000 color images in 10 classes with 5,000 training images per class and 10,000 test images. In Appendix D, we further test the performance of the proposed methods on Tiny Imagenet dataset [48].
+2) Baselines: We compare the proposed methods against two learning-based communication schemes for device-edge co-inference, including DeepJSCC [8], [28] and learningbased Quantization [49].
+• DeepJSCC: DeepJSCC is a learning-based JSCC method, which maps the input data directly to the channel symbols via a JSCC encoder. We set the loss function of DeepJSCC to the cross-entropy, and its communication cost is proportional to the output dimension of the feature encoder.
+• Learning-based Quantization: This scheme quantizes the ﬂoating-point values in the encoded feature vector into low-precision data representations (e.g., the 2-bit ﬁxedpoint format). Such a quantization method imitates the lossy source coding and therefore it requires an extra step of channel coding before transmission for error correction. Note that designing a universally optimal channel coding scheme for different channel conditions in the ﬁnite block-length regime is highly nontrivial [50]. For fair comparisons, we assume an adaptive channel coding scheme that achieves the following communication rate:
+
+C(P, σ2) = min log2 1+
+
+2P πeσ2
+
+1
+
+P
+
+, 2 log2 1+ σ2
+
+(b.p.c.u), (13)
+
+where
+
+P σ2
+
+is
+
+the
+
+PSNR.
+
+This
+
+formula
+
+was
+
+shown
+
+to be a tight upper bound on the capacity of the
+
+amplitude-limited scalar Gaussian channel in [51].
+
+3) Metrics: We mainly concern the rate-distortion tradeoff
+
+in the task-oriented communication. For the classiﬁcation tasks, we use the classiﬁcation accuracy to denote the inference performance (corresponding to “distortion”), and adopt
+
+the communication latency as an indicator of “rate.” In the following experiments, we set the bandwidth W as 12.5kHz
+
+with symbol rate 9,600 Baud, corresponding to the limited bandwidth at the wireless edge.
+4) Neural Network Architecture: Carefully designing the on-device network is important due to the limited onboard computation and memory resources. Besides, as the DNN structure affects the inference performance and communication overhead, all methods adopt the same architecture for fair comparisons as follows.3
+
+• For the MNIST classiﬁcation experiment, we assume a microcontroller unit (e.g., ARM STM32F4 series) as the mobile device, and its memory (RAM) is less than 0.5 MB. Therefore, we use only one fully-connected layer
+
+as the on-device network to meet the memory constraint. At the edge server, we select an MLP as the server-based
+
+network. The corresponding network structure is shown
+
+in Table I. Note that a 4-layer MLP achieves an error rate of 1.38% as reported in [35].
+
+• For the CIFAR-10 classiﬁcation task, we assume a single-board computer (e.g., Raspberry Pi series) as the mobile device and adopt ResNet [52] as the back-
+
+bone for the CIFAR-10 processing, which can achieve the classiﬁcation accuracy of around 92%. As the
+
+single-board computer has much more memory compared
+
+to a microcontroller, we deploy convolutional layers on the mobile device to extract a compact representa-
+
+tion. Besides, to reduce the communication overhead, we add a fully-connected layer at the end of the on-device network to map the intermediate tensor to an n-dimensional encoded feature. Correspondingly, there is a fully-connected layer in the server-based network
+
+that maps the received feature vector back to a tensor,
+
+and several server-based layers are adopted for further processing. The network structure is shown in Table II.
+
+Since the proposed VFE method can prune the redundant dimensions in the encoded feature vector, our method initialize n to 128 and 64 for the MNIST classiﬁcation and the CIFAR-10 classiﬁcation, respectively. Moreover, the function
+
+3The codes is available at github.com/shaojiawei07/VL-VFE
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: LEARNING TASK-ORIENTED COMMUNICATION FOR EDGE INFERENCE: IB APPROACH
+
+205
+
+Fig. 3. The rate-distortion curves in the MNIST classiﬁcation task with (a) PSNR = 10 dB and (b) PSNR = 20 dB.
+
+Fig. 4. The rate-distortion curves in the CIFAR-10 classiﬁcation task with (a) PSNR = 10 dB and (b) PSNR = 20 dB.
+
+TABLE II THE DNN STRUCTURE FOR CIFAR-10 CLASSIFICATION TASK
+g( · ) in (12) for variable-length encoding is a MLP with three hidden layers with 16 hidden units each, which brings negligible computation compared with other computationintensive modules.4
+B. Results for Static Channel Conditions In this set of experiments, we assume the wireless channel
+model has the same value of PSNR in both the training and test
+4Note that there is a tradeoff between the on-device computation latency and the communication overhead caused by the complexity of the on-device network [27]. In this paper, as we assume an extreme bandwidth-limited situation, we mainly consider the communication overhead in the experiments.
+
+phases. Then, we record the inference accuracy achieved with different communication latency to obtain the rate-distortion tradeoff curves. In the proposed VFE method, varying the weighting parameter β can adjust the encoded feature length, where β ∈ [10−4, 10−2] in the MNIST classiﬁcation, and β ∈ [5 × 10−5, 10−2] in the CIFAR-10 classiﬁcation. The communication latency of DeepJSCC is determined by the encoded feature dimension n, while for the learning-based Quantization method, the communication latency is determined by the dimension n and the number of quantization levels. Adjusting these parameters affects both the communication latency and accuracy. The rate-distortion tradeoff curves are shown in Fig. 3 and Fig. 4 for the MNIST and CIFAR-10 classiﬁcation tasks, respectively. It shows that our proposed method outperforms the baselines by achieving a better ratedistortion tradeoff, i.e., with a given latency requirement, a higher classiﬁcation accuracy is maintained, and vice versa. This is because the proposed VFE method is able to identify and eliminate the redundant dimensions of the encoded feature vector for the task-oriented communication. Besides, we also depict the noisy feature vector zˆ in the MNIST classiﬁcation tasks in Fig. 5 using a two-dimensional t-distributed stochastic neighbour embedding (t-SNE) [53]. Since the IB principle
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+206
+
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+Fig. 5. Two-dimensional t-SNE embedding of the received feature in the MNIST classiﬁcation task with PSNR = 20 dB.
+
+TABLE III THE CLASSIFICATION ACCURACY UNDER DIFFERENT PSNR WITH COMMUNICATION LATENCY t ≤ 3.25 ms. THE BASELINE CLASSIFIERS ACHIEVE AN ACCURACY OF 98.64% FOR MNIST CLASSIFICATION
+AND AN ACCURACY OF AROUND 92% FOR CIFAR-10 CLASSIFICATION
+can preserve less nuisance from the input and make zˆ less affected by the channel noise, our VFE method can better distinguish the data from different classes compared with DeepJSCC.
+Next, we test the robustness of the proposed method by further evaluating its inference performance over different channel conditions. Particularly, we set a transmission latency tolerance of 3.25 ms and record the best inference accuracy achieved by different schemes.5 Since the channel achievable rate decreases with the PSNR, it requires the learning-based Quantization method to reduce the encoded data size to meet the latency constraint. The latency constraint can also be translated to an encoded feature vector with less than 32 dimensions for both the VFE method and DeepJSCC. Table III shows the classiﬁcation accuracy under various values of PSNR for the MNIST and CIFAR-10 tasks. It is observed that, our method consistently outperforms the two baselines, implying that the IB framework can effectively identify the task-related information in the encoding scheme, and our VFE method is capable of achieving resilient transmission for task-oriented communication.
+
+C. Results for Dynamic Channel Conditions
+In this subsection, we evaluate the performance of the proposed VL-VFE method in dynamic channel conditions. We assume the PSNR is changing from 10 to 25 dB. As the peak transmit power is constrained below 1 by the Tanh activation function, it equivalently means that the channel noise variance σ2 varies in [3 × 10−3, 0.1]. We compare the inference performance between the proposed method and DeepJSCC when testing in a wide range of PSNR. The DeepJSCC is trained with PSNR = 20 dB and the feature dimension is set to n = 36 in the MNIST classiﬁcation and n = 16 in the CIFAR-10 classiﬁcation. The training process of our method follows Algorithm 2, where the hyperparameter β is in the range of 10−3 to 10−2.
+Fig. 6 shows the latency and inference accuracy for the two classiﬁcation tasks, which illustrates that the proposed VL-VFE method achieves a higher accuracy and lower latency compared with DeepJSCC. The proposed VL-VFE method can adaptively adjust the encoded feature dimension according to the instantaneous channel noise level, and thus it can reduce the communication latency in the high PSNR regime. Specifically, when the channel conditions are unfavorable, VL-VFE tends to activate more dimensions for transmission to make the received feature vector robust to maintain the inference performance, which is analogous to adding redundancy for error correction in conventional channel coding techniques. On the contrary, when the channel conditions are good enough, VL-VFE tends to activate less dimensions to reduce the communication overhead.
+Note that in existing communication systems, channel estimation plays a very important role in the performance of the whole system. To evaluate the inﬂuence of the non-ideal estimation of the channel noise variance σ2, we conduct the experiments to test the robustness of the proposed VL-VFE method given inaccurate noise variance σˆ2. More details of the experimental settings and results are deferred to Appendix C.
+
+5Theoretically, based on the channel capacity bound in (13), transmitting a MNIST image takes around 8 ms when PSNR = 25 dB and 20 ms when PSNR = 10 dB. Similarly, transmitting a CIFAR-10 image takes around 70 ms when PSNR = 25 dB and 180 ms when PSNR = 10 dB.
+
+D. Ablation Study
+To verify the effectiveness of the log-uniform distribution as the variational prior q(zˆ) for sparsity induction, we further conduct an ablation study that selects a Gaussian distribution
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: LEARNING TASK-ORIENTED COMMUNICATION FOR EDGE INFERENCE: IB APPROACH
+
+207
+
+Fig. 6. Communication latency and error rate as a function of the channel PSNR in dynamic channel conditions.
+
+dimensions of γ to close-to-zero values, it is prone to shrinking the remaining informative dimensions that eventually results in inference accuracy degradation.
+
+Fig. 7. The γ value in the MNIST classiﬁcation task with (a) a Gaussian distribution as the variational prior and (b) a log-uniform distribution as the variational prior. The red dashed line denotes the pruning threshold γ0 = 0.05.
+Fig. 8. The γ value in the CIFAR-10 classiﬁcation task with (a) a Gaussian distribution as the variational prior and (b) a log-uniform distribution as the variational prior. The red dashed line denotes the pruning threshold γ0 = 0.01.
+with a diagonal covariance matrix for comparison. Note that the Gaussian distribution is widely used in the previous variational approximation studies (e.g., [34], [39]) as it generally has a closed-form solution. Since the Gaussian distribution is not a parameter-free distribution, the mean value and covariance matrix are optimized in the training process to minimize the KL-divergence DKL(p(zˆ|x) q(zˆ)). The experiments are conducted for MNIST and CIFAR-10 classiﬁcation assuming PSNR = 20 dB. The values of γ with different variational prior distributions are shown in Fig. 7 and 8. The dashed line corresponds to the value of threshold γ0 used to prune the dimensions. From these two ﬁgures, it can be seen that, although using the Gaussian distribution can also conﬁne some
+
+VI. CONCLUSION
+In this work, we investigated task-oriented communication for edge inference, where a low-end edge device transmits the extracted feature vector of a local data sample to a powerful edge server for processing. Our proposed methodology is built upon the information bottleneck (IB) framework, which provides a principled way to characterize and optimize a new rate-distortion tradeoff in edge inference. Assisted by a variational approximation with a log-normal distribution as the variational prior to promote sparsity in the output feature, we obtained a tractable formulation that is amenable to end-to-end training, named variational feature encoding. We further extended our method to develop a variable-length variational feature encoding scheme based on the dynamic neural networks, which makes it adaptive to dynamic channel conditions. The effectiveness of our methods was veriﬁed by extensive simulations on image classiﬁcation datasets.
+Through this study, we would like to advocate for rethinking the communication system design for emerging applications such as edge inference. In these applications, communication will keep playing a critical role, but it will serve for the downstream task rather than for data reconstruction as in the classical communication setting. Thus we should take a task-oriented perspective to design the communication module for such applications. New design tools and methodologies will be needed, and the IB framework is a promising candidate. It bridges machine learning and information theory, and leverages theory and tools from both ﬁelds. There are many interesting future research directions on this exciting topic, e.g., to apply the IB-based framework to the scenario with multiple devices, to develop a theoretical understanding of the new rate-distortion tradeoff, to improve the robustness of the method, etc.
+APPENDIX A DERIVATION OF THE VARIATIONAL UPPER BOUND
+Recall that the IB objective in (2) has the form LIB(φ) = −I(Zˆ, Y ) + βI(Zˆ, X). Writing it out in full, the derivation is
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+208
+
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+show in (14), as shown at the bottom of this page. LV IB(φ, θ) in this formulation is the VIB objective function in (3). As the
+KL-divergence is nonnegative and the entropy of Y is a constant, LV IB(φ, θ) is a variational upper bound of the IB objective LIB(φ).
+
+APPENDIX B MLP STRUCTURE OF THE FUNCTION g σ2
+We parameterize g σ2 by a K-layer MLP, and thus it can be written as a composition of K non-linear functions:
+
+g σ2 = hK ◦ hK−1 · · · h1 σ2 ,
+
+where hk represents the k-th layer in the MLP and has hk (x) = tanh W (k)x .6 To maintain the desired properties of the proposed VL-VFE method, each function gj(σ2) (the j-th output dimension of the vector function g σ2 should be non-negative and increase with the noise variance σ2. Therefore, functions gj(σ2) should satisfy the following constraints:
+
+gj(σ2) ≥ 0;
+
+gj (σ2 )
+
+=
+
+∂ gj (σ2 ) ∂σ2
+
+≥
+
+0.
+
+The function g(σj2) can be written as follows:
+
+gj (σ2) = hK,j ◦ hK−1 · · · h1 σ2 ,
+
+where hK,j is j-th output dimension of hK . The derivative of gj(σ2) can be obtained using the chain rule:
+
+gj (σ2) = hK,j ◦ hK−1 · · · h1 σ2 ,
+
+where we denote the Jacobian matrix of hk as hk, and hK,j is the j-th row of hK . The derivatives work out as follows:
+
+hk(x) = diag tanh W (k)x · W (k).
+
+To guarantee that each gj(σ2) is a non-negative increasing function, we set W (k) = abs(W (k)), which means that
+gj σ2 outputs a non-negative value, and all entries in Jacobian matrices are non-negative.7
+
+6tanh(x)
+
+=
+
+ex −e−x ex +e−x
+
+and tanh (x)
+
+=
+
+1 − tanh(x). For simplicity,
+
+we deﬁne tanh(x) and tanh (x) as element-wise functions.
+
+7abs(·) denotes the element-wise absolute function. W (k) are the actual
+
+parameters in the K-layer MLP.
+
+Fig. 9. Error rate as a function of the channel PSNR in dynamic channel conditions.
+Fig. 10. Communication latency as a function of the channel PSNR in dynamic channel conditions.
+APPENDIX C ROBUSTNESS OF THE VL-VFE METHOD GIVEN
+INACCURATE CHANNEL NOISE VARIANCE We conduct the experiments to evaluate the robustness of the proposed method given inaccurate channel noise variance. In particular, by assuming m pilot symbols are transmitted from the mobile device for noise variance estimation, and adopting the uniformly minimum-variance unbiased estimator,
+
+LIB(φ) = −I(Y, Zˆ) + βI(Zˆ, X)
+
+=−
+
+p(y|zˆ)p(zˆ)
+
+log
+
+p(y|zˆ) p(y)
+
+dydzˆ
+
++
+
+β
+
+= − p(y|zˆ)p(zˆ) log p(y|zˆ)dydzˆ + β
+
+= − p(y|zˆ)p(zˆ) log qθ(y|zˆ)dydzˆ + β
+
+pφ(zˆ|x)p(x)
+
+log
+
+pφ(zˆ|x) p(zˆ)
+
+dxdzˆ
+
+pφ(zˆ|x)p(x)
+
+log
+
+pφ(zˆ|x) p(zˆ)
+
+dxdzˆ
+
+−
+
+H (Y
+
+)
+
+pφ(zˆ|x)p(x)
+
+log
+
+pφ(zˆ|x) q(zˆ)
+
+dxdzˆ
+
+LV IB (φ,θ)
+
+−
+
+p(y|zˆ)p(zˆ)
+
+log
+
+p(y|zˆ) qθ (y|zˆ)
+
+dydzˆ
+
+−β
+
+pφ(zˆ|x)p(x)
+
+log
+
+p(zˆ) q(zˆ)
+
+dxdzˆ −
+
+H (Y
+
+)
+
+(14)
+
+constant
+
+DKL(p(y|zˆ) qθ (y|zˆ))≥0
+
+DKL(p(zˆ) q(zˆ))≥0
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: LEARNING TASK-ORIENTED COMMUNICATION FOR EDGE INFERENCE: IB APPROACH
+
+209
+
+Fig. 11. Experimental results of the classiﬁcation task on the Tiny ImageNet dataset.
+
+the
+
+noise
+
+variance
+
+is
+
+estimated
+
+as
+
+σˆ2
+
+=
+
+1 m−1
+
+m i (zˆi,p −zi,p)2,
+
+where zˆi,p and zi,p correspond to the i-th transmitted and
+
+received pilot symbols, respectively. It can be easily veriﬁed
+
+that E σˆ2
+
+=
+
+σ2 and p(σˆ2|σ2)
+
+=
+
+σ2 m−1
+
+χ2
+
+(m),
+
+where
+
+χ2(m) denotes the chi-square distribution with m degrees of
+
+freedom. The variance of σˆ2 reduces as m increases, i.e., the
+
+noise variance estimation becomes more accurate. With the inaccurate noise variance σˆ2 at the transmitter, we test the
+
+performance of the proposed VL-VFE method based on the
+
+CIFAR-10 image classiﬁcation task for the following three cases:
+
+• VL-VFE (m = 0): This corresponds to the case that the transmitter has no knowledge about the noise variance,
+
+and the PSNR is set to be 10 dB for feature encoding; • VL-VFE (m = 8): The noise variance is estimated
+
+via 8 pilot symbols, which corresponds to the case of
+
+imperfect channel knowledge for feature encoding; • VL-VFE (m = ∞): This corresponds to the case of
+
+perfect channel knowledge for feature encoding.
+
+Following the experimental settings in Section V, we also
+
+adopt DeepJSCC as the baseline in comparison. The exper-
+
+imental results on the error rate and feature transmission
+
+latency are shown in Fig. 9 and Fig. 10, with the new ﬁndings
+
+summarized as follows:
+
+• The proposed method achieves lower communication latency compared with DeepJSCC in all the three cases
+
+in the dynamic channel conditions;
+
+• While reducing the number of pilot symbols to 8 incurs performance degradation to the proposed method due
+
+to the inaccurate noise variance, the proposed method
+
+still achieves a much better rate-distortion tradeoff than
+
+DeepJSCC;
+
+• Even when the transmitter has no knowledge of the noise variance, i.e., m = 0, the proposed method still shows a
+
+comparable performance as DeepJSCC.
+
+In conclusion, these experimental results demonstrate that
+
+our proposed method is robust against the inaccurate channel
+
+knowledge, i.e., the channel noise variance.
+
+TABLE IV THE DNN STRUCTURE FOR TINY IMAGENET CLASSIFICATION TASK
+APPENDIX D ADDITIONAL EXPERIMENTS ON TINY IMAGENET DATASET
+We further evaluate the performance of the proposed variational feature encoding (VFE) method and variable-length variational feature encoding (VL-VFE) method on the Tiny ImageNet classiﬁcation task [48]. Tiny ImageNet contains 200 image classes, a training dataset of 100,000 images, and a validation dataset of 10,000 images. All images are of size 64 × 64. We select the ResNet18 as the backbone for this task, which can achieve the top-1 accuracy of around 50.5%. The whole neural network structure is shown in Table IV. Following the basic settings in Section V, we compare our proposed methods with DeepJSCC and Learning-based Quantization. The initialized feature dimension of the proposed methods is 224 in this set of experiments. Fig. 11a shows the rate-distortion curves in the static channel condition (PSNR = 20 dB), where our VFE method changes the feature dimension by adjusting the β value in the range of [10−4, 10−3]. Similar to the previous results on the MNIST and CIFAR-10 datasets, our proposed VFE method outperforms the baselines by achieving a better rate-distortion tradeoff. In the dynamic channel conditions, we set β = 5 × 10−4 in the training phase when PSNR is changing from 10 dB to 25 dB. Fig. 11b shows that the proposed VL-VFE method achieves higher accuracy and lower latency compared with DeepJSCC.
+REFERENCES
+[1] A. Graves, A.-R. Mohamed, and G. Hinton, “Speech recognition with deep recurrent neural networks,” in Proc. IEEE Int. Conf. Acoust., Speech Signal Process., Vancouver, BC, Canada, May 2013, pp. 6645–6649.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+210
+
+IEEE JOURNAL ON SELECTED AREAS IN COMMUNICATIONS, VOL. 40, NO. 1, JANUARY 2022
+
+[2] R. Collobert and J. Weston, “A uniﬁed architecture for natural language processing: Deep neural networks with multitask learning,” in Proc. Int. Conf. Mach. Learn., Helsinki, Finland, Jul. 2008, pp. 160–167.
+[3] A. Voulodimos, N. Doulamis, A. Doulamis, and E. Protopapadakis, “Deep learning for computer vision: A brief review,” Comput. Intell. Neurosci., vol. 2018, pp. 1–13, Feb. 2018.
+[4] X. Hou, S. Dey, J. Zhang, and M. Budagavi, “Predictive view generation to enable mobile 360-degree and VR experiences,” in Proc. Morning Workshop Virtual Reality Augmented Reality Netw., Budapest, Hungary, Aug. 2018, pp. 20–26.
+[5] M. Chen, U. Challita, W. Saad, C. Yin, and M. Debbah, “Artiﬁcial neural networks-based machine learning for wireless networks: A tutorial,” IEEE Commun. Surveys Tuts., vol. 21, no. 4, pp. 3039–3071, 4th Quart., 2019.
+[6] J. Downey, B. Hilburn, T. O’Shea, and N. West, “Machine learning remakes radio,” IEEE Spectr., vol. 57, no. 5, pp. 35–39, May 2020.
+[7] T. O’Shea and J. Hoydis, “An introduction to deep learning for the physical layer,” IEEE Trans. Cogn. Commun. Netw., vol. 3, no. 4, pp. 563–575, Dec. 2017.
+[8] E. Bourtsoulatze, D. B. Kurka, and D. Gunduz, “Deep joint sourcechannel coding for wireless image transmission,” IEEE Trans. Cogn. Commun. Netw., vol. 5, no. 3, pp. 567–579, Sep. 2019.
+[9] N. Samuel, T. Diskin, and A. Wiesel, “Learning to detect,” IEEE Trans. Signal Process., vol. 67, no. 10, pp. 2554–2564, May 2019.
+[10] Y. Shen, Y. Shi, J. Zhang, and K. B. Letaief, “Graph neural networks for scalable radio resource management: Architecture design and theoretical analysis,” IEEE J. Sel. Areas Commun., vol. 39, no. 1, pp. 101–115, Jan. 2021.
+[11] K. B. Letaief, W. Chen, Y. Shi, J. Zhang, and Y.-J.-A. Zhang, “The roadmap to 6G: AI empowered wireless networks,” IEEE Commun. Mag., vol. 57, no. 8, pp. 84–90, Aug. 2019.
+[12] G. Zhu, D. Liu, Y. Du, C. You, J. Zhang, and K. Huang, “Toward an intelligent edge: Wireless communication meets machine learning,” IEEE Commun. Mag., vol. 58, no. 1, pp. 19–25, Jan. 2020.
+[13] Y. Shi, K. Yang, T. Jiang, J. Zhang, and K. B. Letaief, “Communicationefﬁcient edge AI: Algorithms and systems,” IEEE Commun. Surveys Tuts., vol. 22, no. 4, pp. 2167–2191, 4th Quart., 2020.
+[14] E. Li, Z. Zhou, and X. Chen, “Edge intelligence: On-demand deep learning model co-inference with device-edge synergy,” in Proc. Workshop Mobile Edge Commun., Budapest, Hungary, Aug. 2018, pp. 31–36.
+[15] A. I. Maqueda, A. Loquercio, G. Gallego, N. García, and D. Scaramuzza, “Event-based vision meets deep learning on steering prediction for self-driving cars,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., Salt Lake City, UT, USA, Jun. 2018, pp. 5419–5427.
+[16] L. Liu, H. Li, and M. Gruteser, “Edge assisted real-time object detection for mobile augmented reality,” in Proc. Annu. Int. Conf. Mobile Comput. Netw., Los Cabos, Mexico, Aug. 2019, pp. 1–16.
+[17] H. Cai, C. Gan, T. Wang, Z. Zhang, and S. Han, “Once-for-all: Train one network and specialize it for efﬁcient deployment,” in Proc. Int. Conf. Learn. Represent., Addis Ababa, Ethiopia, Apr. 2020, pp. 1–15.
+[18] Y. Kang et al., “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge,” ACM SIGARCH Comput. Archit. News, vol. 45, no. 1, pp. 615–629, 2017.
+[19] H. Li, C. Hu, J. Jiang, Z. Wang, Y. Wen, and W. Zhu, “JALAD: Joint accuracy-and latency-aware deep structure decoupling for edgecloud execution,” in Proc. Int. Conf. Parallel Distrib. Syst., Singapore, Dec. 2018, pp. 671–678.
+[20] N. Tishby, F. C. Pereira, and W. Bialek, “The information bottleneck method,” in Proc. Annu. Allerton Conf. Commun. Control Comput., Monticello, IL, USA, Oct. 1999, pp. 368–377.
+[21] N. Farsad, M. Rao, and A. J. Goldsmith, “Deep learning for joint sourcechannel coding of text,” in Proc. Int. Conf. Acoust., Speech, Signal Process., Calgary, AB, Canada, Apr. 2018, pp. 2326–2330.
+[22] Y. Bengio, A. Courville, and P. Vincent, “Representation learning: A review and new perspectives,” IEEE Trans. Pattern Anal. Mach. Intell., vol. 35, no. 8, pp. 1798–1828, Aug. 2013.
+[23] W. Wen, C. Wu, Y. Wang, Y. Chen, and H. Li, “Learning structured sparsity in deep neural networks,” in Proc. Int. Conf. Neural Inf. Process. Syst., Barcelona, Spain, Dec. 2016, pp. 2082–2090.
+[24] W. Shi, Y. Hou, S. Zhou, Z. Niu, Y. Zhang, and L. Geng, “Improving device-edge cooperative inference of deep learning via 2-step pruning,” in Proc. IEEE Conf. Comput. Commun. Workshop, Apr./May 2019, pp. 1–6.
+[25] J. Shao and J. Zhang, “BottleNet++: An end-to-end approach for feature compression in device-edge co-inference systems,” in Proc. IEEE Int. Conf. Commun. Workshops, Dublin, Ireland, Jun. 2020, pp. 1–6.
+
+[26] M. Jankowski, D. Gündüz, and K. Mikolajczyk, “Wireless image retrieval at the edge,” IEEE J. Sel. Areas Commun., vol. 39, no. 1, pp. 89–100, Jan. 2021.
+[27] J. Shao and J. Zhang, “Communication-computation trade-off in resource-constrained edge inference,” IEEE Commun. Mag., vol. 58, no. 12, pp. 20–26, Dec. 2020.
+[28] M. Jankowski, D. Gündüz, and K. Mikolajczyk, “Deep joint sourcechannel coding for wireless image retrieval,” in Proc. Int. Conf. Acoust., Speech Signal Process., Barcelona, Spain, May 2020, pp. 5070–5074.
+[29] J. Shao, H. Zhang, Y. Mao, and J. Zhang, “Branchy-GNN: A deviceedge co-inference framework for efﬁcient point cloud processing,” 2020, arXiv:2011.02422.
+[30] K. Choi, K. Tatwawadi, A. Grover, T. Weissman, and S. Ermon, “Neural joint source-channel coding,” in Proc. Int. Conf. Mach. Learn., Long Beach, CA, USA, Jun. 2019, pp. 1182–1192.
+[31] R. Dobrushin and B. Tsybakov, “Information transmission with additional noise,” IRE Trans. Inf. Theory, vol. 8, no. 5, pp. 293–304, Sep. 1962.
+[32] Z. Goldfeld and Y. Polyanskiy, “The information bottleneck problem and its applications in machine learning,” IEEE J. Sel. Areas Inf. Theory, vol. 1, no. 1, pp. 19–38, May 2020.
+[33] A. Zaidi, I. Estella-Aguerri, and S. S. Shitz, “On the information bottleneck problems: Models, connections, applications and information theoretic views,” Entropy, vol. 22, no. 2, p. 151, Jan. 2020.
+[34] A. Achille and S. Soatto, “Information dropout: Learning optimal representations through noisy computation,” IEEE Trans. Pattern Anal. Mach. Intell., vol. 40, no. 12, pp. 2897–2905, Dec. 2018.
+[35] A. A. Alemi, I. Fischer, J. V. Dillon, and K. Murphy, “Deep variational information bottleneck,” in Proc. Int. Conf. Learn. Represent., Toulon, France, Apr. 2017, pp. 1–19.
+[36] S. Dörner, S. Cammerer, J. Hoydis, and S. T. Brink, “Deep learning based communication over the air,” IEEE J. Sel. Topics Signal Process., vol. 12, no. 1, pp. 132–143, Feb. 2018.
+[37] T. M. Cover and J. A. Thomas, Elements of Information Theory. Hoboken, NJ, USA: Wiley, 2012.
+[38] Z. Wang and D. W. Scott, “Nonparametric density estimation for highdimensional data—Algorithms and applications,” Wiley Interdiscipl. Rev. Comput. Statist., vol. 11, no. 4, p. 1461, Apr. 2019.
+[39] D. P. Kingma and M. Welling, “Auto-encoding variational Bayes,” in Proc. Int. Conf. Learn. Represent., Banff, AB, Canada, Apr. 2014, pp. 1–14.
+[40] D. P. Kingma, T. Salimans, and M. Welling, “Variational dropout and the local reparameterization trick,” in Proc. Adv. Neural Inf. Process. Syst., San Diego, CA, USA, May 2015, pp. 2575–2583.
+[41] D. Molchanov, A. Ashukha, and D. Vetrov, “Variational dropout sparsiﬁes deep neural networks,” in Proc. Int. Conf. Mach. Learn., Sydney, NSW, Australia, Aug. 2017, pp. 2498–2507.
+[42] X. Wang, F. Yu, Z.-Y. Dou, T. Darrell, and E. J. Gonzalez, “SkipNet: Learning dynamic routing in convolutional networks,” in Proc. Eur. Conf. Comput. Vis., Munich, Germany, Sep. 2018, pp. 409–424.
+[43] Z. Wu et al., “Blockdrop: Dynamic inference paths in residual networks,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., Salt Lake City, UT, USA, Jun. 2018, pp. 8817–8826.
+[44] Z. Chen, Y. Li, S. Bengio, and S. Si, “You look twice: GaterNet for dynamic ﬁlter selection in CNNs,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., Seoul, South Korea, Jun. 2019, pp. 9172–9180.
+[45] J. Yu, L. Yang, N. Xu, J. Yang, and T. Huang, “Slimmable neural networks,” in Proc. Int. Conf. Learn. Represent., 2019, pp. 1–12.
+[46] Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner, “Gradient-based learning applied to document recognition,” Proc. IEEE, vol. 86, no. 11, pp. 2278–2324, Nov. 1998.
+[47] A. Krizhevsky et al. (2009). Learning Multiple Layers of Features From Tiny Images. [Online]. Available: https://www.cs.toronto. edu/∼kriz/learning-features-2009-TR.pdf
+[48] Y. Le and X. Yang. (2015). Tiny ImageNet Visual Recognition Challenge. [Online]. Available: http://cs231n.stanford.edu/reports/2017/ pdfs/930.pdf
+[49] I. Hubara, M. Courbariaux, D. Soudry, R. El-Yaniv, and Y. Bengio, “Quantized neural networks: Training neural networks with low precision weights and activations,” J. Mach. Learn. Res., vol. 18, no. 1, pp. 6869–6898, Jan. 2017.
+[50] Y. Polyanskiy, H. V. Poor, and S. Verdú, “Channel coding rate in the ﬁnite blocklength regime,” IEEE Trans. Inf. Theory, vol. 56, no. 5, pp. 2307–2359, May 2010.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: LEARNING TASK-ORIENTED COMMUNICATION FOR EDGE INFERENCE: IB APPROACH
+
+211
+
+[51] A. L. McKellips, “Simple tight bounds on capacity for the peak-limited discrete-time channel,” in Proc. IEEE Int. Symp. Inf. Theory, Chicago, IL, USA, Jun. 2004, p. 348.
+[52] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., Las Vegas, NV, USA, Jun. 2016, pp. 770–778.
+[53] L. van der Maaten and G. Hinton, “Visualizing data using t-SNE,” J. Mach. Learn. Res., vol. 9, pp. 2579–2605, Nov. 2008.
+Jiawei Shao (Student Member, IEEE) received the B.Eng. degree in telecommunication engineering from the Beijing University of Posts and Telecommunications in 2019. He is currently pursuing the Ph.D. degree with The Hong Kong University of Science and Technology. His research interests include edge intelligence and distributed learning.
+
+Yuyi Mao (Member, IEEE) received the B.Eng. degree in information and communication engineering from Zhejiang University, Hangzhou, China, in 2013, and the Ph.D. degree in electronic and computer engineering from The Hong Kong University of Science and Technology, Hong Kong, in 2017.
+He was a Lead Engineer with Hong Kong Applied Science and Technology Research Institute Company Ltd., Hong Kong, and a Senior Researcher with the Theory Lab, 2012 Labs, Huawei Tech. Investment Company Ltd., Hong Kong. He is currently a Research Assistant Professor with the Department of Electronic and Information Engineering, The Hong Kong Polytechnic University, Hong Kong. His research interests include wireless communications and networking, mobile-edge computing and learning, and wireless artiﬁcial intelligence. He was a recipient of the 2021 IEEE Communications Society Best Survey Paper Award and the 2019 IEEE Communications Society and Information Theory Society Joint Paper Award. He was also recognized as an Exemplary Reviewer of the IEEE WIRELESS COMMUNICATIONS LETTERS in 2019 and the IEEE TRANSACTIONS ON COMMUNICATIONS in 2020.
+Jun Zhang (Fellow, IEEE) received the B.Eng. degree in electronic engineering from the University of Science and Technology of China in 2004, the M.Phil. degree in information engineering from The Chinese University of Hong Kong in 2006, and the Ph.D. degree in electrical and computer engineering from The University of Texas at Austin in 2009.
+He is currently an Associate Professor with the Department of Electronic and Computer Engineering, The Hong Kong University of Science and Technology. He has coauthored the book Fundamentals of LTE (Prentice-Hall, 2010). His research interests include wireless communications and networking, mobile-edge computing and edge AI, and cooperative AI. He was a co-recipient of several best paper awards, including the 2021 Best Survey Paper Award of the IEEE Communications Society, the 2019 IEEE Communications Society and Information Theory Society Joint Paper Award, and the 2016 Marconi Prize Paper Award in Wireless Communications. Two papers he coauthored, received the Young Author Best Paper Award of the IEEE Signal Processing Society in 2016 and 2018, respectively. He also received the 2016 IEEE ComSoc Asia-Paciﬁc Best Young Researcher Award. He served as the MAC Track Co-Chair for the IEEE Wireless Communications and Networking Conference (WCNC) 2011 and the Co-Chair for the Wireless Communications Symposium of the IEEE International Conference on Communications (ICC) 2021. He was an Editor of IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS from 2015 to 2020. He is also an Editor of IEEE TRANSACTIONS ON COMMUNICATIONS.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 11,2022 at 11:41:02 UTC from IEEE Xplore. Restrictions apply.
+

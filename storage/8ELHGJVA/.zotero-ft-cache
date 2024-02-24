@@ -1,0 +1,897 @@
+2020 IEEE/ACM Fifth International Conference on Internet-of-Things Design and Implementation (IoTDI)
+
+Fast and Accurate Streaming CNN Inference via Communication Compression on the Edge
+
+Diyi Hu University of Southern California
+diyihu@usc.edu
+
+Bhaskar Krishnamachari University of Southern California
+bkrishna@usc.edu
+
+Abstract—Recently, compact CNN models have been developed to enable computer vision on the edge. While the small model size reduces the storage overhead and the light-weight layer operations alleviate the burden of the edge processors, it is still challenging to sustain high inference performance due to limited and varying inter-device bandwidth. We propose a streaming inference framework to simultaneously improve throughput and accuracy by communication compression. Speciﬁcally, we perform the following optimizations: 1) Partition: we split the CNN layers such that the devices achieve computation load-balance; 2) Compression: we identify inter-device communication bottlenecks and insert Auto-Encoders into the original CNN to compress data trafﬁc; 3) Scheduling: we adaptively select the compression ratio when the variation of bandwidth is large. The above optimizations improve inference throughput signiﬁcantly due to better communication performance. More importantly, accuracy also increases since 1) fewer frames are dropped when input images are streamed in at a high rate, and 2) the frames successfully entering the pipeline are processed accurately since the AE-based compression incurs negligible information loss. We evaluate MobileNet-v2 on pipeline of Raspberry Pi 3B+. Our compression techniques lead to up to 32% accuracy improvement, when average Wi-Fi bandwidth varies from 3 to 9Mbps.
+Index Terms—Edge computing, CNN, Data Compression
+I. INTRODUCTION
+Convolutional Neural Networks (CNNs) are fundamental models for Computer Vision. Conventionally, CNN inference is performed on the cloud, while input data is collected on the edge. Unfortunately, such cloud-centric paradigm requires long distance data transmission, resulting in substantial upload bandwidth consumption, high latency and privacy concerns [1]. Thus, a recent trend is inference on the edge.
+To close the natural gap between complex CNN models and resource-constrained edge devices, researchers have designed compact CNNs [2]–[6]. Keeping accuracy unaffected, these models relieve the memory storage pressure of edge devices with their small model sizes, and alleviate the burden on the edge processors with their light-weight layer operations.
+In applications such as vehicle detection and video analytics, streaming input data are collected by IoT sensors and continuously generated at high rate. However, it is non-trivial to optimize inference throughput for streaming data, due to:
+This material is based upon work supported by Defense Advanced Research Projects Agency (DARPA) under Contract No. HR001117C0053. Any views, opinions, and/or ﬁndings expressed are those of the author(s) and should not be interpreted as representing the ofﬁcial views or policies of the Department of Defense or the U.S. Government.
+
+a) Bandwidth scarcity: To improve throughput, a widely used approach, model partitioning, splits the CNN into multiple groups of layers. We then deploy each group to an edge device or edge server. However, limited network bandwidth hinders performance of such deployment. The works of [7] [8] replace the original CNN with a smaller one using early-exit or distillation [9]. However, these techniques are not ideal for 2 reasons. First, emerging CNN models such as MobileNetV2 are already very compact and hard to compress. Second, both techniques aim at shrinking the CNN model. The reduction to the hidden layer output to be communicated is limited.
+b) Bandwidth variation: Due to interference and varying signal strength, the network channel bandwidth is varying over time. Works in [7] [10] show that CNN inference performance is highly sensitive to the change of bandwidth. It remains a question how to dynamically adjust the inference framework according to the bandwidth. For example, when bandwidth is low, it is desirable to have less intermediate data transmission to avoid throughput degradation. On the other hand, such restriction on data transmission may lower inference accuracy.
+We design a CNN inference framework on the local edge device cluster. Following model partition, we assign grouped layers of CNN to edge devices that form a pipeline. We address the above two challenges by compressing intermediate activations that are communicated between edge devices. We use AutoEncoder (AE) to achieve high compression ratio. End-to-end training is performed on the compressed CNN for accuracy recovery. Our main contributions are as follows:
+• We propose a composite metric effective accuracy, that jointly evaluates throughput and accuracy quantitatively.
+• We propose a fast CNN partitioning algorithm to achieve optimal computation load-balance across edge devices.
+• We propose data compressors based on the Auto-Encoder architecture to address the communication bottleneck. The compressor is ﬂexible in terms of compression rates, and preserves accuracy with negligible overhead.
+• We propose a runtime scheduler that dynamically selects pre-trained compressors per available network bandwidth to optimize inference throughput and effective accuracy.
+• We evaluate MobileNet-v2 and on processing pipelines consisting of Raspberry Pi 3B+. Our framework consistently achieves signiﬁcant accuracy improvement under a wide range of Wi-Fi network bandwidth.
+
+978-1-7281-6602-5/20/$31.00 ©2020 IEEE
+
+157
+
+DOI 10.1109/IoTDI49375.2020.00023
+
+Authorized licensed use limited to: KAUST. Downloaded on October 10,2022 at 13:57:37 UTC from IEEE Xplore. Restrictions apply.
+
+II. BACKGROUND AND RELATED WORK
+
+A. Compact CNN Models on the Edge
+
+Input (e.g. image stream) to CV applications are collected
+
+by cameras on edge devices. Many applications such as smart
+
+city, smart grid and Virtual Reality expect data to be ana-
+
+lyzed locally on the resource-constrained edge devices [10].
+
+Thus, compact CNNs have been designed for edge inference.
+
+SqueezeNet [2] downsamples data using 1 × 1 convolution
+
+ﬁlters. It achieves the same accuracy as AlexNet [11] with
+
+50× fewer parameters and only 0.5MB model size. Using
+
+customized architecture, YOLO [3] performs accurate real-
+
+time
+
+object
+
+detection
+
+with
+
+only
+
+1 4
+
+operations
+
+of
+
+VGG16
+
+[12].
+
+MobileNet [4]–[6] is one of the state-of-the-art CNN models
+
+recently proposed for edge device execution. The core build-
+
+ing block is “inverted residual block”, which decomposes a
+
+regular convolution layer into 3 operations: 1 × 1 pointwise
+
+2D convolution to expand the number of input channels with
+
+ratio t, 3 × 3 depthwise separable 2D convolution with non-
+
+linearity, and 1 × 1 pointwise 2D convolution to project
+
+back the activation to low-dimension. The depthwise separable
+
+convolution layer applies a single convolutional ﬁlter per input
+
+channel. A conventional k × k conv2d layer with cin input and cout output channels needs cout ﬁlters of size k × k × cin, while depthwise separable conv2d only needs cin · t kernels of size k × k × 1. The number of operations is reduced by 1/k2.
+
+Compared with traditional CNN models (e.g. [11], [12]),
+
+MobileNet signiﬁcantly reduces computation complexity with-
+
+out accuracy loss. For example, for the ImageNet [13] dataset
+
+consisting of 224×224×3 images, MobileNetV2 [5] achieves
+
+71.8% classiﬁcation accuracy in 3.47M model size with only
+
+600M FLOPs. The inference time on a Google Pixel 1 smart-
+
+phone is only 73.8ms. We will utilize the “inverted residual
+
+block” in our compressors (Section IV-C).
+
+B. Related Work
+a) CNN compression: Compression reduces CNN model size and computation workload. The compressed model better ﬁts edge devices with limited processing power and memory storage. Works in [14] [15] [8] [16] [17] have accelerated edge inference by model compression. [16] employs networking pruning to trim connections having little inﬂuence on the inference accuracy. It then uses data quantization to reduce the number of bits to represent each model weight value. [8] partitions the CNN model into “head” and “tail”. Then the authors use knowledge distillation [9] to compress the “head” on edge device, i.e., training a compact “student model” that imitates the behavior of the original “head” (“teacher model”).
+The above have their limitations. First, emerging models such as MobileNetV2 are already very compact and hard to compress signiﬁcantly. More importantly, model compression does not directly address the communication bottleneck since the size of the hidden layer outputs is not necessarily reduced.
+b) Dynamic schedule: Another direction is to dynamically schedule the inference computation given varying resources. DeepThings [18] partitions a convolution layer into
+
+tiles that are distributed among edge devices. Its scheduler performs work-stealing for runtime workload-balance. Edgent [7] trains models with multiple exit points in the later stages. Based on observed bandwidth, they greedily search the best model partition point and exit point. Our work differs from the above. Compared with [18], in addition to load balance, we also consider the dynamics in bandwidth, and adaptively compress the intermediate layer activation transmitted among edge devices. Compared with [7], our approach compresses the communication data, and works well for models with large activation size in early stages, which is the general case [8].
+
+III. PROBLEM DEFINITION
+
+Given an edge device pipeline executing a CNN model, we aim at improving the inference throughput and effective accuracy when input images are generated at a steady rate.
+
+Optimization goal Suppose the CNN is used for classiﬁca-
+
+tion, where the image generation rate Tgen is a constant and the CNN pre-trained accuracy is ν. Throughput, T , is deﬁned
+
+as number of classiﬁed images per unit time, where T ≤ Tgen.
+
+Effective accuracy, νeff
+
+:=
+
+, T ·ν
+Tgen
+
+is deﬁned as the ratio of
+
+number of correctly classiﬁed images over total number of
+
+generated images, in unit time. For real-time inference, a
+
+dropped frame is equivalent to the image being classiﬁed
+
+incorrectly. We observe from the νeff deﬁnition a tradeoff between throughput and pre-trained accuracy ν. To improve
+
+νeff, we may compress a CNN such that the decreased ν is compensated by the increased throughput T . This motivates
+
+the adaptive compression scheme in Section IV.
+
+The system consists of a linear pipeline of heterogeneous
+edge devices. Denote Ci as the computation speed of the ith device, and Bi as the bandwidth to transfer data from the ith to the (i + 1)th device. Since each device is mostly executing
+
+the same type of convolution operation, we assume Ci remains ﬁxed during inference. However, we may have Ci = Cj for i = j. Regarding bandwidth, we assume the devices
+
+communicate over wireless channels and the environment co-
+
+herence time is large. So Bi changes slowly over time, yet its variance may be signiﬁcant. Mathematically, we model Bi as independent random variables, each following distribution Bi. Deﬁne C = {Ci | 1 ≤ i ≤ n} and B = {Bj | 1 ≤ j ≤ n − 1}.
+
+Remark on notation For a random variable, we use lower
+
+case letter (e.g., b, τ ) to denote its value and the Sans Serif
+
+font (e.g., B) to denote the probability distribution. Subscript
+
+i denotes parameters of device i, or between devices i, i + 1.
+
+IV. OPTIMIZED PIPELINE EXECUTION
+A natural way to pipeline CNN inference is to split the layers onto the edge devices. Let n and m be the total number of edge devices and CNN layers. Suppose we split the m layers into n parts and the layer indices at the split points are S = {s1, . . . , sn−1}. For ease of notation, we set s0 = 0 and sn = m. Thus, device i executes layer si−1 + 1 to layer si.
+The pipeline under the above conﬁguration consists of n computation stages corresponding to the n devices, and n − 1 communication stages to transfer layer activation between
+
+158 Authorized licensed use limited to: KAUST. Downloaded on October 10,2022 at 13:57:37 UTC from IEEE Xplore. Restrictions apply.
+
+adjacent devices. To improve the overall throughput, we have
+
+to reduce execution time of the bottleneck pipeline stage.
+
+Irrespective of the communication stage performance, the
+
+overall throughput is bounded by:
+
+⎧
+
+⎫
+
+⎪⎨
+
+T
+
+≤
+
+min
+1≤i≤n
+
+⎪⎩
+
+Ci
+
+opsA
+
+(j)
+
+⎪⎬ ⎪⎭
+
+≤
+
+Ci
+1≤i≤n
+opsA (j)
+
+si−1 +1≤j ≤si
+
+1≤j≤m
+
+(1)
+
+where opsA (i) returns the number of computation operations of layer i. The ﬁrst inequality is achieved if the n−1 communi-
+
+cation stages are not the bottleneck, and the second inequality
+
+is achieved if
+
+Ci opsA(j) =
+
+Ck opsA( ) . For
+
+si−1 +1≤j≤si
+
+sk−1 +1≤ ≤sk
+
+given CNN and edge devices, the bound of T is a constant.
+
+Thus, to maximize throughput, we need to 1) balance the load
+
+of the computation stages (Section IV-A), and 2) reduce the
+
+load of the communication stages (Section IV-C).
+
+A. Load-Balance of the Computation Stages
+The optimal split points S can be identiﬁed by dynamic programming. Deﬁne splitA,C (p, q) as optimally splitting the last p CNN layers (i.e., layer m−p+1 to layer m) onto the last q devices of the pipeline (i.e., device n − q + 1 to device n). Assume communication stages are not the bottleneck, and let splitA,C (p, q) return the computation throughput of the q-device pipeline after splitting. We solve splitA,C (m, n) by:
+
+splitA,C
+
+(p,
+
+q)
+
+=
+
+max
+m−p<s<m
+
+min
+
+Cn−q+1
+s
+
+,
+
+opsA (k)
+
+k=m−p+1
+
+splitA,C (m − s, q − 1) (2)
+
+with the initial condition splitA,C (i, 1) =
+
+Cn
+m
+
+.
+
+opsA (k)
+
+k=m−i+1
+
+Clearly, we obtain splitA,C (m, n) by ﬁlling a m×n table.
+
+In summary, load-balance of the computation stages can be
+
+achieved by the splitting algorithm of complexity O m2n .
+
+We use Tp to denote the throughput of the bottleneck computation stage after the splitting. i.e., Tp = splitA,C (m, n).
+
+B. Inter-device Communication Bottleneck
+
+After layer splitting to achieve the optimal computation load-balance, limited bandwidth often makes the inter-device communication the bottleneck. Figure 1 visualizes the time taken by each pipeline stage under various conﬁguration. We execute MobileNet-v2 on pipelines of Raspberry Pi and VGG16 on pipelines of NVIDIA Jetson, where inputs are 32 × 32 R.G.B. images. Here we simplify the problem by ignoring heterogeneity and assuming Wi-Fi environment with constant bandwidth (i.e., Ci = Cj, Bi = Bj and Bi is a Dirac delta function). We setup pipelines of two lengths (4 and 8), and split the CNN based on Section IV-A. The odd and even indices correspond to computation and communication stages. We observe: 1) communication of the early stages (i.e., early
+
+Execution time (sec)
+
+MobileNet-v2, Raspberry Pi VGG16, NVIDIA Jetson
+
+0.4
+
+0.1
+
+0.2
+
+0.05
+
+0 5 10 15 Pipeline stage index
+
+0 5 10 15 Pipeline stage index
+
+Comp. n = 4 Comm. n = 4 Comp. n = 8 Comm. n = 8
+
+Fig. 1: Computation and communication time per stage
+
+CNN layers) may bottleneck the overall pipeline throughput; 2) communication time of later stages decrease very sharply. Observation 1 motivates data compression (Section IV-C). Observation 2 implies that later stages are unlikely to become the performance bottleneck, even when we increase n or the variance of bandwidth Bi. Based on the observation, we simplify our design (Section IV-D) and analysis (Section V).
+
+C. Load-Reduction for the Communication Stages
+
+To improve throughput of the bottleneck communication stage, we compress the inter-device data by inserting suitable compressors into the pipeline. Compression of device i to i+1 communication should consist of the below steps:
+
+• At device i: Compress layer-si output to a tensor Mi. • Between device i, i + 1: Transfer compressed data Mi. • At device i + 1: Decompress Mi to a tensor as close to
+the original layer-si activation as possible.
+The compressor should satisfy the following requirements:
+
+• Low overhead: Compression and decompression should
+
+be light-weight to maintain computation load-balance.
+
+• High accuracy: Ofﬂine re-training should ensure high
+
+accuracy of the compressor-inserted CNN. The improved
+
+throughput after compression should lead to higher νeff. • Flexibility: The compressor should be able to signiﬁ-
+
+cantly reduce the data size and be easily conﬁgurable
+
+to various compression ratio when the bandwidth varies.
+
+Deﬁne
+
+the
+
+compression
+
+ratio
+
+γi
+
+:=
+
+dataA (si size(Mi
+
+) )
+
+,
+
+where
+
+size (·)
+
+returns the size of the tensor, and dataA (·) returns the output
+
+activation size of the speciﬁed layer. We interpret Mi as the
+
+low-dimensional embedding of the original layer-si activation.
+
+Then the compression-decompression steps can be viewed as
+
+an encoding-decoding procedure. In other words, Mi is not necessarily similar to the original activation, as long as the
+
+decoder at device i + 1 ﬁnds a good way to reconstruct the
+
+original activation. Such interpretation enables us to think
+
+beyond classic image compression algorithms such as JPEG
+
+[19], where visual features have to be preserved.
+
+We propose to build our compressor upon the architecture
+
+of Auto Encoder (AE), a powerful deep learning model for
+
+data generation or reconstruction. The input tensor Xin goes through an encoding neural network and is transformed to
+
+159 Authorized licensed use limited to: KAUST. Downloaded on October 10,2022 at 13:57:37 UTC from IEEE Xplore. Restrictions apply.
+
+Algorithm 1 Pre-processing
+
+Input: System speciﬁcation B = {Bj | 1 ≤ j ≤ n − 1} and C = {Ci | 1 ≤ i ≤ n}; CNN architecture A
+Output: Split point indices S = {si | 1 ≤ i ≤ n − 1}; Set of compressed CNNs and their accuracy A, N
+
+1: Find split points
+
+2: W ← {Wi = opsA (i) | 1 ≤ i ≤ m}
+
+3: s0 ← 0;
+
+sn ← m;
+
+4: Identify S = {sj} by solving Equation 2
+
+5: Determine compression ratio at each split point
+
+6: D ← {Dj = dataA (sj) | 1 ≤ j ≤ n − 1}
+
+7: for j = 1 to n − 1 do
+
+8:
+
+rj
+
+←
+
+η
+
+·
+
+Dj E[Bj
+
+]
+
+Tp
+
+Bound on compression ratio
+
+9: Rj ← Set of potential compression ratio less than rj
+
+10: RCNN ← {Rj | 1 ≤ j ≤ n − 1}
+
+11: Acpr ← Aγ× γ ∈ j Rj
+
+12: A ← fuse A, Aγ1×, . . . , Aγn−1× γj ∈ Rj 13: for Ak ∈ A do
+14: Train Ak to obtain accuracy νk; Add νk to a set N
+
+15: return S, A, N
+
+the embedding tensor X . The embedding goes through a decoding neural network to become Xout. By proper architecture design and training conﬁguration, Xin ≈ Xout and size (X ) size (Xin) = size (Xout). In our design, Xin is the layer-si output activation at device i; Xout is the layersi + 1 input activation at device i + 1; X = Mi.
+There are various advantages to compress data using AE.
+First, the compressor can be seamlessly integrated into the
+original CNN, since they both are neural networks built upon
+convolutional layers. Secondly, the expressive power of multi-
+layer structure [20] of AE helps accuracy recovery. Lastly, by
+setting the layer parameters such as number of channels and
+stride, we can easily achieve arbitrary compression ratio. a) Design of encoder/decoder architecture: We build
+encoder/decoder by stacking convolutional layers. To reduce
+computation overhead, we use the “inverted-residual” layers
+as the building block. For encoder, an inverted-residual layer
+contains depthwise separable convolution. For decoder, an inverted-residual layer contains depthwise separable transposed convolution. A stride larger than 1 shrinks the spatial dimension in the encoder, while expands the spatial dimension in the decoder. Denote Aγ× as the AE with compression ratio γ. Table I summarizes Aγ× used in our experiments.
+b) Computation overhead: Observe from Table I that, even for compression ratio as high as 8, two layers in the encoder or decoder are sufﬁcient. Since the original CNN
+contains tens to hundreds of convolutional layers, the overhead to compute Aγ× (see Section VI-A) is negligible.
+c) Training: Let A be the CNN after inserting Aγ× into A (Denote as: A = fuse (A, Aγ×)). We perform end-to-end training of A , without factoring out the reconstruction step of Aγ×. The loss function is the cross entropy loss, measuring the difference between the ground-truth and the labels predicted
+
+by A . Such training allows ﬁne-tuning of the weights in the original layers of A to compensate the reconstruction noise.
+Summary of pre-processing The two main optimizations, splitting and compression are both ofﬂine before the pipeline deployment (Algorithm 1). Note from lines 8 to 12 that, at each split point, we identify a set of potential compression ratio and the corresponding compressors. In the next section, we show how to adaptively select the appropriate compression ratio in runtime, based on the real-time bandwidth measurement.
+D. Adaptive Communication Compression
+The insertion of compressor Aγ× into the original A addresses the issue of low bandwidth. Further performance improvement can be achieved by considering the large variation of the bandwidth. Recall that we model Bi as a random variable following distribution Bi. If within the time window, we measure a low value of Bi, then the effective accuracy νeff may decrease due to increased number of frames being dropped. The best strategy then would be to insert a compressor with higher γ. On the other hand, if we measure a high value of Bi, then bandwidth at the split point i may not be the bottleneck. So we may replace the compressor with a lower γ so that νeff improves due to higher pre-trained accuracy ν.
+
+Distribution B = N (μ, σ)
+
+Stage throughput
+
+γhigh
+
+γmed γlow
+
+p (b) Throughput
+
+θ1 μ
+
+θ2
+
+b
+
+b θ
+
+Fig. 2: Using various compressors based on threshold θ
+
+The above intuition motivates us to develop an adaptive communication compression strategy. Algorithm 2 outlines the real-time inference procedure. At each split point, we calculate a set of threshold parameters Θi. The thresholds “divide” the bandwidth into multiple regions, each region associated with a compression ratio γ. In Figure 2, the two thresholds Θi = {θ1, θ2} divide the bandwidth into three regions. If the measurement b falls between θ1 and θ2, then at the split point, we use a compressor with γmed. If b falls in other regions, other γ should be used. In our problem deﬁnition, the bandwidth changes slowly. So the reload of A happens infrequently.
+We make the following simpliﬁcation to compute θ:
+1) Only one communication stage can become bottleneck. 2) The input generation rate is larger than the throughput of
+the bottleneck computation stage (i.e., Tgen ≥ Tp).
+Point 1 is reasonable by the observation of Section IV-B. Point 2 is valid since Tp is known before inference.
+Let γleft, γright be the compression ratio at the two sides of θ. Let Aleft, Aright, νleft, νright be the CNN architecture and pretrained accuracy (γleft > γright, νleft < νright). For discussion, we further assume γleft = 2γright and 0.5 · νright < νleft < νright.
+
+160 Authorized licensed use limited to: KAUST. Downloaded on October 10,2022 at 13:57:37 UTC from IEEE Xplore. Restrictions apply.
+
+TABLE I: Architecture of Aγ×. Note, 1) Number of output channels depends on the number of channels in Xin. E.g., Xin has 24 channels, the encoder with output channels of “2× → 2×” contains two layers, both of 48 output channels; 2) Stride-2
+shrinks (expands) spatial dimension in the encoder (decoder); 3) “Expansion ratio” is deﬁned in Section II-A).
+
+γ=2 γ=4 γ=8
+
+Kernel size
+3 3→3 3→3
+
+Encoder Output channels Expansion ratio
+
+2× 1× → 1× 2× → 2×
+
+1 1→1 1→1
+
+Stride
+2 1→2 2→2
+
+Kernel size
+3 3→3 3→3
+
+Decoder Output channels Expansion ratio
+
+1× 1× → 1× 1× → 1×
+
+0.5 1→1 0.5 → 1
+
+Stride
+2 2→1 2→2
+
+Algorithm 2 Real-time inference
+
+Input: Split points S; Set of compressed CNNs A; Bandwidth
+
+threshold parameters {Θi | 1 ≤ i ≤ n − 1} Output: Inference pipeline executed on edge devices
+
+1: for every reload time period do
+
+2: for each edge device i = 1 to n do
+
+in parallel
+
+3:
+
+Measure current bandwidth bi
+
+4:
+
+Determine Aγi× based on bi and thresholds Θi
+
+5: A ← Desired compressed CNN
+
+6: for each edge device i = 1 to n do
+
+in parallel
+
+7:
+
+Load layers of A based on si−1, si
+
+8: Continue pipelined inference
+
+The optimal θ∗ should be such that effective accuracy of Aleft at b = θ∗ equals effective accuracy of Aright at b = θ∗. Now, to compute νeff, we visualize in Figure 2.B the change of pipeline stage throughput with respect to bandwidth b,
+under various scenarios. The horizontal dashed line (A) is
+the throughput bound Tp of computation stages. The two red dashed lines (B,C) represent the communication throughput
+under two compression ratio. Due to the assumption on the relative values of γ· and ν· presented above, θ∗ must fall between the intersection of A,B and the intersection of B,C:
+
+Tp
+
+· νleft
+
+=
+
+γright · D
+
+θ∗
+
+· νright
+
+(3)
+
+where D is the amount of data trafﬁc at the communication
+
+stage. The solid line in Figure 2.B shows the throughput of
+
+the overall pipeline with respect to b. At the transition point θ∗, the dropped throughput due to a less compressed CNN is
+
+compensated by the increased pre-trained accuracy.
+
+V. PERFORMANCE ANALYSIS
+
+The pipeline can be bottlenecked by either computation
+or communication. We derive the expectation of inference throughput for each case. pi(·) and Pi(·) denote probability density function and cumulative distribution function of Bi.
+a) Computation bottleneck: Let throughput of the slow-
+est computation stage be Tp. According to our setup, Tp is ﬁxed since Ci ∈ C are ﬁxed. Let P1 be the probability of Tp becoming the bottleneck (i.e., all communication stages have larger throughput than Tp). Hence, P1 can be calculated by
+
+P1 = P
+i
+
+Bi Di
+
+> Tp
+
+= (1 − Pi (Di · Tp))
+i
+
+(4)
+
+b) Communication bottleneck: The communication stage
+
+j with throughput τ becomes the bottleneck if and only if:
+
+1) Tp > τ ; 2) Stage j has the smallest throughput among all
+
+communication stages. The probability of stage j becoming
+
+the bottleneck is
+
+i=j P
+
+Bi Di
+
+>τ
+
+·
+
+P
+
+Bj Dj
+
+=τ
+
+. The
+
+expected throughput in such case is
+
+Tp
+
+E(T, j) =
+
+(1 − Pi(Di · τ ))·pj (Dj · τ ) Dj ·τ dτ (5)
+
+−∞ i=j
+
+c) Expected throughput: The expected inference throughput can be calculated by combining the cases above:
+
+E[T ] = P1 · Tp + E(T, j)
+
+(6)
+
+j
+
+d) Case study: According to the empirical measurement in [21], [22], Bi approximately follows Gaussian distribution. In the following, we analyze a system with 2 split points (n = 3), where B1 and B2 are i.i.d. random variables and Bi ∼ N (μ, σ) for i = 1, 2. The more general case with any n can be analyzed by following the same roadmap. By Equations 4,
+5, 6, we have the expected throughput of the pipeline:
+
+E(T ) = (1 − Φ(a1)) (1 − Φ(a2)) Tp
+
++ D1 Tp 1 − Φ D2τ − μ φ
+
+σ −∞
+
+σ
+
++ D2 Tp 1 − Φ D1τ − μ φ
+
+σ −∞
+
+σ
+
+D1τ − μ σ
+D2τ − μ σ
+
+τ dτ (7) τ dτ
+
+where
+
+ai
+
+=
+
+Di
+
+Tp σ
+
+−μ
+
+,
+
+i
+
+=
+
+1, 2.
+
+We
+
+can
+
+derive
+
+the closed-
+
+form expression of the integral in Equation 7 with the help of
+
+bivariate normal cumulative (i.e., BvN [·]).
+
+e) Expected accuracy: By deﬁnition of expected accu-
+
+racy,
+
+νeff
+
+=
+
+, T ·ν
+Tgen
+
+we
+
+have
+
+E[νeff]
+
+∝
+
+E[T
+
+·
+
+ν].
+
+f) Analysis with adaptive compression: E[T ] and E[νeff]
+
+are functions of Di, and thus functions of γi. We compute
+
+effective throughput and accuracy with minor modiﬁcation of
+
+Equation 7. Now that the bandwidth probability distribution is
+
+“partitioned” by θ, the integration above becomes piece-wise.
+
+VI. EXPERIMENTS
+We evaluate using MobileNet-v2 and two image classiﬁcation datasets: CIFAR10, CIFAR100. We build the pipeline of Raspberry Pi 3B+. MobileNet-v2 consists of 19 convolutional
+
+161 Authorized licensed use limited to: KAUST. Downloaded on October 10,2022 at 13:57:37 UTC from IEEE Xplore. Restrictions apply.
+
+E [νeff]
+
+σ = 2, CIFAR10
+
+σ = 2, CIFAR100
+
+μ = 5, CIFAR10
+
+μ = 5, CIFAR100 70
+
+80
+
+60
+
+80
+
+60
+
+50
+
+60
+
+40
+
+60
+
+40
+
+40 0 2 4 6 8 10 20 0 2 4 6 8 10 40
+
+Mean value μ
+
+Mean value μ
+
+1
+
+2
+
+3 30
+
+Variance σ
+
+123 Variance σ
+
+Fig. 3: Expected effective accuracy under various value of μ and σ, where Bi = N (μ, σ)
+
+Uncomp.
+γ=2
+γ=4
+γ=8 γ1, γ2
+
+TABLE II: MobileNet-v2: Accuracy & computation overhead
+
+Original γ=2 γ=4 γ=8
+
+CIFAR-10 Accuracy Overhead
+
+90.2
+
+0.00×
+
+89.2
+
+0.02×
+
+88.5
+
+0.02×
+
+87.7
+
+0.02×
+
+CIFAR-100 Accuracy Overhead
+
+69.1
+
+0.00×
+
+67.4
+
+0.02×
+
+66.7
+
+0.02×
+
+65.7
+
+0.02×
+
+layers, where layer 1 and 19 are regular 3×3 convolutional layers, and layers 2 to 18 are inverted-residual blocks constructed by depthwise separable convolution. Both CIFAR10 and CIFAR100 consist of 32 × 32 R.G.B color images. Raspberry Pi contains a Broadcom BCM2837B0 quad-core A53 (ARMv8) CPU @1.4GHz, and a Broadcom Videocore-IV GPU. The RAM is 1GB LPDDR2. Raspberry Pi supports 2.4GHz and 5GHz 802.11b/g/n/ac Wi-Fi. We insert a 32GB Micro-SD card for storage. The inference pipeline consists of four Raspberry Pi devices. Devices in the pipeline communicate via Wi-Fi. We implement our code using Python3.7 and Tensorﬂow-Lite.
+A. Evaluation on Compressors
+Based on our splitting algorithm (Section IV-A), the splitting points are S = {4, 11, 15}. The communication bottleneck only happens at the ﬁrst splitting point. We thus insert compressors of γ = 2, 4, 8 between device 1 and 2 of the pipeline. The compressor architectures are deﬁned by Table I.
+Table II summarize the pre-trained accuracy (i.e., ν) and the computation overhead due to the additional compressor layers. Clearly, 1) the proposed end-to-end training ensures high accuracy even when the compression ratio is very high; 2) the additional computation load due to the inserted compressor is at most 2% of the computation load of the original model. Therefore, after inserting the compressor, there is no need to re-split layers for re-balance of computation load.
+B. Evaluation on End-to-End Performance
+We evaluate the expected effective accuracy E[νeff] under various network conditions. Figure 3 is measured by 1) ﬁxing the variance to be σ = 2Mbps, and changing the mean value from μ = 3Mbps to 9Mbps; 2) ﬁxing the mean to be σ = 5Mbps, and changing the variance from σ = 0.5Mbps to 3Mbps. In all experiment, we set the input image generation
+
+rate to be the throughput of the bottleneck computation stage (i.e., Tgen = Tp). So νeff = ν if and only if the communication stages never become the system bottleneck.
+
+Effectiveness of compression Data compression signiﬁ-
+
+cantly improves the overall effective accuracy. Effective ac-
+
+curacy of the uncompressed model catches up with that
+
+of the compressed model, only for very large μ. For the
+
+two plots of MobileNet-v2 in Figure 3, when μ = 9, we
+
+have
+
+μ D1
+
+≈
+
+1.7 × Tp. In addition, we observe that higher
+
+compression ratio is more useful when the network condition
+
+is bad. For Figure 3, larger γ leads to signiﬁcant accuracy
+
+improvement compared with smaller γ, when μ is small.
+
+Effective accuracy of CNNs with small γ eventually becomes
+
+better when μ keeps increasing. This is because when μ is
+
+very large, the communication stage is very unlikely to become
+
+the bottleneck, and ν then becomes the dominant term in the
+
+calculation of νeff. Lastly, larger compression ratio are more
+
+beneﬁcial when the variance of the bandwidth is larger.
+
+Effectiveness of adaptive compression With adaptive compression (red line labeled “γ1, γ2”), we use a single θ to support two compression ratio between devices 1 and 2. Inference with adaptive data compression almost always achieve the best performance, regardless of the bandwidth condition. For example, for MobileNet-v2 on CIFAR100, the adaptive compression scheme clearly leads to higher accuracy than other single compression ratio schemes. Under large bandwidth variance, we can hardly identify a single compression ratio suitable for all scenarios. If we allow the communication stage to choose among more compressors, we expect higher accuracy than the current simple adaptive scheme.
+
+VII. CONCLUSION
+We have proposed a framework for improving throughput and accuracy of pipelined CNN inference on the edge. To improve the inter-device communication performance, we have proposed an AE-based adaptive compression scheme to 1) signiﬁcantly reduce the activation size with negligible accuracy loss, and 2) optimizes expected accuracy by adapting the compression ratio given the current bandwidth.
+We will extend our adaptive compression scheme to support multiple communication stages. We will apply data quantization for higher compression ratio. We will evaluate on more CNNs and devices to better understand the performance gain.
+
+162 Authorized licensed use limited to: KAUST. Downloaded on October 10,2022 at 13:57:37 UTC from IEEE Xplore. Restrictions apply.
+
+REFERENCES
+[1] X. Xie and K.-H. Kim, “Source compression with bounded dnn perception loss for iot edge computer vision,” in The 25th Annual International Conference on Mobile Computing and Networking, ser. MobiCom ’19. New York, NY, USA: Association for Computing Machinery, 2019. [Online]. Available: https://doi.org/10.1145/3300061.3345448
+[2] F. N. Iandola, S. Han, M. W. Moskewicz, K. Ashraf, W. J. Dally, and K. Keutzer, “Squeezenet: Alexnet-level accuracy with 50x fewer parameters and 0.5 mb model size,” arXiv preprint arXiv:1602.07360, 2016.
+[3] J. Redmon and A. Farhadi, “Yolo9000: better, faster, stronger,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2017, pp. 7263–7271.
+[4] A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand, M. Andreetto, and H. Adam, “Mobilenets: Efﬁcient convolutional neural networks for mobile vision applications,” arXiv preprint arXiv:1704.04861, 2017.
+[5] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen, “Mobilenetv2: Inverted residuals and linear bottlenecks,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp. 4510–4520.
+[6] A. Howard, M. Sandler, G. Chu, L.-C. Chen, B. Chen, M. Tan, W. Wang, Y. Zhu, R. Pang, V. Vasudevan et al., “Searching for mobilenetv3,” arXiv preprint arXiv:1905.02244, 2019.
+[7] E. Li, Z. Zhou, and X. Chen, “Edge intelligence: On-demand deep learning model co-inference with device-edge synergy,” in Proceedings of the 2018 Workshop on Mobile Edge Communications. ACM, 2018, pp. 31–36.
+[8] Y. Matsubara, S. Baidya, D. Callegaro, M. Levorato, and S. Singh, “Distilled split deep neural networks for edge-assisted real-time systems,” in Proceedings of the 2019 Workshop on Hot Topics in Video Analytics and Intelligent Edges. ACM, 2019, pp. 21–26.
+[9] G. Hinton, O. Vinyals, and J. Dean, “Distilling the knowledge in a neural network,” arXiv preprint arXiv:1503.02531, 2015.
+[10] J. Chen and X. Ran, “Deep learning with edge computing: A review,” Proceedings of the IEEE, vol. 107, no. 8, pp. 1655–1674, 2019.
+[11] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “Imagenet classiﬁcation with deep convolutional neural networks,” in Advances in neural information processing systems, 2012, pp. 1097–1105.
+
+[12] K. Simonyan and A. Zisserman, “Very deep convolutional networks for large-scale image recognition,” arXiv preprint arXiv:1409.1556, 2014.
+[13] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “Imagenet: A large-scale hierarchical image database,” in 2009 IEEE conference on computer vision and pattern recognition. Ieee, 2009, pp. 248–255.
+[14] L. N. Huynh, Y. Lee, and R. K. Balan, “Deepmon: Mobile gpubased deep learning framework for continuous vision applications,” in Proceedings of the 15th Annual International Conference on Mobile Systems, Applications, and Services. ACM, 2017, pp. 82–95.
+[15] S. Han, X. Liu, H. Mao, J. Pu, A. Pedram, M. A. Horowitz, and W. J. Dally, “Eie: Efﬁcient inference engine on compressed deep neural network,” in 2016 ACM/IEEE 43rd Annual International Symposium on Computer Architecture (ISCA). IEEE, 2016, pp. 243–254.
+[16] S. Han, H. Mao, and W. J. Dally, “Deep compression: Compressing deep neural networks with pruning, trained quantization and huffman coding,” arXiv preprint arXiv:1510.00149, 2015.
+[17] S. Liu, Y. Lin, Z. Zhou, K. Nan, H. Liu, and J. Du, “On-demand deep model compression for mobile devices: A usage-driven model selection framework,” in Proceedings of the 16th Annual International Conference on Mobile Systems, Applications, and Services. ACM, 2018, pp. 389– 400.
+[18] Z. Zhao, K. M. Barijough, and A. Gerstlauer, “Deepthings: Distributed adaptive deep learning inference on resource-constrained iot edge clusters,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems, vol. 37, no. 11, pp. 2348–2359, 2018.
+[19] G. K. Wallace, “The jpeg still picture compression standard,” IEEE transactions on consumer electronics, vol. 38, no. 1, pp. xviii–xxxiv, 1992.
+[20] R. Eldan and O. Shamir, “The power of depth for feedforward neural networks,” in Conference on learning theory, 2016, pp. 907–940.
+[21] S. Chinchali, A. Sharma, J. Harrison, A. Elhafsi, D. Kang, E. Pergament, E. Cidon, S. Katti, and M. Pavone, “Network ofﬂoading policies for cloud robotics: a learning-based approach,” arXiv preprint arXiv:1902.05703, 2019.
+[22] I. Cardei, A. Agarwal, B. Alhalabi, T. Tavtilov, T. Khoshgoftaar, and P.P. Beaujean, “Software and communications architecture for prognosis and health monitoring of ocean-based power generator,” in 2011 IEEE International Systems Conference. IEEE, 2011, pp. 353–360.
+
+163 Authorized licensed use limited to: KAUST. Downloaded on October 10,2022 at 13:57:37 UTC from IEEE Xplore. Restrictions apply.
+

@@ -1,0 +1,417 @@
+1
+Heterogeneous Heartbeats: A Framework for Dynamic Management of Autonomous SoCs
+Shane T Fleming, David B Thomas Imperial College London {sf306, dt10}@ic.ac.uk
+
+Abstract—Modern computer systems are formed from many interacting systems and heterogeneous components, that face increasing constraints on performance, power consumption, and temperature. Such systems have complex run-time dynamics which cannot easily be predicted or modelled at design-time, creating a need for online dynamic systems management. The Heartbeats API is a popular open source project which provides a standardised way for applications to monitor and publish their progress in multi-core CPU systems, but it does not allow hardware components to be monitored or to observe the progress of other components of the system. This paper presents work which extends the capacities of the Heartbeats API across the whole system while maintaining backwards compatibility with the legacy software API. To demonstrate the framework’s capabilities an Autonomous Underwater Vehicle (AUV) case study is explored, where a power-aware HW/SW image processing application is implemented on a reconﬁgurable SoC and an approximate energy saving of 30% is observed for an example input video. Current progress is also discussed on some applications which build upon the framework, including an CubeSat experiment for an Adaptive Heterogeneous FDIR system that will launch in 2016 by the European Space Agency.
+I. INTRODUCTION
+Contemporary computing systems are typically faced with increasing constraints on performance, power consumption, and temperature. Consider a satellite that is required to perform image processing on a video stream; such a system might have to manage the rate at which the frames are processed, the power consumption due to limited output from solar panels, and the temperature due to limited airﬂow. In an attempt to meet these constraints system architects are increasingly using more application speciﬁc compute nodes, which execute particular types of computation more efﬁciently and requiring less power over general compute nodes.
+However, this means that systems are becoming increasingly heterogeneous, containing multiple nodes with different characteristics all interacting and executing simultaneously, making it difﬁcult to predict the run-time dynamics. One example is a recently proposed mission by the European Space Agency called OPS-SAT. In this mission a CubeSat will be launched into orbit with a payload containing a number of commercial off the shelf Altera Cyclone V SoCs. The work presented here will be part of the OPS-SAT experimental payload, and will be used to test novel intelligent dynamic systems in a live satellite environment.
+In the OPS-SAT mission one of the problems is the detection and recovery of faults caused by radiation which are impossible to predict ofﬂine. To recover from such a fault might require restarting certain processes or the scrubbing of FPGA hardware resources. Without any intelligent monitoring and management these drastic changes to the system might
+
+mean that some constraints, such as the image processing throughput, might not be maintained. However, if the system can monitor and intelligently manage itself, then it can better meet these constraints in uncertain conditions.
+There are existing methods for monitoring software components, such as the Heartbeats API, but future applications, such as the OPS-SAT mission, will contain both software and hardware components. For this reason the Heterogeneous Heartbeats framework presented in this paper extends the Heartbeats API by expanding its abilities to facilitate entire chip level adaptation, with an initial focus on systems contained within a single package, such as the Altera SoC and Xilinx Zynq devices. This extension allows for hardware applications to be transparently included, enabling them to produce and consume heartbeats in the same standardised fashion as software with a simple interface.
+The contributions of this paper are as follows:
+• An open source extension to the Heartbeats API that allows for the transparent inclusion of hardware applications.
+• An abstraction layer between sensors (which monitor the state of the system) and actuators (which cause changes in the system)
+• An analysis comparing the consistency of the sensor data between heterogeneous components and the overhead required.
+• A novel example application in which an adaptive system is used to manage a tightly power constrained Autonomous Underwater Vehicle (AUV).
+The work presented in this paper is released as an open source project and source code and IP cores can be obtained from http://cas.ee.ic.ac.uk/people/sf306.
+II. BACKGROUND
+A. Zynq Architecture
+Xilinx provide a reconﬁgurable SoC, known as Zynq, where a tightly coupled FPGA fabric (PL) and processing system (PS) are contained in a single IC package. The PS and PL regions of the Zynq device are connected via an AXI bus, allowing low latency communication between the CPU and logic in the FPGA. There are several AXI master and slave interface ports between the PL and PS portions of the device; general purpose ports provide low latency at the expense of throughput, while high performance ports focus on throughput in exchange for increased latency.
+AXI master interfaces are used to connect the PS to AXI slave devices instantiated on the PL, and it is the CPUs re-
+
+Authorized licensed use limited to: KAUST. Downloaded on May 22,2022 at 15:28:36 UTC from IEEE Xplore. Restrictions apply.
+
+2
+
+sponsibility to issue read/write transactions to the PL devices. Only two general purpose AXI master ports exist between the PL and the PS and they are not intended for high throughput data transfers.
+AXI slave interfaces are used to connect the PS to PL AXI master devices allowing the PL to issue read/write transactions to the PS memory space through a central interconnect, including a set of registers called the System-Level Control Registers (SLCR) which can be used to control the behaviour of the PS. [9] Both high-performance (HP) and general-purpose (GP) AXI slave interfaces exist along with an Accelerator Coherency Port (ACP) interface, which allows a PL resident master access to the shared L2 cache of the PS ARM cores. A Snoop Control Unit (SCU) is used to maintain coherency between the L1 and L2 caches and also allows coherent read/write transactions to be made through the ACP port to the L2 cache.
+B. Application Heartbeats API
+In order for online optimisation or parameter tuning to occur, systems requires the ability to monitor their internal runtime dynamics. This problem has already been addressed in the software domain, where a notable example is the Heartbeats API; which is an open source project aiming to create a standardised application level infrastructure for monitoring performance in multi-core CPU systems.
+Some examples of the Heartbeats API being used are the SEEC framework [6] and Smartlocks [2]. The SElf-awarE Computing (SEEC) framework combines the Heartbeats API with a generic control-theoretic decision engine. They demonstrate this by attempting to minimise power consumption while maintaining a particular framerate of a H.264 video decoder through varying the number of active cores as the dynamic workload varies. Smartlocks is an adaptive spin-lock library which uses heartbeat information and a machine learning based decision engine to decide which thread should have priority when acquiring locks in order to best meet the target heartrate [2].
+Motivation for the development of the Heartbeats API is argued in [5], where the authors state that current methods for monitoring an applications progress are either very application speciﬁc and ad hoc, or involve the use of highly architecture dependent performance counters thus effecting portability. They also argue that performance counters do not capture the overall goals of the system; giving the example of an instruction counter where you have no idea if the instruction is doing useful work, e.g. spinning on a lock.
+The Heartbeats API allows applications, potentially from different developers or software packages, to query the progress of other applications without any prior knowledge of that application. In adaptive systems this is particularly useful, as it allows application-independent controllers to observe the state of the system and alter it’s behaviour to better meet it’s environment. To instrument an application with heartbeats the developer must do two things; call an initialisation function, which sets up a named heartbeat record in shared memory; and call a heartbeat function at important milestones in the applications progress, which is used to update the heartbeat record.
+Other applications can then use the heartbeat name to inspect the applications progress, and query information such
+
+as: its current heartrate, its average heartrate, a history of the last n heartbeats, and its desired maximum and minimum heartrate. This allows the controller and the application to be agnostic to one another, allowing different controllers and applications to be swapped and mixed seamlessly.
+
+C. Related Work
+Work on developing adaptive system for FPGA technologies was discussed in [8], where a HW/SW adaptive DES encryption was used to demonstrate how the Heartbeats API can be used to develop an FPGA-based Self-Aware Adaptive computing system. In this paper a system known as an Implementation Switch Service (ISS) is used to migrate a task from software to hardware when the processing rate drops below a certain level. To monitor the processing rate the Heartbeats API is used, however in this case heartbeat producers and consumers are only available within the SW portion of the system.
+Promising work can also be seen with the inclusion of monitoring within the ReconOS project [7]. ReconOS is an operating system for reconﬁgurable computers which contains a uniﬁed multithreaded programming model and OS services interface for both hardware and software threads. Work presented in [4] discusses development for using ReconOS to monitor the progress of a heterogeneous architecture using a variety of sensors for self-awareness applications with a speciﬁc monitoring core. An interesting idea is presented on the use of thread migration between hardware cores and the main processor, unfortunately no results were published and not many details were given about the structure of the monitoring core itself.
+
+III. EXPANDED HEARTBEATS FRAMEWORK OVERVIEW
+The Heartbeats API provides a standardised framework for monitoring the progress SW applications. Our work extends this established API by allowing the inclusion of multiple sensors and actuators, along with the ability to include heterogeneous hardware applications.
+
+Sensors Power Decision
+
+Actuators
+
+Temperature Time
+
+Adaptive Engine
+
+Knobs Switches
+
+Fig. 1. Overview of Heterogeneous Heartbeats
+Figure 1 shows the three separate portions of the Heterogeneous Heartbeats framework; sensors, adaptive engines, and actuators. Sensors collect data on the current state of the system, either directly via application heartbeats, or by mapping device readings (such as temperature or battery level) into heartbeats.; i.e. these are heartbeat producers. Adaptive engines use the sensor data, along with predictions on how changes in the system will alter future sensor readings, to make decisions on how the system should alter its behaviour; i.e. these are heartbeat consumers. Actuators change the behaviour of the
+
+Authorized licensed use limited to: KAUST. Downloaded on May 22,2022 at 15:28:36 UTC from IEEE Xplore. Restrictions apply.
+
+3
+
+system, examples could be the frequency multiplier value in the PLL for the systems clock or the cache replacement policies.
+In our framework the pre-existing Heartbeats API is used as the basis for the interaction between the heartbeat producers (sensors) and the heartbeat consumers (adaptive engines). A publicly available heartbeat record, that can be generated and accessed by either software or hardware, is setup for each heartbeat enabled application. This record holds individual heartbeat entries and is where the goals of the application are set. The goals of the application are expressed in terms of the sensors that the application is interested in. In the OPSSAT video processing experiment the goals are to maintain a particular frame rate while being below a particular power and temperature level; which requires the availability of a timer sensor, a power sensor, and a temperature sensor.
+A heartbeat function is then called at important milestones in the application’s progress, which can be tagged to indicate where the heartbeat was generated in the application. This function is used to create a sensor stamped heartbeat to be saved as an entry in the publicly available heartbeat record.
+On the other side of the adaptive engines is the actuator portion. These are divided into two broad categories; knobs, which are continuous type actuators; and switches, which are discrete type actuators. Knobs are actuators where neighbouring settings have a relationship to each other, for example a scale of frequency values or number of active cores. Switches have a discontinuous relationship between neighbouring settings, for example changing the cache replacement policy or switching to a different version of an algorithm. This information is important to the adaptive engine as it may effect the way that decisions are made. For example, with knobs the adaptive engine may not spend a long period of time measuring changes between actuator actions, as it will already have some information on the relationship between settings and their trend; as with switches a larger monitoring period may occur between actuator actions, as it is harder to predict the effects of a particular action since there is no direct relationship between neighbouring settings.
+IV. EXPANDING THE HEARTBEATS API
+Currently the system has been implemented on the Zynq family of devices from Xilinx, however to comply with the OPS-SAT mission work is underway to port the framework to the Altera Cyclone V SoC devices. The Zynq devices are a single IC package that consist of; a hard core processing system (PS), containing two ARM A9 cores; and a programmable logic (PL) portion, containing the Xilinx FPGA fabric. The software side of the heterogeneous heartbeats framework sits on top of the Xilinx linux distribution, PetaLinux, that run on the PS of the Zynq device.
+One of the ways the work presented in this paper extends the Heartbeat API is by allowing the inclusion of heterogeneous FPGA resident hardware tasks. Figure 2 shows a possible system conﬁguration using the Heterogeneous Heartbeats framework.
+In this possible conﬁguration a SW application and a SW controller exist within the PS, and a two HW application and HW controllers exist within the PL. In the PS there is also a dynamic list of current heartbeat registered applications,
+
+PS
+ARM
+SW Task
+L1
+
+ARM
+SW Controller
+L1 L2
+
+Main Memory
+
+app list
+S
+HB records
+
+AXI bus
+
+Hardware M Heartbeat S
+module
+
+HW Task
+M
+M HW Task
+
+PL
+
+Heartbeat M Query S
+Module
+
+M
+
+HW Controller
+
+M
+
+HW Controller
+
+Fig. 2. Diagram showing the hardware interface components of the Heterogeneous Heartbeats framework
+and a shared portion of the main memory that is used to store the heartbeat records. The dynamic application list is responsible for keeping track of the HW/SW applications IDs, along with the addresses of their associated data structures. The motivation for the dynamic application list to be managed within the PS over the PL is due to it’s dynamic nature, as SW applications can start and end while the system is running.
+In the PL of the example system there are two HW controllers and two HW applications, which consume and produce heartbeats respectively. Both the controllers and the application require access to the heartbeat record in main memory; and access to this is managed by a Hardware Heartbeat module for heartbeat producers, and a Heartbeat Query module for heartbeat consumers.
+Whenever a hardware resident heartbeat producer wants to register a heartbeat it notiﬁes the Hardware Heartbeat module. An AXI master connects the module to the memory of the PS system and an AXI slave interface is used to receive heartbeat notiﬁcations from HW applications. Our measurements have shown for communicating with the PS there is a transaction latency of roughly 150ns for the GP AXI slave interface and 170ns for the HP AXI slave interface, while using a 100Mhz AXI clock; the GP interface was chosen due to the lower latency. When a HW application registers a heartbeat the Hardware Heartbeat module accesses main memory and searches the list of registered applications to retrieve the appropriate locations for the application’s heartbeat data structures. It then collects the appropriate sensor data for that application and writes a heartbeat entry into the appropriate circular buffer data structure. To maintain a standardised interface with software applications the heartbeat records are stored in shared memory within the processing system. Having the system set up in this fashion will infer a performance hit over having a dedicated PL resident memory for each hardware task, however it is important for maintaining the standard interface.
+
+PS
+Main Memory
+
+Heartbeat Query Module
+
+Cache Refresher
+M
+
+App ID Sensor Addr Value
+
+PL
+
+S
+
+Query FSM
+
+S
+
+Fig. 3. Diagram showing the internals of the heartbeat query module
+
+Authorized licensed use limited to: KAUST. Downloaded on May 22,2022 at 15:28:36 UTC from IEEE Xplore. Restrictions apply.
+
+4
+
+start signal? Yes
+
+Query HB cache
+
+No
+
+app id Yes
+cache hit?
+No
+
+sensor Yes Return
+
+offset hit?
+
+cached data
+
+No
+
+Cache sensor data
+with LRU policy
+
+PL access
+
+Search main memory
+app list
+
+app info Yes
+found?
+
+Use state address to get buffer
+index
+
+No error: app
+not found
+
+Use sensor offset and index to get
+value
+
+Return retrieved data
+
+PS access
+
+Fig. 4. Flowchart showing the process of the heartbeat query module
+When a PL resident heartbeat consumer wants to access heartbeats from another HW or SW application it needs to communicate with the Heartbeat Query Module. This module accepts various commands such as the application ID, the custom sensor location, the operation that needs to be performed, and some control signals for handshaking. Figure 3 shows the internal structure of the query module. The query FSM examines the input operations, the application ID, and then performs the appropriate AXI transactions such as fetching the current heartbeat of an application. Typically accessing an element of the heartbeat record requires multiple AXI transactions; ﬁrstly the application list would be searched to obtain the locations of that applications heartbeat records; then the current index to the circular buffer would be obtained and used to calculate the address for the buffer element in question; ﬁnally the appropriate buffer element would be accessed. Figure 4 shows a ﬂowchart demonstrating this process.
+A cache has been setup to reduce the access time by storing the address locations of the appropriate heartbeat record, and value of sensor reading. Items in the cache are then periodically refreshed by a separate submodule, which goes through every element of the cache and update it to the most recent value maintaining consistency with heartbeat records stored in main memory. The rate at which the cache is refreshed is conﬁgurable, and a trade off between the amount of bus trafﬁc that the refresher generates and the consistency of the cache needs to be decided by the system developer. If a particular application sensor is being queried and it exists in the cache, then the access latency is reduced to the time it takes to fetch the data from the cache. However if the application ID is in the cache but the sensor is incorrect then the access latency is still reduced as the address of the application’s heartbeat record is present in the cache and can be used to skip some of the multiple AXI transactions required to search the application list.
+
+Frame Data
+
+Frame Preprocessing
+Main Memory
+
+SW Controller
+
+SCLR
+
+Timer
+MS
+
+Hardware M Heartbeat S
+module
+
+Heartbeat
+
+S
+
+M Query S Module
+
+SM
+
+PS ƒ scale
+
+S
+
+Actuator M Interface
+
+S
+
+HW feature detection
+M
+
+M
+
+HW Controller
+
+Fig. 5. Diagram showing the case study architecture setup, with a OpenCV Software application, a VivadoHLS generated HW application, a SW controller, and a HW controller.
+motion causing the glider to travel through the ocean in a sawtooth fashion. This propulsion makes these types of craft very low powered and allows them to be deployed for weeks or months at a time.
+In our example application the Gliders payload are a video camera and a Zynq device, and the objective of the application is to record as much interesting footage of mid-level ocean life as possible. The amount of footage captured will increase the longer the AUV is active in the ﬁeld, this means that our system needs to try and minimise its power consumption so that the system’s energy will last as long as possible.
+
+Feature Count
+
+35
+
+30
+
+25
+
+20
+
+15
+
+10
+
+5
+
+20
+
+30
+
+40
+
+50
+
+60
+
+70
+
+80
+
+Time (s)
+
+V. AUTONOMOUS UNDERWATER VEHICLE (AUV) CASE STUDY
+To demonstrate some of the capabilities of the Heterogeneous Heartbeat framework a case study, based around the idea of using an Autonomous Underwater Vehicle (AUV) to investigate mid-level ocean life is presented. The type of AUV in this application is known as a Glider, which is a buoyancy driven vehicle that varies its density through the use of an internal and external bladder to sink or ﬂoat. Wings either side of the glider then convert this vertical motion into a forward
+
+Fig. 6. Results to show how the rate at which frames are captured varies with the number of features detected, with vertical lines used to highlight differences in framerate.
+To achieve this an adaptive video processing application is proposed, where video footage is recorded at a varying framerate based on the number of features detected. In a situation where very few features are detected the system will tick over slowly at a low frequency, infrequently capturing frames; and in situations where a lot of features are present, it will capture frames at a faster rate. Figure 6 shows some results; initially we can see that there is a low feature count and
+
+Authorized licensed use limited to: KAUST. Downloaded on May 22,2022 at 15:28:36 UTC from IEEE Xplore. Restrictions apply.
+
+5
+
+a long time period between collected frames; as the footage progresses this period between frames gets smaller due the feature count rising in each of the collected frames.
+In the application a heartbeat was generated every time a frame was processed, this was then stamped with the output from three sensors, a power sensors, a timer, and the number of current features detected. The power sensor was the inbuilt power monitoring provided by the ZC702 Zynq development board [3], as the timer was a custom FPGA circuit that was built and hooked into the framework, and the number of features was either generated by the HW VivadoHLS core or the OpenCV application [1].
+
+Frequency Multiple
+
+50
+
+45
+
+freq_mult
+
+40
+
+35
+
+30
+
+25
+
+20
+
+15
+
+10
+
+5
+
+0
+
+350
+
+Features
+
+PL power
+
+300
+
+PS power
+
+250
+
+250
+
+200
+
+200
+
+150
+
+150
+
+100
+
+100
+
+50
+
+50
+
+0
+
+460
+
+480
+
+500
+
+520
+
+540
+
+560
+
+Frames
+
+Power (mW)
+
+Fig. 7. Power Results for the adaptive system as the feature count is varied
+Two versions of a simple proportional controller were implemented, one in SW and one in HW, which both interacted with a hardware resident actuator module used to scale the frequency of the PS. To scale the frequency of the PS this actuator module communicated with the system level control registers (SLCR) to alter the behaviour of the PLL for the PS clock. It would make the necessary writes, then wait for the clock to stabilise, and ﬁnally send a done signal back to the controller. Figure 5 shows the overview of the system and demonstrates some of the capabilities and components of the framework.
+• OpenCV software application - Software heartbeat producer
+• Hardware heartbeat producer - VivadoHLS generated IP core
+• PL Timer Circuite - Hardware resident sensor • PS fscale (Processing system frequency scaler) - Hard-
+ware resident actuator • HW proportional controller - HW resident heartbeat con-
+sumer • SW proportional controller - SW resident heartbeat con-
+sumer
+To test the system, example underwater remote operated vehicle (ROV) footage showing an Oarﬁsh was streamed into the device in a real time fashion. Figure 7 demonstrates how the power of the system’s PL regions and PS regions vary
+
+Number of Features
+
+as a HW controller and SW application are adapted as the feature count varies. A strong correlation can be seen between the PS power, the feature count, and the clock frequency. An energy saving of approximately 30% was achieved over the entire input video footage when compared to a non adaptive implementation of the system. The PL region experiences less correlation as the frequency is varied, this is because no frequency scaling actuator was implemented for the hardware applications in the system. 1
+VI. OPS-SAT EXPERIMENT
+In the OPS-SAT experiment an intelligent adaptive management system is current being developed to control the heterogeneous resources onboard the satellite payload. A HW/SW K-means clustering image processing application will process a live video feed provided by an on board video camera. Soft constraints exist on the processed frame throughput, and hard constraints will be set on the power consumption and temperature of the device.
+The management system consists of two parts, a Fault Detection Isolation and Recovery (FDIR) system and an adaptation management system. The adaptation management system is responsible for altering the systems behaviour in order to try and meet constraints. The FDIR system is used to detect errors present in a HW/SW image processing task. Detection is achieved by validating its output against a duplicated version of the application, as recovering from an error is achieved through task migration and by reconﬁguring (scrubbing) the FPGA fabric. If a possible error is detected the hardware is reprogrammed and the system is rolled back to the last acceptable state, and while the FPGA fabric is being repaired the high performing hardware task is migrated a lower performing software task.
+The Heterogeneous Heartbeats framework is used as the basis for the adaptation management system of the satellite ; and in order to monitor the constraints, various sensors for power, temperature, and time, are required. This means that every heartbeat generated by the hardware or software portions of the system can be sensor stamped with data from any of these sensors. Since this is a HW/SW system heartbeats will need to be generated and consumed between SW and HW in a standardised way, making the use of the Heterogeneous Heartbeats framework ideal.
+To alter the state of the system actuators are used to scale the frequency of both the hardware tasks and the processing system of the SoC. A controller is then implemented that uses the sensors and actuators of the framework to try and conﬁgure the best parameters of the system. In normal fault free conditions the controller will examine the registered heartbeats of the hardware tasks and scale their frequency so that the performance constraint are just met saving dynamic power consumption. The Hard Processor System (SW side) in this case will be doing little work, just the management tasks, and can be run at a minimal frequency. However, when a fault occurs and the task is migrated from hardware to software if the hard processor system is kept at the same speed a considerable drop in performance will be observed.
+1We are able to scale the PL side clock frequency, but are currently experiencing problems with correct operation of the VivadoHLS cores under variable clock frequencies.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 22,2022 at 15:28:36 UTC from IEEE Xplore. Restrictions apply.
+
+6
+
+The adaptive management system will then recognise this change in performance and start to scale the frequency of the processing system accordingly to try and meet the soft time constraint. Once the hardware has been scrubbed the controller can then return to monitoring and scaling the hardware tasks frequency, however the frequency of the hardware task may have to be increased to make up for the loss in performance when the system was using the hard processor system.
+A. Challenges and Experiences
+This subsection discusses an address translation problem and a cache consistency problem that were faced while the framework was being developed. When a SW application consumes or produces a heartbeat it either has to create a new shared memory region or access a pre-exisiting shared memory region. Under an operating system, in this case linux, when software accesses a shared memory region, the physical addresses for that region are translated into virtual addresses for that speciﬁc application. However virtual addresses are of little use to the PL and therefore in order to use both the hardware heartbeat module and the heartbeat query module the virtual addresses of a shared memory needs to be translated to a physical address. To solve this the physical address is determined when the shared memory is ﬁrst created and then advertised in the application list.
+Builds more recent than version 2.6.25 of the linux kernel provide access to two ﬁles, /proc/ applications PID /maps and /proc/ applications PID /pagemaps, in the proc ﬁlesystem, that enable us to achieve this translation in userspace. These ﬁles are inspected every time a hearbeat enabled application is started and when the shared heartbeat record is created, the physical address is calculated and stored in the application list.
+When the ﬁrst system was implemented both the L1 and L2 caches of the PS were conﬁgured to be write-through, which meant that when the Heartbeat Query module in the PL examined the physical address in main memory it was observing the latest heartbeat values. However for performance reasons the L1 and L2 caching policies were changed to be write-back, which meant that now when the PL resident Heartbeat Query module examined the data structures it no longer always received the latest value, since it will only be written back once it has been evicted from both the L1 and L2 cache.
+Attempts were made to try and use the Accelerator Coherency Port (ACP) to solve this issue however they were unsuccessful, and work investigating this is currently in progress. Instead of using the ACP we developed a method for ﬂushing cache lines within userspace, where every time a heartbeat is registered both the relevant lines of the L1 and L2 caches are ﬂushed back to main memory. To perform the cache ﬂushing some commands need to be written to the CP15 registers of the ARM system, however this is a privileged ring 0 operation and cannot be performed from within userspace. This meant that we were required to create a kernel space module to do this. Measurements were recorded for how the root mean square (RMS) error of the heartbeat and the overhead of the system changed as the ﬂush rate was varied, they can be seen in Figure 8. Some designs might not require as much consistency in their recorded sensor readings, with an eventual consistency being sufﬁcient. This makes this kind of consistency analysis
+
+important as there will be a tradeoff between the overhead of the monitoring system and the performance of the system.
+
+RMS error
+
+1.8 1.6 1.4 1.2
+1 0.8 0.6 0.4 0.2
+0 0
+
+RMS error Execution Time msec
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+Cacheline Flush rate (Heartbeats)
+
+Fig. 8. Consistency results: Measuring the induced overhead while varying the cache ﬂush rate
+
+VII. CONCLUSION
+Heterogeneous systems that can dynamically manage themselves will aide in the development of many applications from satellites to commercial products such as mobile phones. However in order for this to be achievable different components of the system need to be aware of their surroundings. This necessitates the need for a uniﬁed heterogeneous monitoring/adaptation framework, such as the Heterogeneous Heartbeats API. In this paper we have shown the details of the Heterogeneous heartbeats API and how both FPGA and SW resident tasks can be monitored in a uniﬁed fashion. To demonstrate this an adaptive feature based recording system for an AUVs has been proposed, which shows the capabilities of the framework and how it can use both software and hardware heartbeat producers/consumers to achieve an energy saving of roughly 30% for example footage from an underwater ROV. Current work has also been discussed for how the Heterogeneous Heartbeats framework will be used in the future, including an ESA CubeSat experiment for an Adaptive Heterogeneous FDIR system that will launch in 2016.
+
+REFERENCES
+[1] T. L. : Stephen Neuendorffer and D. Wang. Accelerating OpenCV Applications with Zynq-7000 All Programmable SoC using Vivado HLS Video Libraries. Xilinx, 2013.
+[2] J. Eastep, D. Wingate, M. D. Santambrogio, and A. Agarwal. Smartlocks: lock acquisition scheduling for self-aware synchronization. In Proceedings of the 7th international conference on Autonomic computing, pages 215–224. ACM, 2010.
+[3] E.Srikanth. Zynq-7000 ap soc measuring zc702 power using linux application tech tip, January 2014.
+[4] M. Happe, A. Agne, C. Plessl, and M. Platzner. Hardware/software platform for self-aware compute nodes. In Workshop on Self-Awareness in Reconﬁgurable Computing Systems (SRCS), page 8. Citeseer, 2012.
+[5] H. Hoffmann, J. Eastep, M. D. Santambrogio, J. E. Miller, and A. Agarwal. Application heartbeats: a generic interface for specifying program performance and goals in autonomous computing environments. In Proceedings of the 7th international conference on Autonomic computing, pages 79–88. ACM, 2010.
+[6] H. Hoffmann, M. Maggio, M. D. Santambrogio, A. Leva, and A. Agarwal. Seec: A general and extensible framework for self-aware computing. 2011.
+[7] E. Lu¨bbers and M. Platzner. Reconos: Multithreaded programming for reconﬁgurable computers. ACM Transactions on Embedded Computing Systems (TECS), 9(1):8, 2009.
+[8] F. Sironi, M. Triverio, H. Hoffmann, M. Maggio, and M. D. Santambrogio. Self-aware adaptation in fpga-based systems. In Field Programmable Logic and Applications (FPL), 2010 International Conference on, pages 187–192. IEEE, 2010.
+[9] Xilinx. Zynq-7000 All Programmable SoC, Technical Reference Manual, 2014.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 22,2022 at 15:28:36 UTC from IEEE Xplore. Restrictions apply.
+

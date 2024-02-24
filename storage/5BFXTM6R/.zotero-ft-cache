@@ -1,0 +1,1003 @@
+668
+
+IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, VOL. 69, NO. 2, FEBRUARY 2022
+
+Memory-Efﬁcient CNN Accelerator Based on Interlayer Feature Map Compression
+
+Zhuang Shao , Xiaoliang Chen, Li Du , Member, IEEE, Lei Chen, Yuan Du , Member, IEEE, Wei Zhuang, Huadong Wei, Chenjia Xie, and Zhongfeng Wang , Fellow, IEEE
+
+Abstract— Existing deep convolutional neural networks (CNNs) generate massive interlayer feature data during network inference. To maintain real-time processing in embedded systems, large on-chip memory is required to buffer the interlayer feature maps. In this paper, we propose an efﬁcient hardware accelerator with an interlayer feature compression technique to signiﬁcantly reduce the required on-chip memory size and off-chip memory access bandwidth. The accelerator compresses interlayer feature maps through transforming the stored data into frequency domain using hardware-implemented 8×8 discrete cosine transform (DCT). The high-frequency components are removed after the DCT through quantization. Sparse matrix compression is utilized to further compress the interlayer feature maps. The on-chip memory allocation scheme is designed to support dynamic conﬁguration of the feature map buffer size and scratch pad size according to different network-layer requirements. The hardware accelerator combines compression, decompression, and CNN acceleration into one computing stream, achieving minimal compressing and processing delay. A prototype accelerator is implemented on an FPGA platform and also synthesized in TSMC 28-nm COMS technology. It achieves 403GOPS peak throughput and 1.4×∼3.3× interlayer feature map reduction by adding light hardware area overhead, making it a promising hardware accelerator for intelligent IoT devices.
+Index Terms— Deep convolution neural networks, discrete cosine transform, quantization, interlayer feature maps compression.
+I. INTRODUCTION
+D EEP convolutional neural networks (CNNs) [1], compared to other traditional computer vision algorithms, offer signiﬁcant accuracy improvement in target detection [2], [3], object recognition [4], [5], and video tracking [6]–[8]. However, state-of-the-art CNNs have become more complex and multi-branched [9] to achieve high prediction accuracy. During inferencing, CNN generates more than hundreds of megabytes of interlayer data and could
+Manuscript received June 11, 2021; revised August 29, 2021 and September 22, 2021; accepted September 30, 2021. Date of publication October 25, 2021; date of current version January 28, 2022. This work was supported in part by the National Natural Science Foundation of China under Grant 62004097 and Grant 62004096 and in part by the Natural Science Foundation of Jiangsu Province under Grant BK20200329. This article was recommended by Associate Editor M. Mozaffari Kermani. (Corresponding authors: Li Du; Yuan Du.)
+Zhuang Shao, Xiaoliang Chen, Li Du, Yuan Du, Huadong Wei, Chenjia Xie, and Zhongfeng Wang are with the School of Electronic Science and Engineering, Nanjing University, Nanjing 210023, China (e-mail: ldu@nju.edu.cn; yuandu@nju.edu.cn).
+Lei Chen and Wei Zhuang are with the Beijing Microelectronics Technology Institute, Beijing 100076, China.
+Color versions of one or more ﬁgures in this article are available at https://doi.org/10.1109/TCSI.2021.3120312.
+Digital Object Identiﬁer 10.1109/TCSI.2021.3120312
+
+signiﬁcantly impact the hardware performance if the interlayer data is not properly stored [10]. Such impact could become even worse when CNNs are deployed on resourcelimited mobile and IoT computing platform [11]. Limited by the on-chip memory size, many CNNs’ interlayer feature maps are inevitably exchanged between on-chip and off-chip memories [12]–[14]. This not only results in large processing delay due to the data exchange but also dramatically increases the device power consumption as more than 70% of the entire system energy is wasted in the memory data exchange [15]–[17]. When processing high-resolution images, such as the satellite image in [18], the system delay and energy consumption caused by data exchange could be even larger. During external memory access, weights are priori information that can be pre-loaded during the process, and they only need to be transferred from the off-chip memory to the on-chip memory. Compared to weights, data is generated in real-time. Therefore, it is difﬁcult to exchange data in parallel during the computation. What’s more, data is exchanged in both directions, requiring twice bandwidth during access. Despite the processing delay and the power-constrained requirement, smaller memory size is always favorable to mobile and IoT devices as the on-chip memory size is directly related to the mass production cost, which is also very critical considering the wide application of mobile and IoT devices.
+To solve the aforementioned concern, a hardware architecture for CNN inference acceleration with efﬁcient interlayer feature maps storage and processing is necessary for CNN in mobile and IoT devices. Various hardware architectures are proposed in the previous works [19]–[30]. In [23], an efﬁcient dataﬂow called “row stationary” was proposed which can provide high-level parallelism and data reuse. In [24], the power efﬁciency was improved in sparse CNN inference through powering off the computing units when the activation or weights are zero. However, these two works still store zero activation in on-chip memory, causing unnecessary resource wasted and lower efﬁciency. Some other works have explored methods in hardware design to reduce on-chip memory size and off-chip memory access [16], [25]–[29]. For example, in [25]–[28], only non-zero activations were processed and stored; the method is useful in scenarios with sparse feature maps. The sparsity of feature maps relies on the ReLU function that converts all negative activation to zero. However, some popular CNNs do not use ReLU as an activation function [31], resulting in very dense feature maps. The dense feature map will increase the overall storage overhead as the sparse-matrix compression requires additional index storage.
+
+1549-8328 © 2021 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See https://www.ieee.org/publications/rights/index.html for more information.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: MEMORY-EFFICIENT CNN ACCELERATOR BASED ON INTERLAYER FEATURE MAP COMPRESSION
+
+669
+
+In [29], a 4-bit activation quantization method was proposed, which improves memory storage and computation efﬁciency. However, the low-precision quantization also leads to severe CNN performance degradation [32]. In [16], a signiﬁcanceaware transform-based codec was used to explore the correlation among feature maps, the low-correlation feature maps were regarded as the intrinsic representations of the original feature maps. The remaining feature maps were quantized and encoded to reduce external memory access. However, this technique was only used as an expansion of the existing accelerator to reduce off-chip memory access without optimizing the on-chip memory size.
+Some works have used DCT for CNN training and original image compression to reduce storage space and transmission bandwidth. In [33], tensors of weights are transformed into the frequency domain by DCT for training and storage. In the inference, tensors with trained weights are transformed into ﬁlters of the same shape through IDCT for computation. Since some of the weights are set to zero in the frequency domain, there are fewer trained and stored weights than the original convolution layer. In [34], a DNN-favorable JPEGbased image compression framework called “DeepN-JPEG” is proposed. This framework can reduce the data storage and transfer overhead in IoT systems before transferring the realtime produced datasets. However, the above two works only compressed weights and the original images and did not solve the storage and data exchange problems caused by the massive interlayer feature maps.
+Among all of the reported works, most of them did not compress the feature maps, causing signiﬁcant on-chip storage overhead and off-chip memory access. In other works, either the compression of the interlayer feature maps was only ﬁtted for one particular kind of CNN such as sparse CNN, or the compression process was not integrated with a CNN accelerator, which only improved off-chip memory access efﬁciency without reducing the on-chip memory size. To implement an architecture that can efﬁciently support arbitrary CNN interlayer data with different sparsity levels and on-the-ﬂy compression process, four challenges must be explored:
+1) The compression scheme needs to be efﬁcient, achieving a high feature map compression ratio with light hardware overhead;
+2) It should have wide applicability for arbitrary network structures;
+3) The model accuracy loss due to the feature map compression should be negligible or within a tolerable range;
+4) The hardware architecture has to combine hardware compression, decompression, and CNN acceleration together to achieve on-the-ﬂy compression, reducing both on-chip memory size and off-chip memory access bandwidth.
+In this paper, we propose a hardware architecture for CNN inference on mobile and IoT platforms. We focus on the compression of interlayer feature maps to achieve smaller on-chip memory size and less off-chip memory access. An 8 × 8 DCT is utilized to convert the feature maps to the frequency domain representation; quantization and sparse-matrix coding are adopted to compress the feature map. The hardware architecture can efﬁciently combine compression, decompression,
+
+Fig. 1. The typical structure of CNNs.
+and CNN acceleration into one computing stream, minimizing the processing delay caused by the compression module and achieving high throughput and parallelism. The main contributions of this paper are:
+1) We adopt 8×8 DCT to perform frequency domain transformation on the interlayer feature maps with quantization to discard high-frequency components to compress the interlayer feature map size. The quantized interlayer feature maps are stored in the sparse matrix to further reduce the layer output size.
+2) We design a CNN accelerator with an integrated DCT compression/decompression module. A novel data MUX in the processing element (PE) array is proposed to solve the overlapping problem caused by the convolution after 8 × 8 DCT.
+3) We propose a reconﬁgurable on-chip memory scheme which can dynamically conﬁgure the feature map buffer size and the scratch pad size according to network layer requirements, resulting in less feature tiling and high PE utilization ratio for different kernel sizes.
+4) We analyze the model accuracy loss due to removing the high-frequency components of the interlayer feature maps using DCT transform. Results show less than 1% accuracy loss due to DCT transform and compression.
+The rest of this paper is organized as follows. In Section II, we introduce the basic concepts of CNNs and DCT. In Section III, the DCT-based compression and quantization scheme is discussed. Section IV describes the overall architecture of the accelerator. In Section V, the implementation details of each module are illustrated. The experimental results and the compression performance are given in Section VI. Section VII concludes this paper.
+II. BACKGROUND
+A. CNN Basic Conception
+CNNs are mainly used for image and video processing. The architecture of CNNs consists of four typical layers for feature extraction and classiﬁcation, including convolution layers, activation layers, pooling layers, and fully-connected layers. The output of each layer will be passed as the input of the next layer. The principal layer of the network is the convolutional layer, inserting the activation layer and the pooling layer inbetween two convolutional layers can realize the nonlinear mapping and down-sampling of the feature maps. The fully connected layer is generally utilized as the last layer of the network to process the feature extraction results to obtain the ﬁnal classiﬁcation results. Fig. 1 shows the typical structure of CNNs.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+670
+
+IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, VOL. 69, NO. 2, FEBRUARY 2022
+
+1) Convolutional Layer: The convolution layer performs 2-D convolution on the input feature maps. The ﬁlters and the input feature maps have the same number of channels. One ﬁlter and the input feature map are inner multiplied and accumulated on all channels to obtain one output pixel. A complete output feature map can be obtained by operating the ﬁlter to scan the entire input feature maps with a stride along with the ﬁlter height and width. Perform the same operation on different ﬁlters can obtain multiple output feature maps. The function expression of this algorithm is shown as (1).
+
+C K K
+
+O [ f ] [r ] [c] =
+
+I [ii ] [r + i ] [c + j ]
+
+ii=0 i=0 j =0
+
+× W [ f ] [ii ] [i ] [ j ] (1)
+
+In (1), C is the channel number of weight and input feature map, K is the weight kernel size.
+2) Activation Layer: The activation layer realizes the non-linear mapping between the convolutional layers. The most widely used activation functions include ReLU, sigmoid, tanh, etc. ReLU turns the negative number in the feature maps to zero, which provides signiﬁcant sparsity for the feature maps. With the development of the network structure, leaky-ReLU, parametric-ReLU and Mish are introduced in the CNN [35], making the feature maps very dense.
+3) Pooling Layer: The pooling layer aims at information extraction of adjacent pixels and down-sampling of feature maps, which achieves the elimination of redundant information and the expansion of the receptive ﬁeld. Pooling layers are generally separated into two types: average pooling and max pooling. The average pooling calculates the average value of the pooling region, and the max pooling selects the maximum value of the pooling region.
+
+B. DCT Basic Conception
+
+The discrete cosine transform (DCT) [36] is a mathematical
+
+operation relevant to the Fourier transform to analyze the
+
+frequency components of an image. In the Fourier series
+
+expansion, if the function to be expanded is a real even
+
+function, then the Fourier series contains only the cosine
+
+components, which can be discretized to derive the cosine
+
+transform. Therefore, the DCT can be considered as a ﬁnite
+
+sequence of data points represented by the sum of cosine
+
+functions oscillating at different frequencies. There are many
+
+forms of the DCT, the most commonly used pattern in image
+
+compression is the DCT-II, which is also the form used in this
+
+work. The expression of the 1-D DCT-II can be written as (2):
+
+Xk
+
+ N −1 =
+n=0
+
+xn
+
+π cos
+N
+
+  n+1 k 2
+
+k = 0, . . . , N − 1
+
+(2)
+
+where xn represent the origin signal, Xk represent the coefﬁcients after DCT transformation and N is the number of points of the origin√al signal. Some algorithms multiply the ﬁrst term X0 by 1/ 2 and mu√ltip√ly the resulting matrix by the compensation coefﬁcient 2/ N , making the DCT-II coefﬁcients matrix orthogonal.
+
+DCT-III, which is the inverse transform of DCT-II, is usually
+
+referred to as “IDCT” and its expression is shown as (3):
+
+k
+
+=
+
+1 2 x0
+
++
+
+ N −1
+n=1
+
+xn
+
+π cos
+N
+
+ nk
+
++
+
+ 1 2
+
+k = 0, . . . , N − 1 (3)
+
+The application of DCT on images is usually the two-dimensional transformation. The two-dimensional DCT of the image can be regarded as the decomposition of one-dimensional DCT along the rows and then along with the columns (or vice versa). Therefore, the two-dimensional DCT can be described as (4):
+
+Xk
+
+=
+
+N 1 −1
+n1=0
+
+N 2 −1
+n2 =0
+
+xn1,n2
+
+cos[ π N1
+
+ n1
+
++
+
+
+
+1 2
+
+k1]
+
+π
+
+ 1
+
+× cos[ N2
+
+n2 + 2
+
+k2]
+
+(4)
+
+In general, when an image is transformed by 2-D DCT, most of its energy will be concentrated in the low-frequency components and its high-frequency components contain a lot of redundant information such as noise. This provides the chance for image compression in the frequency domain. Similar techniques are widely used in JPEG, HEIF MPEG, and other image and video standards [37].
+
+III. INTER-LAYER DATA COMPRESSION
+A. Motivation
+The input of the CNN is usually an image with a ﬁxed size. For a convolution layer, the output pixel is a linear mapping of the input pixel with the proper ﬁlter coefﬁcients. Considering most of the operations in CNN are linear convolution, we can assume that the ﬁrst few layers’ output feature maps show similar image properties as regular input images. Fig. 2 is a comparison of the original image and the output feature maps in different layers. As it shows, the same object shape of the original image is also shown clearly in each feature map of the ﬁrst few layers of the CNN such as Layer 1 and Layer 5. However, when the layer goes deeper, the original object becomes highly abstract feature information and does not show any input image object shape. Noticing this phenomenon, we consider applying DCT transform on each interlayer feature map of the ﬁrst few CNN layers with quantization on the high-frequency components to compress its size. The overall procedure of the compression is shown in Fig. 3. After CNN main processing, each output feature map performs DCT transformation to get the frequency domain coefﬁcients, the quantization and encoding are implemented sequentially to compress the feature maps before they are stored in the on-chip SRAM. Feature maps will be transferred to the off-chip DRAM if necessary. For the next convolution layer, the input feature maps are read from on-chip SRAM and decompressed for computation. Decompression is the inverse process of compression, decoder, inverse quantization and IDCT will be executed sequentially to reconstruct the origin feature maps. These processes will be introduced in III-B and III-C.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: MEMORY-EFFICIENT CNN ACCELERATOR BASED ON INTERLAYER FEATURE MAP COMPRESSION
+
+671
+
+Fig. 2. Input images and interlayer feature maps of the Yolo-V3. Layer 1 and 5 shows the same object shape of the origin images while Layer 50 shows low-proﬁle features.
+
+be less compression opportunity. The high-frequency components of the images correspond to redundant information such as noise and boundary jump. This feature permits us to discard high-frequency components to achieve the feature map compression with negligible accuracy loss. DCT is a natural and intuitive idea for obtaining different frequency domain components of the feature maps. The matrix form of 2-D DCT/IDCT can be written as (5) and (6):
+
+Z = CXCT
+
+(5)
+
+X = CT ZC
+
+(6)
+
+Fig. 3. Overall process of compression and decompression.
+
+where X is the input 8 × 8 matrix to be processed, C is the
+
+8 × 8 DCT transform matrix which can be derived from (4), CT is the transposition matrix of C, and Z is 8×8 transformed
+
+result called DCT coefﬁcients matrix. We use the 8 × 8 block
+
+as a basic unit for compression, decompression, convolution,
+
+and pooling, and deﬁne each 8 rows of feature maps as a row
+
+frame.
+
+2) Quantization: Before encoding and compressing the
+
+DCT coefﬁcients matrix F f req , a quantization method is utilized to acquire more zeros. Our quantization method is
+
+divided into two steps: 1) low-precision General Matrix to
+
+Matrix Multiplication (GEMM). 2) Q-table quantization. Low-
+
+precision GEMM converts ﬂoating-point numbers into m-bit
+
+integers according to the range of the maximum and minimum
+
+values. Assuming that the maximum value in a given array is
+
+F
+
+max f req
+
+,
+
+the
+
+minimum
+
+value
+
+is
+
+F
+
+min f req
+
+,
+
+the
+
+maximum
+
+value
+
+of
+
+the quantized integer array is i max which equals to 2m − 1,
+
+and the minimum value is i min which equals to zero, then the
+
+Low-precision GEMM can be written as (7):
+
+
+
+
+
+Q1 f req = r ound
+
+F f req
+
+F
+
+max f req
+
+− −
+
+F
+
+min f req
+
+F
+
+min f req
+
+× imax
+
+(7)
+
+Fig. 4. Illustration of feature maps compression process.
+B. Feature Maps Compression
+Feature map compression is implemented through a DCT technology reported previously. It contains the following three parts: (1) an 8 × 8 kernel sized DCT to obtain feature map frequency information; (2) a quantization method with its corresponding quantization table (Q-table) to preserve lowfrequency components of the feature while high-frequency components are quantized for compression; (3) an efﬁcient encoding method to achieve high compression ratio and on-chip SRAM utilization. The feature maps compression process is visualized in Fig. 4:
+1) DCT: Since the interlayer feature maps are often not very sparse in the image space, compressing them directly will introduce a large storage overhead of index and a low compression ratio. Therefore, DCT in the frequency domain is utilized. 8 × 8 block is selected as the basic unit for DCT because larger blocks bring more transform calculations and lead to higher computation delay and hardware overhead, while smaller blocks contain less boundary jumps so there will
+
+where Q1 f req represents the quantized result of low-precision GEMM.
+After completing the ﬁrst step of quantization, we use the Q-table to quantize the DCT coefﬁcient matrix. The design of the quantization table is based on the principle of preserving the low-frequency components and discarding the highfrequency components as much as possible. We refer to the JPEG Q-table which has small values in the top left part of the table and large values in the bottom right part of the table to achieve both high compression ratio and low accuracy loss. For different convolutional layers, the accuracy loss caused by lossy compression has different effects on the network performance. The ﬁrst few layers’ compression has negligible effect on network performance, while the medium layers’ compression can result in noticeable performance degradation if the quantization loss is too large. To achieve minimal network accuracy loss, we conﬁgure a 2-bits register to achieve four different quantization levels between different layers. The selection of the quantization levels is through an offline regression experiment on the test datasets. The Q-table values of the ﬁrst few layers are larger in order to get a better compression ratio, while the Q-table values of the deep layers are adjusted to smaller values to ensure the accuracy of the
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+672
+
+IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, VOL. 69, NO. 2, FEBRUARY 2022
+
+network. The result of the Q-table quantization is as (8):
+
+⎛
+
+⎞
+
+Q 2if, rj eq
+
+=
+
+r ound
+
+⎝ Q1if,rj eq QiT, j
+
+⎠
+
+(8)
+
+where Q2 f req represents the quantization result, QT represents the 8×8 table and (i, j ) represents the coordinate of each
+
+element. The quantized Q2 f req matrix has a large number of zeros in the matrix’s bottom right corner, which is suitable for
+
+sparse encoding.
+
+Correspondingly, the steps of inverse quantization are also
+
+divided
+
+into
+
+two
+
+steps
+
+to
+
+obtain
+
+the
+
+approximate
+
+matrix
+
+F
+
+ f
+
+r
+
+eq
+
+before quantization as shown in (9) and (10):
+
+Q1fi,rjeq
+
+=
+
+Q2if,
+
+j r
+
+eq
+
+×
+
+QiT, j
+
+F
+
+ f
+
+r
+
+eq
+
+=
+
+Q1f req i max
+
+×
+
+(
+
+F
+
+max f req
+
+−
+
+F
+
+min f req
+
+)
+
++
+
+F
+
+min f req
+
+(9) (10)
+
+where Q1fi,rjeq represents the feature maps after the ﬁrst step
+
+of
+
+quantization,
+
+F
+
+ f
+
+r
+
+eq
+
+represents
+
+the
+
+origin
+
+feature
+
+maps.
+
+3) Encoding: To compress the ﬁnal storage size, a proper
+
+encoding method that can exploit the sparsity of the matrix
+
+and maintain a regular memory storage pattern is required as
+
+one feature map is divided into multiple 8 × 8 transformed
+
+matrixes that will be stored in one shared memory. In addition,
+
+the encoding method is also required to support fast hardware
+
+encoder and decoder implementations with smooth memory
+
+storage and read out data ﬂow, thus the processor throughput
+
+will not be affected due to data congestion in the encoding or
+
+decoding module.
+
+Ideally, the 8 × 8 quantized matrix can be regarded as
+
+a one-dimensional vector in a zig-zag sequence and Huff-
+
+man coding is the best method to achieve the theoretical
+
+highest compression ratio. However, the implementation of
+
+Huffman encoding and decoding will request a look-up table
+
+which introduces considerable hardware overhead. In addition,
+
+the variable code length in Huffman coding results in an
+
+irregular size encoded symbol. During decoding, the next
+
+symbol place cannot be properly determined in the code
+
+sequence until the current symbol is fully decoded. Thus,
+
+symbols cannot be decoded in parallel, which limits the overall
+
+hardware decoding speed. Therefore, we propose a simple
+
+sparse matrix encoding method which adapts the quantized
+
+matrix sparsity and provides a fast-encoding scheme that can
+
+support on-the-ﬂy data compression.
+
+For a speciﬁc quantized matrix, we only store non-zero data
+
+and discard all zero data. A 1-bit 8 × 8 index matrix is used
+
+to indicate whether the data under a certain coordinate in the
+
+original 8×8 quantized matrix is zero, where the index matrix
+
+value 1 indicates that the data in the corresponding position
+
+of quantization matrix is non-zero, otherwise it is zero. When
+
+reading or writing data to the buffer, the index matrix can
+
+be utilized to determine whether to access the corresponding
+
+SRAM. At the same time, it can be used as the gate signal
+
+of the multiplier in the IDCT module to skip IDCT matrix
+
+calculation. If the index is 0, the multiplier is turned off to
+
+save power.
+
+The index matrix is sequentially stored in a dedicated
+
+SRAM called index buffer. The quantized matrix is stored
+
+Fig. 5. Encoding and storage method, colored blocks represent the non-zero data while white blocks represent the zeros. (a) An even number 8 × 8 quantized matrix data distribution, and (b) the state of the SRAM after storing the ﬁrst 8×8 matrix. (c) An odd number 8×8 quantized matrix after ﬂipping, and (d) the state of the SRAM after storing the second 8 × 8 matrix.
+in the feature map buffer. The storage method is shown in Fig. 5. The feature map buffer consists of 8 pieces of SRAM and each SRAM is used to store one row of data. Based on the above analysis, most of the zeros are located at the bottom right corner of the matrix. As described in Fig. 5. (a), the colored blocks in the 8 × 8 quantized matrix are non-zero data while the white blocks indicate zeros. The non-zero data in the even number quantized matrices is directly stored in SRAM by column and the state after the storage is shown in Fig. 5. (b). If the subsequent quantized matrices are stored in this way, there will be a lot of vacancy in the last row of SRAM while the ﬁrst row of SRAM is full, resulting in low SRAM utilization. To improve the memory utilization, the next sequential 8 × 8 quantized matrix data will be ﬂipped and stored in the memory with a reverse order as shown in Fig.5 (c), (d). The current matrix’s row 8 will be stored together with the previous matrix’s row 1. Through the matrix ﬂipping between two sequential matrixes, the overall memory utilization is improved.
+Reading data from the feature map buffer is the inverse process of the above method. According to the index matrix, the chip select signal and address of the SRAM can be determined to get the non-zero data then padding the zero data in the corresponding position. When processing the next matrix, the readout data will be inverted.
+C. Decompression
+Before the convolution of the next layer, the quantized matrix stored in the feature map buffer needs to be read out for decompression to restore the approximate feature maps. The decompression process consists of three steps: decoding, inverse quantization, and IDCT.
+Decoding is executed by reading a set of non-zero data from the feature map buffer according to the index matrix and restore it to the corresponding position in the quantized matrix. According to (9), (10) in III-B, the data is inverse quantized by the Q-table to obtain the DCT coefﬁcients matrix. Finally, the approximate feature maps can be obtained by matrix multiplication in the IDCT module with the DCT coefﬁcients matrix.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: MEMORY-EFFICIENT CNN ACCELERATOR BASED ON INTERLAYER FEATURE MAP COMPRESSION
+
+673
+
+Fig. 6. The overall hardware architecture.
+
+IV. SYSTEM ARCHITECTURE
+To apply the interlayer feature maps compression technique, a CNN accelerator with integrated compression and decompression module is proposed. The overall architecture is shown in Fig. 6. The input image, weights, and system instructions are fetched from the external memory via a direct memory access (DMA) controller to the on-chip memory. The DMA controller has two sub-modules, one for transmitting feature maps and the other one for transmitting weights in parallel. 16 bits dynamic ﬁxed-point data format is adopted in this design to obtain comparable accuracy to ﬂoat 32 bits [38]. The models are 8-bit feature-wise quantized [39] for inference. The feature maps are stored into the feature map buffer, the accelerator instructions are stored in the instruction queue for parsing and execution, and the weights are decoded by the weight decoder with a preload buffer in the PE array to calculate convolution.
+The accelerator incorporates a 480 KB single-port-SRAM called buffer bank which is divided into three parts: feature map buffer, scratch pad, and index buffer, to store sparse matrices of the compressed interlayer feature maps, partial sums, and sparse matrix indexes respectively. The size of feature map buffer and scratch pad can be dynamically conﬁgured according to the network layer requirements. The feature map buffer is divided into two segments, buffer A and buffer B as a ping-pong-buffer. A buffer manager is used to manage input and output I/O connections from this SRAM through MUXs. The initial size of these two buffers is 128 KB, one is utilized for the input feature maps and the other is for the output feature maps of the current layer. Index buffer is 32 KB and is also divided into two parts, which are used to store the sparse matrix indexes of the corresponding sparse matrices stored in feature map buffer. Since the zeros are concentrated in the bottom part of the quantized matrix, a ﬂip method is adopted for the storage to maximize the on-chip memory utilization. The instruction queue fetches the instructions and loads them into the local memory when the accelerator is enabled, then these instructions will be executed in order. The top-level control unit manages all the registers required by the accelerator to conﬁgure each sub-module. The DCT
+
+module consists of a DCT process unit and an IDCT process unit. Each unit contains 128 constant-coefﬁcient multipliers to process 4 channels’ DCT/IDCT in parallel and achieves pipelining with convolution. The PE array contains 288 PEs to achieve high parallelism. The PE array can support up to 4 input channels and 8 rows for 3 × 3 convolution in parallel. In 1 × 1 convolution, one PE will be turned off due to the limited data bandwidth. Weight decoder periodically pre-loads weights from external memory through DMA with a FIFO to hide the access latency. The partial sums calculated by the PE array are sent to the scratch pad for further accumulation and storage. The initial size of the scratch pad is 64 KB and can be conﬁgured up to 192 KB dynamically. A non-linear module is designed to process non-convolutional operations such as ReLU, batch normalization (BN), or pooling functions.
+The accelerator starts to perform the convolution when the instruction queue executes the CONV instruction. First, the IDCT module will fetch the compressed sparse matrices and the sparse matrix indexes from the buffer bank for inverse quantization and IDCT to reconstruct the approximate feature maps, then they will be sent to the PE array for convolution. The scratch pad will accept the partial sums sent by the PE array to accumulate and store. After all the input channels are calculated, the results will be sent to the non-linear module to execute non-convolutional operations, and then the output feature maps will be passed to the DCT module for compression and store back to the feature map buffer.
+V. DATA FLOW AND MODULE IMPLEMENTATION
+To better combine the compression process and the convolution computation, we propose an efﬁcient data ﬂow and module implementation in this article. This section will discuss them in details.
+A. Data Flow and Reuse Scheme
+The overall computation ﬂow follows the weight reuse strategy. The weight of a speciﬁc input channel and output channel is stored in the accelerator before scanning through the entire input feature maps. Beneﬁtting from our compression
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+674
+
+IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, VOL. 69, NO. 2, FEBRUARY 2022
+
+Fig. 7. An example of the computation ﬂow.
+
+method, the input feature maps can be stored on-chip without external memory access to DRAM in most cases. On-chip stored weights will be transferred only when they need to be updated; there is no need to read the off-chip stored weight repeatedly.
+Four output features are calculated simultaneously to avoid repeated decompression of the input feature maps in 3 × 3 convolution mode. Speciﬁcally, we adopt four cycles to calculate 4 output feature maps corresponding to the same input feature maps and four different convolution ﬁlters, and the PE array will automatically switch the weights of different ﬁlters in each cycle. Four input feature maps will be fed into the PE array together to ensure that the input and output bandwidth is consistent. Weights will be pre-load to a local buffer embedded in the PE array before the start of the convolution, and the weight for the next calculation will be pre-read during the convolution. The bandwidth between calculation modules such as PE array, non-linear, and DCT/IDCT is eight rows by one column.
+At the beginning of the convolution, the IDCT module will read a column of the quantized matrix from the feature map buffer according to the index matrix to perform the inverse quantization. The calculation of the IDCT involves two cosine function multiplication as (4) and is divided into two steps. The IDCT will ﬁnish the ﬁrst cosine function multiplication after reading eight columns of data, then sequentially begin to calculate the second matrix multiplication to get the input feature maps of the current layer. The input feature map will be sent to the PE array for convolution. The PE array begins 3 × 3 kernel computation after receiving three columns of feature maps. Partial sums are accumulated and stored in the scratch pad. The ﬁnal output feature maps after partial sums accumulation are sent to the non-linear module and DCT module to perform the non-linear operation and DCT compression process. Fig. 7 illustrates an example of this process in detail.
+During 1 × 1 convolution, we calculate 8 output feature maps with 8 ﬁlters in parallel to achieve input reuse. Unlike 3 × 3, in 1 × 1 convolution mode one PE will be turned off to save power, and the remaining 8/9 PEs will calculate 8 output feature maps with 8 ﬁlters in one clock cycle. This will cause the input data bandwidth of the scratch pad to be twice of the 3 × 3 convolution mode. In the V-C chapter, we will introduce a reconﬁgurable on-chip memory scheme to solve this problem.
+
+The kernel size supported by the accelerator is up to 7 × 7, and the supported stride of the convolution can be 1 or 2. For convolution with a kernel size larger than 3 × 3, a ﬁlter decomposition technique reported in [14] is used to decompose the larger kernel size into multiple 3 × 3 kernels for computation. If the stride of convolution is two, the PE array will use one clock cycle to bypass the columns that do not need to be computed. The validity of the PE array output rows will be indicated by the row valid signals.
+B. PE Array
+The PE array contains 32 PE units, each of 8 PE units generates a PE group for calculating one input feature map, and a total of four input feature maps can be calculated in parallel. Each PE unit contains 9 multipliers and adders to support convolution up to 3 × 3.
+The description of the PE array is shown in Fig. 8. Input feature maps of eight rows and four channels are sent to four PE groups respectively. In a PE group, eight rows of data are fed to the data MUX while 3 rows are selected and sent to the corresponding PE units. The data transmission between PEs is realized through D ﬂip-ﬂops, the data in each PE will be sent to the right neighbor PE when a new column is obtained. The weights are stored in a local buffer and delivered to each PE unit. The MODE register will be used to turn off unused PEs according to the convolution mode. The multiplication results of PEs are accumulated in the PE units ﬁrst, then eight partial sums are obtained in the PE array through channel accumulation to reduce the frequency of the scratch pad accessing.
+Since we select 8 × 8 blocks for compression and convolution, the overlapping problem of adjacent 8 rows called row frame (RF) occurs in 3 × 3 convolution mode. The typical method that stores the overlapping part and reads them when calculating the next RF, creates signiﬁcant memory overhead. To solve this overlapping problem, we design a data MUX module for 8 PE units to select different data and weights. Fig. 9 illustrates the three rows of data selected by data MUX and the connection between the corresponding PE units and the scratch pad. In Fig. 9, PSUM represents the partial sums of the current RF, PSUM represents the partial sums of the previous RF and PSUM represents the partial sums of the next RF. Fig. 10 shows all of the possible connections between the data, weights, and outputs to the 8 PE units. The calculation
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: MEMORY-EFFICIENT CNN ACCELERATOR BASED ON INTERLAYER FEATURE MAP COMPRESSION
+
+675
+
+Fig. 8. Overall architecture of the PE array.
+
+Fig. 9. Design of data MUX and partial sums accumulation scheme.
+
+Fig. 11. SRAM conﬁguration and non-linear module implementation.
+
+Fig. 10. Convolution pattern of PE units.
+
+PSUM6 and PSUM7, which need to be accumulated with the next RF. Therefore, the partial sum results are stored
+in the scratch pad directly, waiting for the accumulation
+of the next RF to obtain the “complete partial sums”. The
+weights and data required for PE unit 0 and PE unit 7 are shown in Fig. 10. (b) (d), respectively. PSUM and PSUM
+can be accumulated simultaneously with channels partial sums
+accumulation without causing additional overhead.
+
+pattern of PE unit 1 to PE unit 6 is shown in Fig. 10 (c). These
+
+six PE units calculate PSUM0 to PSUM5 respectively. These
+
+six partial sums are the “completed partial sums” calculated
+
+by the original ﬁlter, which only need to be accumulated in
+
+the channel direction and do not need to be spliced with the
+
+partial sums and PSUM7,
+
+of the next RF. which need to be
+
+PE unit 0 calculates accumulated with the
+
+PSUM6 previous
+
+RF partial sums saved in the scratch pad. The accumulation
+
+results are stored back to the scratch pad. PE unit 7 calculates
+
+C. Memory Conﬁguration and Non-Linear Module
+The overall block diagram of on-chip memory and nonlinear modules is shown in Fig. 11. The buffer bank contains a feature map buffer and a scratch pad to store feature maps and partial sums. The non-linear module can process BN, ReLU and pooling in different sequences.
+As described in Section V. A, parallel output feature maps are adopted to reduce the frequency of IDCT module computations. However, this also brings a four times partial sum storage overhead compared to a single feature output.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+676
+
+IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, VOL. 69, NO. 2, FEBRUARY 2022
+
+In addition, the neural network has a typical feature that when the layer is deeper, the size of the feature map gradually decreases, but the number of channels gradually increases, which leads to an increase in the demand for the size of the feature map buffer, and the scratch pad tends to have a large free unused space. Based on the above observation, a large scratch pad size is more favorable to the ﬁrst few layers. However, it will result in a low memory utilization ratio if the scratch pad size cannot be changed.
+To solve the above conﬂict, a reconﬁgurable on-chip memory scheme is proposed to dynamically conﬁgure the feature map buffer size and scratch pad size. The overall memory architecture is shown in Fig. 11. The scratch pad is dedicated to PSUM accumulation and its size is 64 KB. The feature map buffer A and B are used to store compressed layer input and output data. Each of the feature map buffer is 128 KB and paired with a conﬁgurable memory. Each conﬁgurable memory is set to 64 KB including two sub-banks, and each sub-bank is 32 KB. Therefore, the scratch pad can be conﬁgured to 64 KB, 128 KB or 192 KB, and each feature map buffer can be conﬁgured to 128 KB, 160 KB or 192 KB. Depending on the layer requirement, each of the conﬁgurable memory banks can be either combined into feature map buffer or scratch pad, extending their depths dynamically.
+In 3 × 3 convolution mode, 10 rows and 4 channels partial sums will be sent to the scratch pad each time, where 8 rows are the partial sums of the current RF, and 2 rows are the partial sums of the next RF. In 1 × 1 convolution mode, there is no overlapping problem in convolution, the scratch pad will be used to store 8 channels partial sums in parallel, which can increase the PE utilization to 8/9 in 1 × 1 convolution mode.
+When the partial sums of the last channels are accumulated, the scratch pad will transmit the results to the non-linear module to perform non-linear computations such as ReLU, BN, and pooling based on the network structure. The coefﬁcients required by BN are extracted during training and transmitted to the accelerator together with weights during inference. The computation sequence of the ReLU, BN, and pooling in the non-linear module can be conﬁgured to ﬁt for different kinds of CNN applications. Finally, the output of the nonlinear module will be sent to the DCT module for further compression before storing back to the memory.
+
+where Q and P are shown in (13):
+
+⎡
+
+⎤
+
+10000000
+
+Q
+
+=
+
+⎢⎢⎢⎢⎢⎢⎢⎢⎢⎢⎣
+
+0 0 0 0 0 0
+
+0 0 0 1 0 0
+
+1 0 0 0 0 0
+
+0 0 0 0 1 0
+
+0 1 0 0 0 0
+
+0 0 0 0 0 1
+
+0 0 1 0 0 0
+
+0 0 0 0 0 0
+
+⎥⎥⎥⎥⎥⎥⎥⎥⎥⎥⎦
+
+,
+
+00000001
+
+⎡
+
+⎤
+
+0001
+
+P
+
+=
+
+⎢⎢⎣
+
+0 0
+
+0 1
+
+1 0
+
+0 0
+
+⎥⎥⎦
+
+(13)
+
+1000
+
+Ce, Co are matrix transforming coefﬁcients get from (4),
+
+as shown in (14):
+
+⎡
+
+⎤
+
+aa a a
+
+Ce
+
+=
+
+⎢⎢⎣
+
+f a
+
+g −a
+
+−g −a
+
+−f a
+
+⎥⎥⎦
+
+,
+
+⎡ g − f f −g⎤
+
+bc d e
+
+Co
+
+=
+
+⎢⎢⎣
+
+c d
+
+−e −b
+
+−b e
+
+−d c
+
+⎥⎥⎦
+
+(14)
+
+e −d c −b
+
+Further, we can get the Z  from (15) and (16):
+
+Z
+
+= =
+
+QZYYQRL UUT
+
++ +
+
+YL
+
+Y
+
+ R
+
+D D
+
+ P
+ P
+
+CeT CeT
+
+YL U = Ce (X LU + P X L D)
+
+Y
+
+ L
+
+D
+
+=
+
+Ce (X RU
+
++
+
+PXRD)
+
+YR U = Co (X LU − P X L D)
+
+Y
+
+ R
+
+D
+
+=
+
+Co (X RU
+
+−
+
+PXRD)
+
+YYRL UU
+
+− −
+
+YL YR
+
+D D
+
+ P
+ P
+
+Co Co
+
+
+
+(15)
+
+(16)
+
+Finally, transformed DCT coefﬁcients Z can be obtained by (17):
+
+Z = QT ZQ
+
+(17)
+
+D. DCT/IDCT
+
+There have been many works to achieve efﬁcient hardware
+
+implementations of DCT/IDCT. In this paper, we refer to a fast
+
+DCT/IDCT algorithm [40] and integrate it into our accelerator.
+
+This work disassembles one 8 × 8 matrix multiplication into
+
+four 4×4 matrix multiplications; It beneﬁts from the particular
+
+characteristics of the DCT matrix, saving half of the computing
+
+resources.
+
+As described in [40] and (5), we can decompose the input
+
+matrix X and transform matrix C as (11) and (12):
+
+
+
+
+
+X=
+
+X LU X LD
+
+X RU XRD
+
+
+
+(11)
+
+C = QT
+
+Ce Co
+
+CeP CoP
+
+(12)
+
+We designed a hardware architecture to implement the above algorithms. As shown in Fig. 12, there is a constantcoefﬁcient multiplier (CCM) array containing 128 CCMs to perform DCT matrix multiplication. Every 32 CCMs can complete the multiplication of the 8 × 8 matrix and the 8 × 1 matrix in one cycle to obtain an 8×1 matrix, thus four channels can be calculated in parallel, saving half of the computing resources. The input 8 × 1 matrix is divided into upper and bottom parts, the bottom part will be reversed at ﬁrst, then added to the upper part and sent to the CCM array as input. The CCM array will output an 8×1 matrix after calculation to the adder for reversal and accumulation, and the result of the accumulation will be sent to the CCM array again for 1 × 8 matrix and 8 × 8 matrix multiplication to obtain a ﬁnal 1 × 8 matrix result.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: MEMORY-EFFICIENT CNN ACCELERATOR BASED ON INTERLAYER FEATURE MAP COMPRESSION
+
+677
+
+Fig. 12.
+
+DCT module implementation. TABLE I
+HARDWARE SPECIFICATIONS
+
+Fig. 13. Layout view of the accelerator.
+
+Fig. 14. Area breakdown of the accelerator.
+
+VI. RESULT
+In this section, we reported the hardware performance of the accelerator and evaluated a detailed test on the compression performance with ﬁve state-of-the-art CNNs: VGG-16-BN, ResNet-50, MobileNet-v1, MobileNet-v2, and Yolo-v3. We analyzed the data distribution, compression ratio, and compressed data distribution of each layer of these CNNs. The results proved that our method can effectively reduce the required on-chip storage size and off-chip memory access with less than 1% accuracy loss.
+
+Fig. 15. Power consumption breakdown of the accelerator.
+
+A. Hardware Performance
+To evaluate the hardware performance, we implemented the accelerator using Synopsys Design Compiler (DC) with the TSMC 28nm HPC+ technology library from the ss (slowPMOS and slow-NMOS) corner, the supply voltage is 0.72 V, and the temperature is 125 ◦. The layout characteristics of the accelerator are shown in Fig. 13, and the core dimension is 1.65mm × 1.3mm. The detailed speciﬁcations are listed in Table I. The peak throughput is 403 GOPS with a 700 MHz clock frequency and the dynamic power consumption is 186.6 mW, corresponding to 2.16 TOPS/W in energy efﬁciency. The dynamic power of the accelerator is estimated by Synopsys PrimeTime PX using VGG-16-BN as the benchmark. The accelerator supports most CNN operators such as convolution, ReLU, BN, and Pooling. We also implemented it on Xilinx Zynq XC7Z045FFG900-2. The LUT,
+
+FF, DSP, and BRAM resource utilization are 110K(51%), 39K(9%), 544(60%), 129(24%) respectively with a 50 MHz clock frequency.
+The overall gate count of the accelerator, excluding on-chip SRAMs is 1127K NAND-2 gates. Fig. 14 shows the area breakdown and Fig. 15 shows the power consumption breakdown of the accelerator. The total SRAM size of this accelerator is 480KB. The area of the SRAMs takes over half of the total area. The SRAMs are categorized into feature map buffer and scratch pad. The size of the feature map buffer can be conﬁgured from 256KB to 384KB, while the scratch pad can be conﬁgured from 64KB to 192KB. Since the dimension of the feature map is large in the ﬁrst few layers, the feature map buffer is conﬁgured as 256KB in most cases. The total size of the SRAMs, feature map buffer and scratch pad are selected based on the trade-off between the
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+678
+
+IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, VOL. 69, NO. 2, FEBRUARY 2022
+
+TABLE II EXTERNAL MEMORY ACCESS SAVED BY THE COMPRESSION METHOD
+
+TABLE III LAYER-BY-LAYER COMPRESSION RATIO
+
+area, performance, and the compressed feature map size. The PE array consists of 288 PEs and occupies 26% of the total area. DCT and IDCT include their hardware modules such as quantization, encoding, and constant-coefﬁcient multipliers. Due to the small area size of the constant-coefﬁcient multiplier, the additional overhead brought by the interlayer feature map compression is only 13% of the area of the accelerator. The DCT/IDCT modules introduce 19% of dynamic power consumption, and for the layers that do not require compression, these modules are turned off to save dynamic power consumption. Since the DRAM access is the most energy consuming data movement per access [23], the reduction of on-chip/offchip memory access bandwidth saved by compression can also reduce power consumption substantially. Compared with the power consumption introduced by the DCT/IDCT module, the overall power consumption is still reduced. The detailed power improvement is shown in Table II.
+
+TABLE IV COMPARISON WITH OTHER FEATURE MAP COMPRESSION WORK
+
+B. Compression Performance
+Five neural network models are selected to evaluate our DCT compression performance on the PASCAL VOC test dataset; the pre-trained models and testing framework are from [41], [42]. The compression strategy is based on ensuring the accuracy of the network and achieves the best compression ratio by adjusting the number of compressed layers and the Q-table values. The experimental results are shown in Table III. The combination of a sequential convolution, non-linear and pooling layer is deﬁned as one fusion layer. This is because our accelerator can execute convolution together with non-linear and pooling layers in one data stream and only need to compress the feature maps after each fusion layer. The fully connected layer is ofﬂoaded to the CPU, so it is not within the scope of our compression method. Since the number of compressed layers of each network is different, only the compression ratios of the ﬁrst ten fusion layers are given. The overall compression ratio of the whole network and the network accuracy comparison are reported in Table III. The compression ratio is deﬁned as (18):
+Compr essi on Rati o = Data A f ter Compr essi on (18) Origin Data
+
+Without losing more than 1% accuracy, the total number of the fusion layers that can beneﬁt from the compression ranges from 10 to 20. The ﬁrst ten fusion layers have a much larger size than other layers and are often on-chip storage-limited, where off-chip memory access happens frequently. Therefore, our compression experiments mainly focus on the ﬁrst ten fusion layers.
+1) VGG-16-BN: By compressing the ﬁrst ten fusion layers of VGG-16-BN, it achieves an overall compression ratio of 30.63%, and the overall off-chip memory access is reduced by 3.3×. The compression ratio reaches 8.97% at the ﬁrst layer with the largest interlayer feature map. The original and compressed interlayer feature map data sizes are compared in Fig. 16 (a), the data size for almost all layers are less than 1 MB after compression, thus the off-chip memory access can be reduced signiﬁcantly. With the compression process, the accuracy decrease is only around 0.45%.
+2) ResNet-50 and Yolo-v3: ResNet-50 and Yolo-v3 are deeper with more complex network structure than
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: MEMORY-EFFICIENT CNN ACCELERATOR BASED ON INTERLAYER FEATURE MAP COMPRESSION
+
+679
+
+Fig. 16.
+
+(a)–(d) corresponding to VGG-16-BN, ResNet-50, Yolo-v3, MobileNet-v1 original data size and compressed data size of the ﬁrst 1–10 layers. TABLE V
+COMPARISON WITH OTHER ACCELERATOR WORKS
+
+VGG-16-BN. As Table III shows, the compression ratios of the ﬁrst ten layers are excellent, around 20%∼30% with 0.18% and 0.42% accuracy loss, respectively. As shown in Fig. 16 (b), (c), the largest interlayer feature maps in ResNet-50 are compressed to less than 0.5 MB, and most of other layers are compressed to 0.1 MB∼0.2 MB, so most of the feature maps can be stored on the on-chip memory without any off-chip transmission. Although Yolo-v3 has the largest feature map data in these networks, the largest ﬁrst ten fusion layers still can be compressed to between 0.5 MB and 1.5 MB.
+3) MobileNet-v1 and MobileNet-v2: MobileNet-v1 and MobileNet-v2 are two lightweight networks with depth-wise convolution to achieve weight reduction. Therefore, it is difﬁcult for further compression on these two networks. Our compression method can still achieve an overall compression ratio of 61.02% and 71.05% on these networks, reducing 1.4×−1.6× off-chip memory access with accuracy loss less than 0.5%. For the ﬁrst ten layers, MobileNet-v1 and
+
+MobileNet-v2 do not perform as well as previous networks, the compression ratios are around 40%∼60%. Fig. 16 (d) illustrated the interlayer data comparison of MobileNet-v1. The compression ratios of the ﬁrst three layers with the largest data size are still good, and almost all the layers are compressed below 0.5 MB.
+Compared to the other work [16] that implements feature map compression in Table IV, we have a better compression ratio in VGG-16-BN, but it is inferior in ResNet-50 and MobileNet-V2. Their work reported a dedicated hardware to compress data from on-chip memory to off-chip memory. Compared with them, we realized an on-the-ﬂy compression integrated with CNN acceleration and our work compressed not only the data that needs to be transferred off-chip but also the data that is stored into the on-chip memory. Since the compression is embedded in the CNN computation ﬂow in the accelerator, the overall on-chip memory size and off-chip access bandwidth requirement are both reduced.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+680
+
+IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, VOL. 69, NO. 2, FEBRUARY 2022
+
+Table V compares our design with other state-of-the-art works. Our accelerator can achieve 30.63%∼71.05% interlayer feature map compression ratio, 403GOPS throughput, and
+2.16 TOPS/W energy efﬁciency in TSMC 28nm technology.
+VII. CONCLUSION
+In this article, we proposed a memory-efﬁcient CNN accel-
+erator based on feature map compression. The proposed accelerator utilizes DCT to compress the feature maps in
+the frequency domain and achieves signiﬁcant output feature
+map size reduction. An efﬁcient hardware architecture is designed to combine compression, decompression, and CNN
+acceleration into one computing stream, achieving minimal
+processing delay for compression and high throughput. The accelerator is implemented on an FPGA and also synthesized
+as an ASIC IP. The results show that the accelerator can provide a higher compression ratio for state-of-the-art CNNs
+with negligible accuracy loss.
+REFERENCES
+[1] Y. LeCun, Y. Bengio, and G. Hinton, “Deep learning,” Nature, vol. 521, no. 7553, pp. 436–444, May 2015.
+[2] S. Ren, K. He, R. Girshick, and J. Sun, “Faster R-CNN: Towards real-time object detection with region proposal networks,” IEEE Trans. Pattern Anal. Mach. Intell., vol. 39, no. 6, pp. 1137–1149, Jun. 2017.
+[3] W. Liu et al., “SSD: Single shot multibox detector,” in Proc. Eur. Conf. Comput. Vis. (ECCV). Amsterdam, The Netherlands: Springer, 2016, pp. 21–37.
+[4] Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner, “Gradient-based learning applied to document recognition,” Proc. IEEE, vol. 86, no. 11, pp. 2278–2324, Nov. 1998.
+[5] O. Abdel-Hamid, A.-R. Mohamed, H. Jiang, L. Deng, G. Penn, and D. Yu, “Convolutional neural networks for speech recognition,” IEEE/ACM Trans. Audio, Speech Language Process., vol. 22, no. 10, pp. 1533–1545, Oct. 2015.
+[6] Y. Song, C. Ma, L. Gong, J. Zhang, R. W. Lau, and M.-H. Yang, “CREST: Convolutional residual learning for visual tracking,” in Proc. IEEE Int. Conf. Comput. Vis. (ICCV), Oct. 2017, pp. 2555–2564.
+[7] D. S. Bolme, J. R. Beveridge, B. A. Draper, and Y. M. Lui, “Visual object tracking using adaptive correlation ﬁlters,” in Proc. IEEE Comput. Soc. Conf. Comput. Vis. Pattern, Jun. 2010, pp. 2544–2550.
+[8] X. Weng, Y. Wang, Y. Man, and K. M. Kitani, “GNN3DMOT: Graph neural network for 3D multi-object tracking with 2D-3D multi-feature learning,” in Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR), Jun. 2020, pp. 6499–6508.
+[9] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., Jun. 2016, pp. 770–778.
+[10] M. Peemen, A. A. A. Setio, B. Mesman, and H. Corporaal, “Memorycentric accelerator design for convolutional neural networks,” in Proc. IEEE 31st Int. Conf. Comput. Design (ICCD), Oct. 2013, pp. 13–19.
+[11] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen, “MobileNetV2: Inverted residuals and linear bottlenecks,” in Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit., Jun. 2018, pp. 4510–4520.
+[12] M. Horowitz, “Computing’s energy problem (and what we can do about it),” in IEEE Int. Solid-State Circuits Conf. (ISSCC) Dig. Tech. Papers, Feb. 2014, pp. 10–14.
+[13] S. Yin et al., “A high energy efﬁcient reconﬁgurable hybrid neural network processor for deep learning applications,” IEEE J. Solid-State Circuits, vol. 53, no. 4, pp. 968–982, Apr. 2018.
+[14] L. Du et al., “A reconﬁgurable streaming deep convolutional neural network accelerator for Internet of Things,” IEEE Trans. Circuits Syst. I, Reg. Papers, vol. 65, no. 1, pp. 198–208, Jan. 2018, doi: 10.1109/TCSI.2017.2735490.
+[15] T. Chen et al., “DianNao: A small-footprint high-throughput accelerator for ubiquitous machine-learning,” ACM SIGARCH Comput. Archit. News, vol. 42, no. 1, pp. 269–284, 2014.
+[16] F. Xiong et al., “STC: Signiﬁcance-aware transform-based codec framework for external memory access reduction,” in Proc. 57th ACM/IEEE Design Autom. Conf. (DAC), Jul. 2020, pp. 1–6.
+
+[17] B. Chmiel et al., “Feature map transform coding for energy-efﬁcient CNN inference,” in Proc. Int. Joint Conf. Neural Netw. (IJCNN), Jul. 2020, pp. 1–9.
+[18] J. Zhao, W. Guo, S. Cui, Z. Zhang, and W. Yu, “Convolutional neural network for SAR image classiﬁcation at patch level,” in Proc. IEEE Int. Geosci. Remote Sens. Symp. (IGARSS), Jul. 2016, pp. 945–948.
+[19] F. Tu, S. Yin, P. Ouyang, S. Tang, L. Liu, and S. Wei, “Deep convolutional neural network architecture with reconﬁgurable computation patterns,” IEEE Trans. Very Large Scale Integr. (VLSI) Syst., vol. 25, no. 8, pp. 2220–2233, Aug. 2017.
+[20] A. Ardakani, C. Condo, and W. J. Gross, “Fast and efﬁcient convolutional accelerator for edge computing,” IEEE Trans. Comput., vol. 69, no. 1, pp. 138–152, Jan. 2020.
+[21] A. Ardakani, C. Condo, M. Ahmadi, and W. J. Gross, “An architecture to accelerate convolution in deep neural networks,” IEEE Trans. Circuits Syst. I, Reg. Papers, vol. 65, no. 4, pp. 1349–1362, Apr. 2017.
+[22] S. Yin et al., “A 1.06-to-5.09 TOPS/W reconﬁgurable hybrid-neuralnetwork processor for deep learning applications,” in Proc. Symp. VLSI Circuits, Jun. 2017, pp. C26–C27.
+[23] Y.-H. Chen, T. Krishna, J. S. Emer, and V. Sze, “Eyeriss: An energyefﬁcient reconﬁgurable accelerator for deep convolutional neural networks,” IEEE J. Solid-State Circuits, vol. 52, no. 1, pp. 127–138, Jan. 2017, doi: 10.1109/JSSC.2016.2616357.
+[24] B. Moons, R. Uytterhoeven, W. Dehaene, and M. Verhelst, “Envision: A 0.26-to-10 TOPS/W subword-parallel dynamic-voltage-accuracyfrequency-scalable convolutional neural network processor in 28 nm FDSOI,” in IEEE Int. Solid-State Circuits Conf. (ISSCC) Dig. Tech. Papers, Feb. 2017, pp. 246–247.
+[25] S. Han et al., “EIE: Efﬁcient inference engine on compressed deep neural network,” ACM SIGARCH Comput. Archit. News, vol. 44, no. 3, pp. 243–254, 2016.
+[26] A. Parashar et al., “SCNN: An accelerator for compressed-sparse convolutional neural networks,” ACM SIGARCH Comput. Archit. News, vol. 45, no. 2, pp. 27–40, 2017.
+[27] J. Albericio, P. Judd, T. Hetherington, T. Aamodt, N. E. Jerger, and A. Moshovos, “Cnvlutin: Ineffectual-neuron-free deep neural network computing,” ACM SIGARCH Comput. Archit. News, vol. 44, no. 3, pp. 1–13, 2016.
+[28] Z. Yuan et al., “STICKER: An energy-efﬁcient multi-sparsity compatible accelerator for convolutional neural networks in 65-nm CMOS,” IEEE J. Solid-State Circuits, vol. 55, no. 2, pp. 465–477, Feb. 2020.
+[29] R. Banner, Y. Nahshan, E. Hoffer, and D. Soudry, “Post-training 4-bit quantization of convolution networks for rapid-deployment,” 2018, arXiv:1810.05723. [Online]. Available: http://arxiv.org/abs/1810.05723
+[30] S. Wang, D. Zhou, X. Han, and T. Yoshimura, “Chain-NN: An energyefﬁcient 1D chain architecture for accelerating deep convolutional neural networks,” in Proc. Design, Autom. Test Eur. Conf. Exhib. (DATE), Mar. 2017, pp. 1032–1037.
+[31] J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, “You only look once: Uniﬁed, real-time object detection,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., Jun. 2016, pp. 779–788.
+[32] B. Jacob et al., “Quantization and training of neural networks for efﬁcient integer-arithmetic-only inference,” in Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit., Jun. 2018, pp. 2704–2713.
+[33] K. Che¸in´ski and P. Wawrzynski, “DCT-Conv: Coding ﬁlters in convolutional networks with discrete cosine transform,” in Proc. Int. Joint Conf. Neural Netw. (IJCNN), Jul. 2020, pp. 1–6.
+[34] Z. Liu et al., “DeepN-JPEG: A deep neural network favorable JPEGbased image compression framework,” in Proc. 55th ACM/ESDA/IEEE Design Autom. Conf. (DAC), Jun. 2018, pp. 1–6.
+[35] A. Bochkovskiy, C.-Y. Wang, and H.-Y. Mark Liao, “YOLOv4: Optimal speed and accuracy of object detection,” 2020, arXiv:2004.10934. [Online]. Available: http://arxiv.org/abs/2004.10934
+[36] N. Ahmed, T. Natarajan, and K. R. Rao, “Discrete cosine transform,” IEEE Trans. Comput., vol. C-100, no. 1, pp. 90–93, Jan. 1974.
+[37] G. K. Wallace, “The JPEG still picture compression standard,” Commun. ACM, vol. 34, no. 4, pp. 30–44, Apr. 1991.
+[38] S. Gupta, A. Agrawal, K. Gopalakrishnan, and P. Narayanan, “Deep learning with limited numerical precision,” in Proc. 32nd Int. Conf. Mach. Learn., 2015, pp. 1737–1746.
+[39] R. Krishnamoorthi, “Quantizing deep convolutional networks for efﬁcient inference: A whitepaper,” 2018, arXiv:1806.08342. [Online]. Available: http://arxiv.org/abs/1806.08342
+[40] D. Gong, Y. He, and Z. Cao, “New cost-effective VLSI implementation of a 2-D discrete cosine transform and its inverse,” IEEE Trans. Circuits Syst. Video Technol., vol. 14, no. 4, pp. 405–415, Apr. 2004.
+[41] Pytorch-SSD. Accessed: Feb. 22, 2021. [Online]. Available: https://github.com/qfgaohao/pytorch-ssd
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+
+SHAO et al.: MEMORY-EFFICIENT CNN ACCELERATOR BASED ON INTERLAYER FEATURE MAP COMPRESSION
+
+681
+
+[42] Faster-RCNN-Pytorch. Accessed: Feb. 22, 2021. [Online]. Available: https://github.com/loolzaaa/faster-rcnn-pytorch
+[43] R. H. Dennard, F. H. Gaensslen, V. L. Rideout, E. Bassous, and A. R. LeBlanc, “Design of ion-implanted MOSFET’s with very small physical dimensions,” IEEE J. Solid-State Circuits, vol. SSC-9, no. 5, pp. 256–268, Oct. 1974, doi: 10.1109/JSSC.1974.1050511.
+Zhuang Shao received the B.S. degree in telecommunications engineering from Nanjing University, Nanjing, China, in 2019, where he is currently pursuing the M.S. degree in electrical engineering. His current research interests include designs of machine-learning hardware accelerators and deep neural network compression.
+
+Wei Zhuang received the B.S. and M.S. degrees from Northwestern Polytechnical University (NWPU), Xi’an, China, in 2004 and 2007, respectively. Since April 2007, he has been with the Beijing Microelectronics Technology Institute (BMTI) as a Hardware Architect Research Scientist, designing high-performance processor and SoC. His current research interests include high-performance processor, low-power SoC, and high-performance AI.
+
+Xiaoliang Chen received the B.S. degree in electrical engineering from Tsinghua University, Beijing, China, in 2007, the M.S. degree in computer science from Peking University, Beijing, in 2010, and the Ph.D. degree in computer engineering from the University of California, Irvine, CA, USA, in 2020. Since 2013, he has been with Broadcom Inc., Irvine, developing design ﬂow and methodology for analogand mixed-signal circuits. Since 2020, he has also been a part-time Visiting Scholar with Nanjing University. His current research interests include approximate computing, machine-learning hardware accelerator, and electronic design automation.
+Li Du (Member, IEEE) received the B.S. degree from Southeast University, China, and the Ph.D. degree in electrical engineering from the University of California, Los Angeles. From June 2013 to September 2016, he worked at Qualcomm Inc., designing mixed-signal circuits for cellular communications. From September 2016 to October 2018, he worked with Kneron Inc., as a Hardware Architect Research Scientist, designing high-performance artiﬁcial intelligence (AI) hardware accelerator. After that, he joined XinYun Tech Inc., USA, in charge of high-speed analog circuits design for 100G/400G optical communication. Currently, he is an Associate Professor with the Department of Electrical Science and Engineering, Nanjing University. His research interests include analog sensing circuit design, in-memory computing design, and high-performance AI and GPU architecture.
+Lei Chen received the Ph.D. degree from Northwestern Polytechnical University, Xi’an, China, in 2006. He did his post-doctoral research at China Aerospace Times Electronics Company, Ltd., in 2010. Since 2007, he has been with the Beijing Microelectronics Technology Institute (BMTI), as a Professor, researching high reliability integrated circuits. His current research interests are mainly about radiation hardened integrated circuits and high-performance AI.
+Yuan Du (Member, IEEE) received the B.S. degree (Hons.) from Southeast University (SEU), Nanjing, China, in 2009, and the M.S. and Ph.D. degrees from the Electrical Engineering Department, University of California, Los Angeles (UCLA), in 2012 and 2016, respectively. Since 2019, he has been with Nanjing University, Nanjing, as an Associate Professor. Previously, he worked for Kneron Corporation, San Diego, CA, USA (a provider of edge AI accelerator ASICs), as a Leading Hardware Architect from 2016 to 2019. He has authored or coauthored more than 30 technical papers in international journals and conferences and holds over ten U.S. patents. His current research interests include designs of machine-learning hardware accelerators, high-speed inter-chip/intra-chip interconnects, and RFICs. He was a recipient of the Microsoft Research Asia Young Fellowship in 2008, the Southeast University Chancellor’s Award in 2009, the Broadcom Young Fellowship in 2015, and the IEEE Circuits and Systems Society Darlington Best Paper Award in 2021.
+
+Huadong Wei received the B.S. degree from the School of Electronic Science and Engineering, Nanjing University, Nanjing, China, in 2019, where he is currently pursuing the M.S. degree. His main research areas are deep learning algorithm and hardware acceleration.
+Chenjia Xie received the B.S. degree in electronics and information engineering from the Huazhong University of Science and Technology, Wuhan, China, in 2020. She is currently pursuing the M.S. degree in integrated circuit engineering. Her current research interests include designs of machine-learning hardware accelerators, compiler migration, and deep neural network compression.
+Zhongfeng Wang (Fellow, IEEE) received the B.E. and M.S. degrees from the Department of Automation, Tsinghua University, Beijing, China, in 1988 and 1990, respectively, and the Ph.D. degree from the University of Minnesota, Minneapolis, in 2000. He has been working with Nanjing University, China, as a Distinguished Professor since 2016. Previously, he worked with Broadcom Corporation, California City, from 2007 to 2016, as a leading VLSI Architect. Prior to that, he worked with Oregon State University and National Semiconductor Corporation. He is a world-recognized expert on low-power high-speed VLSI design for signal processing systems. He has edited one book VLSI and held more than 20 U.S. and China patents. His current research interests are in the area of optimized VLSI design for digital communications and deep learning. He has served as a TPC Member and various chairs for tens of international conferences. He has published over 200 technical papers with multiple best paper awards received from the IEEE technical societies, among which is the VLSI Transactions Best Paper Award of 2007. Moreover, he has contributed signiﬁcantly to the industrial standards. So far, his technical proposals have been adopted by more than 15 international networking standards. In 2015, he was elevated to the fellow of IEEE for his contributions to VLSI design and implementation of FEC coding. In the current record, he has had many papers ranking among top 25 most (annually) downloaded manuscripts in IEEE TRANSACTIONS ON VERY LARGE SCALE INTEGRATION (VLSI) SYSTEMS. In the past, he has served as an Associate Editor for IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—I: REGULAR PAPERS, IEEE TRANSACTIONS ON CIRCUITS AND SYSTEMS—II: EXPRESS BRIEFS, and IEEE TRANSACTIONS ON VERY LARGE SCALE INTEGRATION (VLSI) SYSTEMS for many terms.
+
+Authorized licensed use limited to: KAUST. Downloaded on December 12,2023 at 09:53:58 UTC from IEEE Xplore. Restrictions apply.
+

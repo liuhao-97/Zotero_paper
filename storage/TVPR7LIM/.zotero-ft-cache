@@ -1,0 +1,1002 @@
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+
+Marcel Blöcher
+bloecher.marcel@gmail.com TU Darmstadt, Germany
+Patrick Eugster
+eugstp@usi.ch USI Lugano, Switzerland Purdue University, USA TU Darmstadt, Germany
+ABSTRACT
+The recent trend towards more programmable switching hardware in data centers opens up new possibilities for distributed applications to leverage in-network computing (INC). Literature so far has largely focused on individual application scenarios of INC, leaving aside the problem of coordinating usage of potentially scarce and heterogeneous switch resources among multiple INC scenarios, applications, and users. The traditional model of resource pools of isolated compute containers does not fit an INC-enabled data center.
+This paper describes HIRE, a Holistic INC-aware Resource managEr which allows for server-local and INC resources to be coordinated in a unified manner. HIRE introduces a novel flexible resource (meta-)model to address heterogeneity, resource interchangeability, and non-linear resource requirements, and integrates dependencies between resources and locations in a unified cost model, cast as a min-cost max-flow problem. In absence of prior work, we compare HIRE against variants of state-of-the-art schedulers retrofitted to handle INC requests. Experiments with a workload trace of a 4000 machine cluster show that HIRE makes better use of INC resources by serving 8 − 30% more INC requests, while at the same time reducing network detours by 20%, and reducing tail placement latency by 50%.
+CCS CONCEPTS
+· Networks → Data center networks; · Software and its engineering → Scheduling; · Computer systems organization → Cloud computing.
+Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and the full citation on the first page. Copyrights for components of this work owned by others than the author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior specific permission and/or a fee. Request permissions from permissions@acm.org. ASPLOS ’21, April 19ś23, 2021, Virtual, USA © 2021 Copyright held by the owner/author(s). Publication rights licensed to ACM. ACM ISBN 978-1-4503-8317-2/21/04. . . $15.00 https://doi.org/10.1145/3445814.3446760
+
+Lin Wang
+lin.wang@vu.nl VU Amsterdam, The Netherlands
+TU Darmstadt, Germany
+Max Schmidt
+university.max.schmidt@gmail.com TU Darmstadt, Germany
+
+KEYWORDS
+data center, scheduling, in-network computing, heterogeneity, nonlinear resource usage
+ACM Reference Format: Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt. 2021. Switches for HIRE: Resource Scheduling for Data Center In-Network Computing. In Proceedings of the 26th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS ’21), April 19ś23, 2021, Virtual, USA. ACM, New York, NY, USA, 18 pages. https: //doi.org/10.1145/3445814.3446760
+
+Job 2 GPU
+
+Job 1
+
+Job 2
+
+CPU
+
+MEM
+
+Server
+
+Job 1 Job 2
+BW
+Network
+
+highly heterogeneous
+
+Stages X-bars SRAM
+
+TCAM
+
+locality
+
+sharing across jobs INC Switch dependencies
+
+alternative configurations
+? 16 VMs
+Job 8 VMs + INC A 8 VMs + INC B
+
+Figure 1: DC scheduling problem: (left) traditional scheduling with a focus on server and network bandwidth resources, (right) new challenges in scheduling with in-network computing (INC) resources.
+
+1 INTRODUCTION
+Over the past decades network appliances have become increasingly programmable. Originally benefitting the prototyping, testing, and deployment of more flexible and novel network(-wide) services and protocols (e.g., routing, congestion control), this trend has been more recently exploited for benefitting more specific applications and services. By supporting certain specific computations łin the networkž on the path between data sources and sinks, individual distributed systems concerns like agreement [12, 37] or caching [38, 51], and even high-level application components such as for machine learning [66, 83], can be handled in a much accelerated fashion, ushering in a new era of INC.
+Despite the various use cases [3, 63], one main challenge that has been so far overlooked is that of the co-existence of INC-enabled applications, typically known as łmultitenencyž. Most existing works
+
+268
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+are focused on isolated scenarios, where network appliances are instrumented for benefitting a single application, and evaluations focus on workloads for that application. Recent work has proposed isolation mechanisms and multitenancy support on a single network appliance [32, 78, 86, 87, 90], and investigates when to (re-)deploy a task on an INC switch vs. a server [74], but coordinating the usage of network appliances for INC at the network level remains unaddressed. If INC is indeed to establish itself as a paradigm, it is to be expected that INC-enabled applications, or even just several instances of such applications, will compete over resources of network appliances which are clearly limited.
+Management of resources considering end hosts/servers in data centers (DCs) without taking into account INC is already a nontrivial problem which has been heavily investigated over the past years [6, 9, 14, 23, 34, 59, 75, 77], also considering GPUs and other accelerators [29, 54, 58, 60, 81]. Throwing network appliance resources Ð INC resources for short Ð into the mix adds new challenges and significantly exacerbates existing ones (see Fig. 1): (1) Networking components such as programmable ASICs and NPUs are highly heterogeneous in terms of not only processing power, but also programming models supported [19, 72]. The same INC service exhibits different resource demands when deployed on different switch types [39]. (2) INC resources are relatively scarce, requiring interchangeable resources to be specified for fallback as a new scheduling dimension for INC-enabled jobs. (3) INC-enabled jobs impose more fine-grained locality constraints regarding the underlying network topology, with dependencies between server and network appliances. (4) INC resources exhibit non-linear sharing characteristics as, unlike łcompletež isolation on servers, partial INC resources (e.g., RMT stages) may be reused by multiple tenants or INC service(s) on the same switch [78]. These constraints render existing DC resource management frameworks (RMFs) inapplicable or inefficient, calling for new solutions.
+This paper presents HIRE (Holistic INC-aware Resource managEr), a new RMF supporting INC-enabled applications. HIRE features novel designs aiming at addressing the aforementioned challenges. More specifically, HIRE introduces a novel resource model with which jobs are described by composite requests specifying both server and INC resource demands. The new resource model also allows for expressing scheduling alternatives that will be scheduled mutually exclusively at runtime. HIRE then uses a set of transformation rules to łtranslatež the composite request of every job into a new form called polymorphic request, based on a notion of composite templates capturing different target INC platforms accessible to the RMF. The polymorphic resource request can also be updated quantitatively at a later time to allow for resource request updates in long-lasting deployments.
+HIRE proposes a novel flow-based scheduler to achieve efficient resource allocation leveraging its resource model. Our scheduler features a set of unique designs for the flow network and the cost model. In particular, the flow network incorporates a shadow network in addition to the physical network topology to encode both the server and INC resources in the same network, with locality constraints respected through the propagation of the cost model on the network. In addition, the flow network introduces several types of shortcut edges to support the selection of scheduling alternatives. The cost model takes into account the non-linear resource
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+
+R2P2 Load Balancer
+Web Web Web
+Cache NetCache
+
+SwitchML Aggregator
+Worker Worker Worker
+
+DB DB DB
+
+DB
+
+DB
+
+DB
+
+Coordinator NetChain
+
+Coordinator NetChain
+
+Figure 2: Example applications with potential INC-enabled components highlighted in blue: (left) typical web application [64] and (right) machine learning training [48, 66].
+
+sharing behavior and ensures it is respected in the scheduling process. Despite these new features, our scheduler maintains the same scheduling complexity as other flow-based schedulers.
+In short, this paper makes the following contributions. After summarizing prior efforts on INC-enabled applications (ğ2) and synthesizing the unique set of challenges faced by INC resource scheduling (ğ3.1) we
+(1) present the design of HIRE (ğ3.2), including its novel model of resources and corresponding interfaces for applications to interact with it (ğ4).
+(2) introduce HIRE’s novel scheduler following the flow-based approach and our unique designs for the flow network and the cost model (ğ5).
+(3) evaluate HIRE through large-scale simulations with realworld workload traces (ğ6). In short, compared to retrofitted state-of-the-art schedulers, HIRE makes better use of INC resources by serving 8 − 30% more INC requests, while at the same time reducing network detours by 20%, and reducing tail placement latency by 50-60%.
+ğ7 contrasts with related work. ğ8 draws final conclusions. Details on HIRE’s cost model are given in Appendix A.
+2 BACKGROUND AND MOTIVATION
+This section presents background information on the landscape of INC as well as DC scheduling, and motivates the need of a unified RMF for both INC and server resources.
+In-network computing. Recent advances on programmable data planes have sparked significant interest in (DC) INC [71]. Emerging network hardware like programmable switches and smartNICs with ASICs, FPGAs, and NPUs are becoming increasingly popular. Besides forwarding packet, these devices are capable of performing some logical/arithmetic operations on packets at line rate. Programming languages such as P4 [4] and frameworks like 𝜇P4 [72] and Lyra [19] provide programming abstractions for the network data plane, enabling network devices to be customized for applicationspecific computation.
+Apart from networking tasks like monitoring [2, 31, 41, 57] and congestion control [49], INC has been explored for various scenarios including data aggregation, caching, and coordination/replication (examples shown in Fig. 2), achieving gains on performance [63]
+
+269
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+and/or energy efficiency [74]. In-network data aggregation for instances sets up aggregation overlays on switches to reduce the network traffic for DC jobs (e.g., SQL joins, MapReduce, graph processing, machine learning) that involve partition-aggregate patterns [24, 65, 66]. In-network caching offloads highly-frequent keyvalue pairs to switches to reduce latency in serving queries to these pairs [38, 51, 52]. In-network coordination provides locking or concurrency control services to distributed (storage) systems on switches [11, 12, 37, 46, 84], which have also been discussed thoroughly in the context of state machine replication [42, 47, 92]. Another recent work uses INC for coordinating/routing remote procedure calls [43].
+All these INC services are originally described to run mutually exclusively on a network infrastructure. The management of these INC services on switches is also handled manually or by the network controller. As a result, any co-location of these services on a same switch/network will lead to potential configuration conflicts and especially resource contention. While solutions for running multiple INC services on a single switch have been proposed recently [32, 78, 86, 87, 90], network-global multitenancy support for INC is an open problem.
+DC scheduling. DC scheduling is about assigning compute resources (e.g., CPU, memory) to jobs in a way reaching some set requirements on resource efficiency, task placement latency, and scalability [68]. Both single-resource [23, 59] and multi-resource [8, 22, 25] scheduling have been well studied.
+DC resources are typically shared among multiple applications/frameworks (e.g., Spark, Flink, TensorFlow) [33, 77]. To cope with this sharing, early resource managers like Mesos [33] make resource offers to different computing frameworks in rounds. To reduce task placement latency, modern resource managers including Omega [69] and Hydra [10] follow a shared-state or federated architecture which provides a shared global view of the cluster for multiple computing frameworks to perform task scheduling simultaneously. Resource managers employ a scheduling policy for task allocation where both (a) centralized policies and (b) distributed policies have been studied. (a) typically involve sophisticated scheduling algorithms and are known for achieving high resource efficiency [16, 17, 23, 34, 73, 77]. (b) on the other hand aim to improve scalability by simplifying the scheduler design with distributed randomization techniques [13, 15, 40, 59].
+So far, the network is beyond the scope of DC resource managers ś except for virtual network embedding algorithms used to reserve network bandwidth (only) [1, 30, 62, 82]. Popular DC resource managers are completely agnostic to the status of the network managed by a separate entityÐthe network controllerÐthus being unlikely to support INC resources. No resource models, abstractions, or management frameworks are available to manage INC resources, holistically, i.e., jointly with server resources, for a multitenant DC environment.
+3 CHALLENGES AND SYSTEM DESIGN
+In this section, we first identify the specific challenges to DC scheduling with INC and present our system design.
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+Table 1: How existing schedulers cope with INC challenges. 𝑃 performance heterogeneity, but not late binding of exact task resource demands with respect to a target device; 𝐸 domain specific solution focusing on performance estimates of alternatives; 𝑆 static alternatives, i.e., alternatives specified in the resource request, not induced by the resource manager; 𝐷 single device; 𝐴 few discrete levels or (anti-)affinity constraints, but no built-in support e.g. for requesting a tree or a chain of devices.
+
+Approach
+
+[het] [alt] [loc]
+
+HIRE
+
+✓
+
+✓
+
+✓
+
+Heterogeneity-aware resource managers
+
+Gavel [58]
+
+(✓)𝑃 (✓)𝐸,𝑆
+
+AlloX [44]
+
+(✓)𝑃 (✓)𝐸,𝑆
+
+Gandiva [81]
+
+(✓)𝑃 (✓)𝐸,𝑆
+
+Themis [53]
+
+(✓)𝑃 (✓)𝐸,𝑆 (✓)𝐴
+
+Tetrished [75]
+
+(✓)𝑃 (✓)𝑆 (✓)𝐴
+
+Generic resource managers
+
+Hydra [10]
+
+(✓)𝐴
+
+Omega [69]
+
+(✓)𝐴
+
+Mesos [33]
+
+(✓)𝐴
+
+Yarn [76]
+
+(✓)𝐴
+
+INC switch management 𝜇P4 [72] INC on demand [74]
+
+(✓)𝑆 (✓)𝐷,𝑆
+
+[nol] ✓
+
+3.1 Challenges to DC Scheduling with INC
+Presence of INC resources fundamentally changes DC scheduling, further complicating the scheduling problem in four ways. Tab. 1 summarizes how existing schedulers cope with these.
+Heterogeneity [het]. Existing resource managers consider singleor multi-resources with feature flags [10, 59, 69], and recently serveraccelerators like GPUs [44, 58, 81] with performance heterogeneity. INC resources extend performance heterogeneity: Programmable network appliances are composed of various reconfigurable hardware components, e.g., programmable ASICs, FPGAs, NPUs, in addition to general-purpose CPUs. Several of these components come with limited programming models and interfaces [19, 72]. Programmable network appliances hence exhibit different levels of łprogrammabilityž, in contrast to servers which are expected to support general Turing-complete computations. An INC service may thus be implemented following different programming models targeting different appliances. Changing compilation/program synthesis approach can considerably alter resource requirements and performance characteristics of INC services [19ś21, 39, 72]. Upon service requests the resource manager needs to interact with the toolchain of a potential target INC switch to determine resource demands like reconfigurable match tables (RMT) stages (not statically pre-determinable because of non-linear sharing). This makes the scheduling of heterogeneous resources, discussed more broadly in the light of related work (cf . ğ7), even more complex.
+
+270
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+Alternatives [alt]. Heterogeneity leads to interchangeable resources pending decisions at runtime. Given the scarcity and diversity of INC resources compared to server resources (e.g., the critical resource of on-chip stateful memory is limited to tens of MB on a Tofino switch [38]), one must be prepared for many requests for INC resources to be unsatisfiable within a non-trivial timeframe. Fortunately, INC-enabled applications by definition can also be accomplished without INC resources. For example, a partition/aggregate job can go without INC, but will probably run longer, or need more servers to run in the same timeframe. More generally, an INC-enabled job can be specified by a set of substantially different, interchangeable resource demands with varying performance properties [44]. Such flexibility adds an extra dimension to the scheduling problem: which resource demand to accept for each INC-enabled job at runtime. Existing domain-specific resource managers consider interchangeable resources requiring job runtime estimation [44, 58, 81], single device decisions targeting energy efficiency [74], and time-sliced allocations [72] with pre-specified alternatives ś none considers resource manager-induced alternatives at runtime. Straightforwardly encoding all combinations in existing models yields prohibitive complexity.
+Locality [loc]. Most INC services come with locality constraints concerning the underlying network topology, e.g., sticking to topof-rack (ToR) switches [38] or using a chain/tree of switches [37, 65]. Taking a decision for a specific server or switch strongly impacts the value of all other choices. Furthermore, most benefits in INC scenarios have been shown when INC resources are exploited on communication paths between communicating end points [38, 65]. Adding extra łdetoursž via specific appliances may cancel benefits or even worsen performance. In short, INC services possess more fine-grained locality requirements than those for pure server jobs where locality is typically described simply with a few discrete levels or (anti-)affinity constraints [10, 54, 75]. Harmony [3] also discusses INC and server placement constraints, but is limited to relative placement constraints of switches to pre-allocated servers.
+Non-linearity [nol]. In server-centric RMFs, the underlying assumptions are that all resource requests can be easily made piecemeal, entirely separated from others, and corresponding resources can be easily (de-)commissioned. This may not hold straightforwardly with INC, as the sharing of INC resources often exhibits non-linear behavior [78]. That is, the runtime resource usage of an INC service may depend on a switch’s state: if another tenant is using the switch for the same INC service, some INC runtime resources (e.g., RMT stages [5] in NetCache [38] and HovercRaft [42]) can be shared among tenants. This means that the first tenant to use an INC service on a switch has to consume extra resources for registering the shared runtime resources for the service. Meanwhile, each tenant still consumes other resources (e.g., SRAM for tenant-specific key-value pairs in NetCache) separately. Thus, exact consumption of (scarce) resources depends on co-location of INC services at runtime. Compute resource sharing may induce memory sharing, e.g., RMT can have fixed stage-memory mappings [39]. In general, [nol] may affect multiple resource dimensions.
+These constraints make it hard to adapt existing RMFs and corresponding schedulers to include INC resources.
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+
+Resource Model CompStore
+
+Scheduler
+
+❹
+
+Cost Model
+
+MCMF Solver
+
+❷ ❸ PolyReq
+
+MCMF
+
+Model Transformer
+
+Flow Network Manager
+
+❶
+CompReq
+Jobs
+
+Server Resource Status
+
+Task Schedule
+Network Controller
+
+INC Resource Status
+
+Servers
+
+Network
+
+Figure 3: HIRE system architecture.
+
+3.2 System Design
+Aiming to address all the above challenges, we propose a novel DC scheduler design named HIRE.
+Overview. A high-level overview of the HIRE architecture is shown in Fig. 3. Tenants 1 describe their jobs with HIRE’s APIs and submit each job as a composite resource request (CompReq). A CompReq is a directed graph of composites (see List. 1 for an example). Once a job is submitted, it goes through the model transformer module which 2 transforms the CompReq into a polymorphic resource request (PolyReq) automatically. The HIRE scheduler takes all the PolyReqs as input and 3 generates a flow network embedding all the scheduling constraints and objectives. HIRE then 4 solves an min-cost max-flow (MCMF) problem instance with the flow network and produces the final scheduling decisions. HIRE also supports incremental submissions of jobs. In particular, tenants can submit a CompReq request and indicate its association to a previously submitted one. The scheduler will consider this association and respect the (locality) constraints in scheduling.
+HIRE resource model (ğ4). HIRE features a novel resource model where tenants describe and submit their jobs as CompReqs. A CompReq consists in a set of composites derived from the composite templates (addressing [het]) pre-configured in the composite template store (CompStore). Using HIRE APIs, tenants can specify the configuration for each of the composites in a CompReq, and the way composites for a same job are interconnected ([loc]). Once submitted, CompReqs are transformed into PolyReqs by the model transformer module. A PolyReq considers the different implementation options for the CompReq’s composites and provides more detailed resource demands of the job, incorporating resource alternatives ([alt]) and non-linear resource usage ([nol]).
+HIRE scheduler (ğ5). HIRE includes a scheduler to find the mapping of PolyReqs to physical resources. The scheduling problem differs from the traditional problem chiefly through the alternatives ([alt]) and non-linear resource sharing ([nol]) in the PolyReq. The HIRE scheduler takes all the PolyReqs as input and applies a flow-based scheduling policy. At each scheduling cycle, all newly submitted PolyReqs are aggregated and the scheduler generates a flow network by following a carefully designed cost model defining how to translate current DC resource status, resource demands in PolyReqs, and the scheduling objectives into a flow network with costs on arcs. The challenge is to design a cost model that represents not only the scheduling constraints but also the alternatives
+
+271
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+
+Composite template Implementation
+
+Aggregator SHArP Server
+Coordinator NetChain Server
+
+Cache IncBricks DistCache
+Server
+Default Server
+
+Load Balancer R2P2 Server
+Custom P4 P414 P416
+Server
+
+(a) CompStore
+
+INC-enabled composite Server-based composite
+
+Custom P4 Default (Web)
+Cache
+
+id: c5, template: coordinator, impls: {
+netchain: { p4v: 14, tp: 50MQPS, ft: 2},
+server: { num: 6, cpu: 16, ram: 32GB}}
+
+Default (DB) id: c4,...
+
+Coordinator
+conn: (c4,c5,"all-toone","bidirectional")
+(b) CompReq
+
+id: tgn-c5-netchain, size: 3, topology: chain, resources:{
+rmt-stages: 2 (sharable), sram: 5MB}
+
+“spine” DistCache “leaf” Cache
+
+<chain> Server NetChain
+Coordinator
+
+Network task group
+
+Server task group
+
+(c) PolyReq
+
+Figure 4: HIRE resource model for the web application scenario of Fig. 2 (left): (a) CompStore of HIRE with 6 composite templates, (b) schematic representation of a CompReq, and (c) the PolyReq derived from the CompReq by the model transformer module.
+
+and non-linearity in PolyReq on the flow network. We boil the scheduling problem down to a standard MCMF problem for which HIRE employs an efficient MCMF solver, similar to Firmament [23]. In the evaluation (Fig. 7) we test how the modified flow network impacts MCMF solver speed.
+4 HIRE RESOURCE MODEL
+HIRE introduces a new resource model to unify server and INC resources and address [het] and [alt]. In particular, HIRE introduces the key concept of composite, which is defined as functional unit with a mix of candidate INC and server implementations. HIRE provides composite templates together with their implementation details in the CompStore, which masks complexity caused by [het]. In addition, composites allow tenants to specify implementation alternatives to be scheduled at runtime, addressing the [alt] challenge. For the sake of simplicity, we chose three resource dimensions for INC switches, namely recirculation capacity, RMT stages, and SRAM (cf. ğ6.2) and two dimensions for servers (CPU and memory). Note that this can be configured by the user and HIRE is not thusly limited, e.g., ALUs and crossbar units could be considered.
+4.1 Composite Templates
+The composite template yields the foundation for tenants to construct the different functionalities required by a job. For a target functionality, a composite template provides the APIs for tenants to specify candidate implementations and their requirements. For example, using the coordinator composite template a tenant can specify coordination functionality with either or both of the two candidate implementations: INC-based (e.g., NetChain) and serverbased. Each of the implementations in a composite template provides an API in the form of a configuration map which the tenant can use to specify the required hardware and software properties. For INC-based implementations, the composite template also holds the semantics as well as the performance profiles of the implementation. This way, tenants can specify the properties for an INC-based implementation at a high level (e.g., throughput of 50MQPS in NetChain), and without having to understand the (usually complex) internals of the implementation to configure it properly in a heterogeneous environment ([het]). Server-based implementations, however, allow the tenant to provide a detailed configuration map with specific resource demands.
+
+Composite templates are hosted in the CompStore (see Fig. 4a). In addition to pre-configured composites, tenants can expand default and custom-p4 templates for customized ones.
+4.2 Composite Resource Requests
+Tenants submit jobs in the form of composite resource requests (CompReqs). A CompReq is a directed graph of composites specified using HIRE APIs (see List. 1 for an example). Each composite in the CompReq is derived from a composite template in the CompStore. The directed edges connecting the composites in the CompReq indicate their dependencies and serve as input for setting up the inter-composite routing policy.
+Fig. 4b shows a CompReq with 5 composites for the typical web application shown in Fig. 2a. As an example, the composite c5 (see the code snippet) is derived from the coordinator template in the CompStore and two implementations are specified by the tenant. The implementation netchain is specified with the following configuration map: {p4v :14, tp:50 MQPS,ft:2} which instructs the requirements that the INC nodes for netchain have to support P414, the throughput has to be at least 50MQPS, and the setup should be able to tolerate up to 2 concurrent node failures. In addition, locality constraints (e.g., locality :tor) can also be specified with the configuration map. For the implementation server , a configuration map with detailed resource demands is specified by the tenant as 6 servers (e.g., containers) each equipped with 16 CPU cores and 32GB of RAM. HIRE also allows tenants to specify multiple versions for the same implementation in a composite template by supplying different configuration maps.
+The configuration of inter-composite connectivity between composites łc4ž and łc5ž is also shown in Fig. 4b. Here, the connection type is all of łc4ž to one of łc5ž and is bidirectional. The CompReq could be easily extended to support also bandwidth requirements by annotating the directed edges in the CompReq with bandwidth demands and/or latency constraints, although this is not in focus of this work.
+4.3 Polymorphic Resource Requests
+HIRE transforms each submitted CompReq into a polymorphic resource request (PolyReq) which is more amenable as input for the scheduler. A PolyReq is specified by a set of connected task groups.
+
+272
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+def setupSendCompositeRequest() { val c4 = Composite('c4', CompStore.lookup('Server', properties='{cpu:16, mem:8.5, instances:12}')) val coordi = CompStore.lookup('Coordinator', filterImpl=None, properties='{tp:50MQPS, ft:2}') coordi.impl.foreach(impl => { /* custom modify req. */}) val c5 = Composite('c5', coordi) val composites = c4 :: c5 :: /* ... */ :: Nil val connections = Connect(c4, c5, Connect.Bidi) :: Nil val prio = Priority(requestPriority) ComReq(prio, composites, connections)
+}
+List. 1: API for an application master to send a CompReq.
+Each task group 𝐺 represents a bundle of identical tasks that require the same resources indicated by a demand vector 𝑑ì. The task groups in a PolyReq may have two types ś a server task group 𝐺𝑠 runs on server nodes and a network task group 𝐺𝑛 runs on INC nodes.
+Fig. 4c depicts the PolyReq that is transformed from the CompReq shown in Fig. 4b. The composite coordinator is transformed into two task groups, each for one of the alternative implementations. In some cases, an implementation may be transformed into multiple task groups, such as the DistCache implementation for the cache composite where two task groups łspinež and łleafž are generated. The task group for the implementation netchain (shown in the code snippet) has a size of 3 and is accompanied by the following resource demands: {rmt- stages :2( sharable ), sram :5MB}. The ł sharable ž label after the resource quantity indicates that this resource can be shared among multiple tenants involving the same implementation. This sharing behavior will be taken into account by the HIRE scheduler ([nol]). The topology of this task group is specified as a chain, meaning that all the tasks in this task group will be traversed sequentially. The resource demands of the task group for the implementation server is derived directly from the configuration map of the implementation.
+As the implementations specified in a CompReq for each composite are alternatives to each other, i.e., only one will be actually scheduled at runtime, the corresponding task groups for these implementations in PolyReq are also exclusive to each other. To support this, PolyReq introduces the concept of resource flavor ([alt]), and assigns each task group a flavor vector 𝑓ì. The size of 𝑓ì equals the total number of decision variables required to encode the CompReq, which in most cases is smaller than the total number of task groups. Each element in the flavor vector of a task group represents the relationship of this task group to others and has three possible states: ł0ž (mutually exclusive), ł1ž (concurrent), and łxž (ignorable). All 𝑓ìof a PolyReq are of same length (or padded with łxž entries). For example, in the łcachež composite, the flavor vector for the łspinež task group for the distcache implementation is ⟨xxxx11xxx⟩, meaning that the łleafž task group will have to be scheduled concurrently with łspinež. In contrast, in the łcoordinatorž composite the flavor vector for the task group for the netchain implementation is ⟨xxxxxxx01⟩, and for the server implementation is ⟨xxxxxxx10⟩, meaning that only one of the task groups for the netchain and server implementations in the łcoordinatorž composite will be scheduled. We will explain how the scheduler uses the flavor vector to track mutually exclusive implementations in ğ5.3.
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+Table 2: Notation for HIRE.
+
+Symbol
+𝐽 𝑇 𝑀𝑠 and 𝑀𝑛 𝐺𝑠 and 𝐺𝑛 𝑓ì𝐺
+𝑥ì𝐽 𝑍 𝑑ì𝐺 𝑒ì𝑍 ,𝑀
+𝑎𝑇 ,𝑀 𝑠𝐺 𝑟ì𝑀 𝑞ì𝑍 𝑦𝐽
+
+Description
+Resource model ğ4.3 Job request Task Server and INC node Server and INC task group
+Flavor vector of task group 𝐺 Problem modeling ğ5.1 Active flavor vector of job 𝐽 Task group type
+Resource demand vector of task group 𝐺 Aggregated resource demands of ↩→ task groups of type 𝑍 on 𝑀 Allocation of task 𝑇 on node 𝑀 Flavor selector for task group 𝐺 Available resource vector of node 𝑀 Sharing degree vector of a task group type 𝑍 Scheduling decision for job 𝐽
+
+4.4 Model Transformation
+The CompStore holds information on how to transform a CompReq to a PolyReq, by applying graph transformation rules. This allows HIRE to build more complex topologies for specific implementations of a composite template, and allows to hide INC service specific implementation details from the user ([het]). Our HIRE prototype uses Scala code to describe transformation rules in the CompStore, but we could also use a graph domain specific-language (DSL) like GraphIt [89].
+4.5 Limitations
+HIRE utilizes the information of composite templates for translating resource requests, creating alternatives, and unwrapping resource sharing constraints. To ensure correct deployment profiles of new INC services, especially for all heterogeneous switches of a DC, new INC services must first be added to the CompStore (e.g., by the INC service implementer), before users can use them in a CompReq. We do not consider this to be a limitation of the expressiveness or flexibility of HIRE, rather it leads to a more reliable operation of INC services. New (feature) flags/dimensions of future INC services can be added in a backward-compatible manner, since the HIRE resource model builds on directed graphs with configuration dictionaries for composites and their connections.
+5 HIRE SCHEDULER
+HIRE has multiple scheduling problems to solve: (1) which flavor to take for each of the PolyReq ([alt]), (2) which server takes which server task, and (3) which switch takes which INC task. The decision for each of these problems influences the available options ([nol]) and possible scheduling quality to reach for each other problem ([loc]). Tab. 2 lists the used notations.
+5.1 Problem Modeling
+The scheduling problem can be considered as a variant of the general multi-dimensional bin packing problem [70]. We formalize a
+
+273
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+
+Figure 5: Non-linear resource sharing example.
+
+simplified version of it to highlight the new challenges mentioned
+above. This formalization is not comprehensive, but captures the
+most important factors ([alt], [nol]).
+The scheduling problem concerns determining the flavor of each
+job and mapping the correct task groups in every PolyReq onto
+DC resources, with the goal of maximizing job success rate (and/or
+other goals), while respecting resource capacity constraints. We
+use binary indicator 𝑦𝐽 to represent the scheduling decision for job 𝐽 where 𝑦𝐽 = 1 if 𝐽 is scheduled and 0 otherwise. Assume after scheduling 𝑥ì𝐽 produces the final selected flavor of job 𝐽 . The status 𝑠𝐺 ∈ {0, 1} of task group 𝐺 in the final scheduling decision is given by 𝑠𝐺 = (||𝑓ì𝐺 ∧ 𝑥ì𝐽 ||1 > 0) where 𝑠𝐺 = 1 means 𝐺 is selected and 0 otherwise. Note that the elements with value łxž in 𝑓ì are skipped in the ł∧ž operation since they stand for ignorable states.
+A job is successfully scheduled if all its selected task groups, i.e.,
+those having 𝑠𝐺 = 1 in its PolyReq, are successfully scheduled. This refers to the gang-scheduling problem where we do not allow partial scheduling of a job. We use matrix [𝑎𝑇,𝑀 ] to denote the taskto-node mapping decisions; 𝑎𝑇,𝑀 = 1 indicates task 𝑇 is mapped to node 𝑀 and 𝑎𝑇,𝑀 = 0 otherwise. To model non-linear resource sharing, we assume task groups are categorized into types, and
+tasks in task groups of the same type can share resources on the
+resource dimensions specified with the ł sharable ž flag in the PolyReq. 𝑍 denotes a task group type and 𝑍 (𝐺) the type of task group
+𝐺. Fig. 5 shows an example where all tasks in task groups of type
+𝑍1 share the resources on the second resource dimension while it is the third resource dimension for type 𝑍2. For any 𝑍 , the total number of tasks that are assigned to node 𝑀 is given by
+
+𝑛𝑍,𝑀 = 𝐽 𝐺 ∈𝐽 :𝑍 (𝐺)=𝑍 𝑇 ∈𝐺 𝑦𝐽 𝑠𝐺 𝑎𝑇 ,𝑀 .
+
+(1)
+
+Combined with the ł sharable ž flag, we define a sharing-degree vector 𝑞ì𝑍,𝑀 which has the same size as the resource demand vector. An element in 𝑞ì𝑍,𝑀 is equal to 𝑛𝑍,𝑀 if the corresponding resource dimension is sharable and 1 otherwise. The aggregate amount of
+resources demanded by all tasks from task groups of type 𝑍 on
+node 𝑀 is given by
+
+𝑒ì𝑍,𝑀 = 𝐽 𝐺 ∈𝐽 :𝑍 (𝐺)=𝑍 𝑇 ∈𝐺 𝑦𝐽 𝑠𝐺 𝑎𝑇 ,𝑀𝑑ì𝐺 .
+
+(2)
+
+Our scheduling problem can be characterized as an integer program (IP):
+
+max 𝐽 𝑦𝐽 𝑠.𝑡 .
+
+(3)
+
+𝑍 𝑒ì𝑍,𝑀 ⊘ 𝑞ì𝑍,𝑀 ≤ 𝑟ì𝑀 , ∀𝑀
+
+(4)
+
+𝐺 ∈𝐽 𝑇 ∈𝐺 𝑀 𝑠𝐺 𝑎𝑇 ,𝑀 = 𝑦𝐽 , ∀𝐽
+
+(5)
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+ł⊘ž stands for Hadamard division which is applied elementwise between two vectors. The first constraint guarantees that the resource capacities are respected on all nodes, which also takes into account non-linear sharing behavior. The idea is to divide the total resource consumptions by the sharing degree captured by 𝑞ì𝑍,𝑀 on the sharable resource dimensions for each task group type 𝑍 . The second constraint is a combination of non-linear constraints and ensures that a job is scheduled only if all tasks in all its tasks groups with 𝑠𝐺 = 1 are scheduled. The IP formulation shows that the search space is extremely large. An exact solution is likely to be impractical due to scalability issues, especially when we consider DCs with thousands of servers and INC nodes. Thus we present a heuristic that can achieve high efficiency and scale to large scenarios.
+5.2 Flow-Based Scheduling Approach
+Our heuristic leverages graph theory. In particular, we transform the scheduling problem into a MCMF problem.
+Approach overview. Flow-based scheduling, first introduced with Quincy [34], uses a flow network to take scheduling decisions on servers. In the basic variant (for slot-based scheduling), each task spawns a unitary flow which could either pass by a node corresponding to a server resource, or by an łunscheduledž node before reaching the sink. After applying an MCMF solver, the scheduler extracts for each flow the server resource node (a valid allocation) or the unscheduled node (postponed allocation). When considering multi-dimensional resources (heterogenous tasks), the flow network must ensure that each flow of a task node can only reach servers with matching available resources. Existing approaches (e.g., CoCo [67, ğ7.3]) enforce multi-dimensional resource constraints of servers by assigning each edge from a server to the sink a capacity of one, and by connecting each task node to the flow network so only servers with matching available resources or the unscheduled node are reachable. This way, at most one additional task is allocated on each server during a scheduling attempt. An alternative flow network with vector-based flows could allocate multiple tasks on the same server in one attempt, but solving vector-based MCMF problems is unlikely to become feasible within reasonable time [67, ğC.4.2]. HIRE extends flow-based scheduling with unique features to meet its requirements (ğ3.1) as follows.
+Capturing INC constraints. We propose the following novel designs to handle the following INC constraints.
+Resource locality ([loc]): Both server and INC resources need to be integrated in a single flow network so HIRE can schedule resources jointly. When doing so, we must ensure that no flow of a server task can reach nodes referring to INC resources, and vice versa. HIRE achieves this by having two representations of the DC topology in the flow network, one for server and a shadow one for INC resources. HIRE knows which of the flow network nodes refers to which location in the topology, so it can transfer locality and cost term information from the server to the INC part and vice versa, without letting flows of server nodes pass INC resources. We propose two algorithms for the HIRE cost model to reflect server and INC locality constraints, also jointly (i.e., across the two parts of the flow network).
+
+274
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+
+PolyReq of Fig. 4c
+
++4
+DB G𝑠
+
++6
+Web G𝑠
+
++1
+DistCache Leaf G𝑛
+
++1
+DistCache Spine G𝑛
+
+𝑙 =2
+
+M𝑠
+
+N𝑠
+
+M𝑠
+
+M𝑠
+
+N𝑠
+
+𝑙 =0 𝑙 =1
+
+M𝑠
+
+N𝑠
+
+N𝑠
+
+M𝑠
+
+Materialized
+
+SF
+
+P
+
+𝑙 =1 𝑙 =2
+
+M𝑠
+
+N𝑠
+
+Server
+
+K
+
++1
+
+P4 Server
+
+G𝑠
+
+𝑙 =2
+
+N𝑛
+
+M𝑛
+
+Coord. Server
+
+G𝑠
+
+𝑙 =1
+
+N𝑛
+
+M𝑛
+
+Custom P414
+
+G𝑛
+
+Custom P416
+
+G𝑛
+
+𝑙 =0
+
+N𝑛
+
+M𝑛
+
+N𝑛
+
+M𝑛
+
+𝑙 =2
+
+NetChain
+
+G𝑛
+
+Flavor-Undecided
+
+N𝑛
+𝑙 = 1 INC (Shadow)
+
+Figure 6: HIRE flow network for Fig. 4c. Double edges have capacity of 1. Dashed edges are shortcut edges. Numbers in red are positive supplies. 𝑙 denotes node depth in the topology.
+
+Heterogeneity ([het]), non-linearity ([nol]): INC services not only consume resources of a łmulti-dimensionalž resource vector, but have complex dependencies, e.g., the need of a switch feature. Furthermore, when (de)allocating an INC task on a switch, the number of running INC service instances may change depending on the sharing nature of involved services. HIRE keeps track of these dependencies by propagating status information along the network, so all possible flows in the flow network end in valid allocations. More importantly, the propagated, cached, status information of the flow network allows HIRE to quickly find matching resources for requesting tasks, respecting heterogeneity and non-linearity.
+Resource alternatives ([alt]): Scheduling decisions for resource alternatives require joint consideration of server and INC resources, so that all parts of a flavor take resource availability into account. HIRE resolves this problem by adding a flavor selector node for each corresponding job to the flow network. HIRE connects the task groups belonging to the flavor-undecided part of a job to the job’s flavor, and sets their own supply to 0. The HIRE cost model ensures that each possible flow of the flavor selector considers the joint cost of a flavor, so that a MCMF solver selects the flavor which fits best the current cluster utilization, considering all alternatives of all jobs simultaneously.
+5.3 HIRE Flow Network Structure
+We show how to use the above novelties to build a HIRE flow network. Fig. 6 shows an example for the PolyReq of Fig. 4c.
+Nodes. The flow network holds nodes of following types: one super flavor selector node (S); tasks group nodes (G) including
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+server task groups (G𝑠 ), and network task groups (G𝑛) according to the PolyReqs which are further categorized into flavor-undecided and materialized (with flavors decided) ones; one postponing node (P) for each job; one flavor selector node (F) for each job that has alternatives; DC resource nodes (M) including server resource nodes (M𝑠 ) and INC resource nodes1 (M𝑛); auxiliary nodes (N) for the shadow network (for brevity only half is shown in Fig. 6); one sink node (K).
+Edges. The S node connects to all flavor nodes F in the graph (with edges each of capacity 1). A G node has a connection from F if it belongs to the flavor-undecided part of the job. A G node is also connected to M/N nodes via shortcut edges (dashed lines in the figure). We call them shortcut edges since there can be several of them to encode scheduling preferences. An edge G → M indicates that M contains enough resources to run at least one task in G, while an edge G → N indicates that all resource nodes that can be reached via N can run at least one task in G. An edge G → P allows the flow network to postpone the scheduling of G. All M and N nodes are interconnected following the physical network topology. All resource nodes M and the postponing node P connect to the sink node K.
+Fig. 6 shows an example flow network for the PolyReq of Fig. 4c (this example shows a single job, but HIRE holds all pending jobs and task groups in a single large flow network). In this example, the flavor of 5 task groups is not yet decided, so these task groups belong to the flavor-undecided part of the job. All other task groups of this job with flavors decided (4 task groups) belong to the materialized part. Their supply equals the number of remaining tasks to start. If this example graph shows the whole flow network HIRE is working on in the ongoing scheduling round, HIRE can allocate up to 12 tasks (4+6+1+1) in the materialized part, and up to 1 task allocation in the flavor-undecided part, but in total limited by the number of available resource nodes (M𝑛 and M𝑠 ) for serving tasks (resource nodes have edges of capacity 1). In general, HIRE can perform as many decisions in the flavor-undecided part, as jobs take part of the flavor-undecided part, but at most 1 decision per job (the S node connects to all flavor nodes F, each with an edge of capacity of 1).
+Cost model. The HIRE cost model is summarized as follows (for more details please see Appendix A). There are two sources of positive supplies in the HIRE flow network: (1) supply of S is given by the number of F nodes or a customized upper-bound to limit the number of flavor decisions per scheduling round and (2) supply of a materialized G node equals the number of tasks in the task group. The capacity of all edges S → F is set to one since we allow only one flavor decision per job in one scheduling round. All edges M → K also have a capacity of one where only one decision is allowed for each resource node in one round. The costs on edges are assigned as follows. For edges M → K in the server part, the cost is proportional to the node utilization and balance level of resource dimensions computed as the standard deviation of the utilizations of all resource dimensions, while for the INC shadow part, the cost is proportional to the node depth in the topology and the number of active INC services that are already running on
+1Each switch has an N node and if it provides INC resources, an M𝑛 node is attached next to it for the INC part.
+
+275
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+the INC node. For edges F/G → P the cost is proportional to the job queueing time and the number of scheduled tasks of the job. Shortcut edges G → M/N have costs proportional to the utilization and the balance level of the corresponding resource nodes (in the subtree). Job priority and non-linear resource sharing behavior are also encoded in the cost of shortcut edges. The cost for F → G edges is an approximation of the total cost in the corresponding flavor.
+Similarly to CoCo [67], on the server nodes we propagate two numerical vectors of lower and upper bounds of the available resources for the shortcut edge construction. For INC nodes, in addition to the numerical vectors, three bit vectors of size of the number of INC services are used for flagging whether at least one node in its subtree supports the INC service, an INC service is active on all nodes, and an INC service is active on at least one node, respectively. Moreover, each N node maintains a map containing a counter for the running tasks of a task group in the subtree rooted at N; this map is propagated in the flow network via a gossip-like protocol.
+Flow network updates. The flow network is updated upon job arrivals and completions. When jobs arrive, HIRE starts to prepare the next scheduling round by adding or updating the jobs in the flow network. For a new job 𝐽 , HIRE initializes the current selected flavor 𝑥ì𝐽 = ⟨x . . . x⟩ (cf . ğ5.1) and adds the job’s postpone node P to the flow network. For each (new) task group of the job, HIRE compares 𝑓ì𝐺 with 𝑥ì𝐽 and adds a G node either to the flavor-undecided part or to the materialized part of the job. If all decision variables of 𝑓ì (except x) are equal to 𝑥ì, then G belongs to the materialized part. If there is at least one contradiction (0≠1), the task group is not in the job (anymore). In all other cases (𝑥ì has x overlapping with 𝑓ì), G belongs to the flavor-undecided part. Finally, a P node is added for the job and each new task group is connected to P. The edge costs are updated following our cost model. Upon job completions, the flow network is not immediately updated. Instead, a special flag is assigned to the nodes/edges that are affected. The flow network is updated at the beginning of each scheduling round using the flags on nodes/edges.
+When HIRE processes the result of an MCMF instance, allocations of G nodes of the flavor-undecided part trigger updates of the corresponding 𝑥ì, i.e., overwriting x values with 0/1. Before moving to the next scheduling round, HIRE checks all G nodes of the flavor-undecided part (of updated 𝑥ì) to see whether they still belong to the flavor-undecided/materialized part or are not relevant for the job anymore.
+6 EVALUATION
+We use a workload trace of a 4000 machine cluster to run large-scale experiments to address following questions:
+RQ1 How successful is HIRE at fulfilling INC requests as overall demands for INC increase (ğ6.3)?
+RQ2 How well does HIRE handle resource sharing and INC server locality dependencies (ğ6.4)?
+RQ3 What is the impact of INC resource heterogeneity on the scheduling problem (ğ6.5)?
+RQ4 How well does HIRE handle resource contention to improve on tail placement latency (ğ6.6)?
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+6.1 Retrofitting Existing Schedulers
+All experiments compare HIRE against retrofitted variants of four existing schedulers, namely Kubernetes (K8), Yarn, Sparrow and CoCo (Firmament). In summary, the limitations of the retrofitted schedulers in the face of INC challenges are mitigated as follows: (1) cannot handle interchangeable INC resources → transform requests with alternatives beforehand by creating two variants for each job; (2) cannot suitably capture topological constraints → ignore topologies; (3) cannot track actual resource reuse among co-located INC services → ignore sharing, i.e., INC services do not benefit from reusing resources; (4) no runtime dependency support → substitute retrofitted scheduler’s own device list with our simulator API that filters for feasible nodes, i.e., borrowing semantics from HIRE. More detailed, for these baselines, we treat switches like a distinct group of servers: when a baseline policy wants to iterate over all possible switches for a specific INC service, the simulator returns only those machines (switches) matching resource constraints, INC compatibility, and INC multiplexing constraints. Each baseline runs each experiment with two modes for handling job alternatives (INC vs. server): concurrent submits all INC-enabled jobs simultaneously as a server-only and a strict INC job variant, and withdraws the job counterpart on the first allocation that does not fit both variants; timeout submits only the INC variant of each job, but submits the server fallback variant if the INC variant is not served within a timeout (10% of a job’s duration). We implement four baselines:
+Yarn++: A queuing-based delay scheduler [85] inspired by the Yarn [76] capacity scheduler with two queues (batch/service jobs) with FIFO ordering using task submission times. Yarn++ uses a 1min timeout in concurrent mode, which reverts a job flavor INC decision to prevent starvation. In addition, Yarn++ applies rack-aware scheduling to improve locality (delays: 50ms re-check; 100ms rack-preference).
+K8++: A queue-based best-effort policy inspired by K8’s [7] default configuration, with two active and one backoff queue(s). Similarly to Omega and Borg [7], (1) K8++ iterates over all machines in a round-robin fashion to find at least 5% of the total machines which are capable to serve the current request. Then, (2) K8++ checks this machine subset to find the best candidate for serving the request and allocates the resources. For the next request, (1) resumes where it stopped before. We use the default multi-dimensional cost model, and a sample size of 10%.
+CoCo++: A flow-based scheduler with a flow network and cost model inspired by CoCo [67] (Firmament [23]), using the same MCMF solver as HIRE. CoCo++ considers INC resources by adding one virtual rack for each INC service, each connecting to all compatible switches at the time of scheduling. CoCo++ cannot handle job alternatives within a scheduling round, thus CoCo++ runs only in timeout mode.
+Sparrow++: A distributed scheduler using a variant of power of two choices [56] with batch sampling and late binding inspired by Sparrow [59]. For each pending job with some unscheduled tasks, Sparrow++ draws 2 ×𝑚 machines randomly for 𝑚 pending tasks and enqueues the tasks to the serviceor batch queue of the machines. Each time a machine (server
+
+276
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+
+Table 3: INC approaches used in evaluation. Last 3 columns give resource demand per switch (before |), and per INC service instance (after |).
+
+Name
+SHArP [24] IncBricks [51] NetCache [38] DistCache [52] NetChain [37] Harmonia [92] HovercRaft [42] R2P2 (JBSQ) [43]
+
+|Switches|
+⌈log |𝐺 |⌉ max(3, ⌈log |𝐺 |⌉) max(3, ⌈log |𝐺 |⌉) max(3, ⌈log |𝐺 |⌉) max(3, 3|𝐺 |/103) ⌈|𝐺 |/9000⌉ ⌈|𝐺 |/9000⌉ ⌈|𝐺 |/9000⌉
+
+PolyReq
+Tree Single Single (ToR) cf . Fig. 4c cf . Fig. 4c Single Single Single
+
+Requirements
+SHArP ASIC OF + Accel P414 P414 P414 P414 P414 P414
+
+Res. recirc. cap.
+/ 0 | [0, 40]% 0 | [0, 10]% 0 | [0, 10]% 0 | [0, 10]% 0|0 0 | [0, 10] 0 | [0, 30]%
+
+Stages
+/ 0 | [4, 8] 8 | [0, 8] 8 | [0, 8] 8 | [0, 8] 3 | [0, 3] 18 | [0, 18] 0 | [0, |𝐺 |]
+
+SRAM (MB)
+0 | [1, 8]MB 0 | [3, 12]MB 0 | [6, 12]MB 0 | [6, 12]MB 0 | [6, 12]MB 0 | [768, 2048]KB 0 | [0, 128]KB 0 | [1, 64]KB
+
+Figure 7: HIRE MCMF solver speed (CDF and CCDF) at different ratios of PolyReqs with INC (from no INC to all INC).
+or switch) has enough spare resources, its Sparrow++ agent checks the next task to start locally, via RPCs to a central Sparrow++ instance. We observed very high placement latency (almost starvation), especially for INC PolyReqs, when switches hit their resource limit, and for small task groups (leading to very few machine samples). Sparrow++ mitigates this issue by using a re-check timer, which kicks in for every PolyReq and checks whether its number of samples is below a threshold. If so, Sparrow++ adds another round of samples. We observed stable results for a re-check timer of 200ms and a 50% threshold.
+6.2 Methodology
+Due to the lack of a multi-tenant/shared data center testbed for INC, we perform large scale simulations. We built a cluster scheduling simulator (13K lines of Scala code) similar to that of Omega [69], but with support for the HIRE components shown in Fig. 3, INC resources, and multi-path network topologies. The source code of the simulator with all schedulers is publicly available at GitHub2 (cf . Appendix B). Each experiment Ð characterized by ⟨plugged scheduler, target ratio 𝜇 of jobs requesting INC resources, INC heterogeneity (yes/no)⟩ Ð runs with three seeds; we report the following metrics:
+Satisfied INC jobs: Ratio of PolyReqs with INC getting scheduled with INC (Figs. 8a and 8f). For HIRE we also report ratio of scheduled INC task groups (Figs. 8b and 8g).
+2 https://github.com/mblo/hire- cluster- simulator
+
+Switch detours: Number of additional levels in the switch topology required to cover all involved servers with the set of involved switches for a job (Figs. 8c and 8h).
+Switch load: Amount of resources per dimension allocated among all switches, measured in a time interval for the whole simulation time (Figs. 8d and 8i).
+Placement latency: Time between a task group of a PolyReq arrives until all its tasks start processing on machines.
+We replay 36 hours of a public production workload trace from a 4000 machine Alibaba cluster [28], which contains jobs of two priority classes. To best fit the 4000 servers we use a fat tree topology with 𝑘 = 26, holding 4394 servers and 845 switches. For the switches we define three resource dimensions, namely reserved recirculation capacity, stages (48), and SRAM size (22MB), in order to roughly estimate INC resource demands referring to INC processing overhead, program complexity, and storage, respectively [39].
+We add 9 INC services to the CompStore (listed in Tab. 3) Ð NetChain [37], SHArP [24], IncBricks [51], NetCache [38], DistCache [52], Harmonia [92], HovercRaft [42], and R2P2 [43] Ð and set resource demand ranges (with resources sharing) according to numbers reported and communicated to us by the authors. To discuss the effects of INC heterogeneity (ğ3.1) we run two setups, one with all switches of homogeneous capabilities (supporting all INC services) and one with randomly choosing two compatible INC services per switch. To achieve the target ratio 𝜇 of jobs requesting INC resources, jobs of the trace are selected randomly, and for up to 1/3rd of a selected job’s task groups, any of the INC composites are applied to create a job alternative (adding entries to the alternative field of a request). To capture savings of required servers and reduced processing time of a job using INC, we reduce both by up to 10%. (We chose 10% as an upper bound to keep saving effects as a non-dominant source for performance effects - some INC services exhibit savings like 10𝑥 or higher, depending on usage pattern [37, 43, 92].)
+The schedulers use algorithms of different runtime complexities, hence they have different think times for solving the same scheduling problem. For queue-based schedulers, typical reported numbers [10, 69, 73] are in the range 0.4 − 7.2 ms per allocation. For fair comparison we set each scheduler’s think time to match these numbers for an idle cluster state. For HIRE and CoCo++, we set think time as a function of flow network statistics using numbers
+
+277
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+
+(a) Satisfied INC jobs Homog. INC
+
+(b) ¬alloc. INC TG (c) Switch detours
+
+Homog. INC
+
+Homog. INC
+
+(d) Switch usage, 𝜇 = 1 Homog. INC
+
+(e) Placement latency, 𝜇 = 1 Homog. INC
+
+(f) Satisfied INC jobs Heterog. INC
+
+(g) ¬alloc. INC TG (h) Switch detours
+
+Heterog. INC
+
+Heterog. INC
+
+(i) Switch usage, 𝜇 = 1 Heterog. INC
+
+(j) Placement latency, 𝜇 = 1 Heterog. INC
+
+Figure 8: Scheduling performance as a function of 𝜇 (ratio of jobs requesting INC) for experiments with homogeneous switches (8a-8e) and with heterogeneous switches (8f-8j). The last two plots in each row (8d, 8i, 8e, 8j) focus on 𝜇 = 1.
+
+reported in [23], but we also benchmark HIRE to validate the assumption that it runs at similar speed as [23]. Fig. 7 shows median solver speed, when HIRE runs at different levels 𝜇 (this benchmark runs on an AMD EPYC 7542). The MCMF solver speed is positively affected by increased INC demand ś potentially due to the smaller number of switches vs. number of servers.
+For HIRE, we set parameters of the cost model (cf . Appendix A) as follows: Φpref uses 500𝑚𝑠, 2000𝑚𝑠 for lower/upper. The upper threshold also sets the timeout for preempting a flavor decision, in case of congested resources. Φ𝑤 uses 500𝑚𝑠. HIRE is set to perform up to 250 INC flavor decisions per scheduling round. HIRE and CoCo++ limit the number of requesting task groups in the graph to 800 at any time, by using a backlog of łpostponedž task groups using FIFO with the submission time. This helps to prevent situations where the MCMF solver runs too long (cf . Fig. 7). HIRE and CoCo++ add up to 50 shortcut edges per task group in the graph.
+6.3 Satisfying INC Requests (RQ1)
+The primary goal of HIRE is to serve INC requests. We report the ratio of satisfied INC jobs and run experiments where we increase the overall ratio of jobs with INC demands in Fig. 8a. We find HIRE serves more than 92% of all jobs when demand is highest, about 30% more than the best baseline (K8++ concurrent) 69%. For cases with fewest INC demands (only 5% of all jobs ask for INC resources), the improvement is above 8% for all baselines. To further analyze HIRE’s performance, we let it run with a simplified flavor logic ś decide only once for each job whether to serve the whole PolyReq with INC or without. Even with this simplified logic HIRE achieves better results than all baselines, falling below 11% behind normal HIRE. Fig. 8b shows for the same experiments the ratio of unserved
+
+INC task groups when running HIRE (for better scaling, we only show numbers for HIRE). This metric serves as a test to check whether HIRE achieves a high success rate in Fig. 8a by simply rejecting the majority of each job’s INC part. We note the reported numbers correspond to the success rates in Fig. 8a, hence HIRE does not sacrifice fairness among jobs.
+6.4 Cluster Resource Efficiency (RQ2)
+We gauge HIRE’s ability to use cluster resources efficiently in two ways ś by considering (𝑖) the switch detour metric and (𝑖𝑖) resource load of the switches. (𝑖) tests to what extent the scheduler’s placement decisions affect DC fabric east-west traffic (lower is better). Fig. 8c shows detour values for the experiments of Fig. 8a: HIRE performs best, requiring on average less than 0.6 additional switch levels per job to cover all traffic ś an improvement by at least 24% over all baselines (which serve fewer INC jobs). We also note very high values for Yarn++; this indicates a problem of rack-aware server task placement in combination with locality-unaware INC placement. The results of CoCo++ allow the assumption that the good values for HIRE can be attributed to its cost model and flow network which intertwines server and INC resources. HIRE prefers placement decisions (server and INC) of the same sub-tree in the network topology.
+(𝑖𝑖) Switch resource load in Fig. 8d focuses on the experiments with highest INC demand (𝜇 = 1) and reports the load of all switches over the whole simulation time. We clearly identify SRAM as the bottleneck resource dimension of the experiments. More importantly, HIRE shows lower values for usage of switch stages, all the while serving more INC tasks (and jobs). We attribute this to HIRE’s ability to exploit resource sharing of co-located INC services.
+
+278
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+6.5 Scheduling Under High INC Heterogeneity (RQ3)
+We are particularly interested in understanding the effect of INC resource heterogeneity on scheduling performance. Thus we compare the results with two cluster setups ś with (a) homogeneous switches (Figs. 8a-8e) and (b) heterogeneous switches (Figs. 8f-8j). With (b) HIRE still achieves best results in delivering INC resources, serving 88% of all jobs with INC resources when all jobs ask for INC. The best baselines drop to 57%. Furthermore, we observe that the performance gap to HIRE grows from 11% (a) to 18% (b) when deactivating the flexible flavor logic. Fig. 8g still validates that HIRE serves INC task groups corresponding to the success rate in Fig. 8f. For switch detours (Fig. 8h), we note similar trends but HIRE shows higher values for 𝜇 ≤ 0.5 than in (a). Switch resource load (Fig. 8i) unveils the difficulties of resource packing, but the overall trends remain the same ś HIRE needs less INC resources whilst at the same time serving more jobs with INC.
+6.6 Preventing Resource Contention (RQ4)
+Another side-effect of resource heterogeneity is potential resource contention which may lead to long tail placement latencies. Figs. 8e and 8j show the complementary CDFs of placement latency when 𝜇 = 1. HIRE shows the best tail latency, 50 − 60% shorter than the best baselines in both scenarios. While making more efficient use of INC resources, HIRE schedules 90% of all allocations with latencies < 1𝑠.
+7 RELATED WORK
+DC resource models. Existing DC resource managers (RMs) focus mainly on server resources (e.g., CPU, memory); very few also consider bandwidth reservations between servers [35]. These approaches use either a simple list of requested virtual machine (VM) resources, or a more complex request model based on, e.g., virtual clusters, virtual oversubscribed clusters, tenant application graphs, or virtual data centers. All these resource models focus on server resources and bandwidth demands between a group of VMs. As seen in ğ2, an RM for INC needs to manage not only server resources, but also INC resources, making these models unsuitable. Harmony [3] focuses on intertwining the network controller and the application orchestrator and proposes to extend the tenant application graph [1], to encode relative placement constraints of switches to pre-allocated servers. Harmony does not consider resource alternatives and automatic translation of topologies and resource demands like HIRE does.
+DC RMFs. While various aspects of DC resource management have been explored over the last years (centralized vs. distributed, or prediction-based vs. runtime-agnostic) [35], none of the existing approaches tackle the problem of resource management for application requests including INC. The majority of RMFs focus on the scheduler architecture of server-local resource management [10, 15, 33, 69, 76, 77, 79]. Others focus on scheduling policy design [14, 22, 25ś27, 59, 91]. Quincy [34], Firmament [23], and Aladdin [80] use a network flow model for considering data locality of jobs, which allows to consider shared resources of consecutive jobs. HyperSched focuses on machine learning training workloads
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+and enables the automatic exploration of the optimal tradeoff between hyper-parameter configurations and training deadline guarantees [50]. Decima proposes to use reinforcement learning to generate scheduling decisions from experience [55]. Besides serverlocal resources, some approaches consider the scheduling task as a virtual network embedding problem with the goal of providing bandwidth guarantees [1, 18, 30, 45] between the servers of a job. However, no approach considers the requirements laid out in ğ3 for INC-aware RM.
+GPU scheduling. With widespread adoption of GPUs for accelerating deep learning, a variety of domain-specific schedulers for GPU clusters have been proposed [29, 36, 54, 60, 61, 81, 88]. These intend to replace general-purpose cluster schedulers by exploiting characteristics of deep learning workloads. In response to the challenge of gang scheduling and tradeoff between locality and GPU utilization, several techniques including trading of locality for waiting time and migrating jobs have been developed [36]. Gandiva employs time-slicing and job migration/packing on GPUs for more fine-grained scheduling [81]. Allox discusses the task scheduling problem when CPU and GPU resources are interchangeable [44]. INC scheduling is yet more complex due to high heterogeneity, fine-grained locality, and on-device resource sharing.
+8 CONCLUSIONS
+HIRE provides a resource management solution for data center innetwork computing by introducing (a) a resource model which captures user requests through high-level APIs, transformed automatically into logical requests with resource alternatives specified, and (b) a novel scheduler design tailored for joint scheduling of server and in-network computing resources under resource alternatives. In large scale simulations, HIRE clearly outperforms non-trivial retrofitted variants of existing data center schedulers, demonstrating the need for novel solutions in this space. HIRE does rely on other works for the in-network computing compiling/programming toolchain [19ś21, 39, 72, 74] and methods for combining different in-network computing services [32, 78, 86, 87, 90] on switches. We see a need for further research for a full-fledged integrated solution of HIRE running in a data center with in-network computing ś there is the need for a full implementation of in-network computing resource sharing, with support of partial reconfiguration of runtime re-allocation.
+ACKNOWLEDGEMENTS
+We thank the reviewers and Lizy K John for their feedback. This work has been co-funded by the German Research Foundation (DFG) as part of the projects B2 and C7 in the Collaborative Research Center (CRC) 1053 łMAKIž and DFG grant 392046569 (61761136014 for NSFC), the SNSF grant 200021_192121, ERC grant 617805, and NSF grant 1618923.
+A HIRE COST MODEL
+We use the notation (see Tab. 2) of the main paper in the appendix. Tab. 5 summarizes the notation used in the cost model.
+The cost model of HIRE, together with the flow network, offers the following properties: (1) balancing switch and server utilization, (2) co-locating, if possible, in-network computing (INC) service
+
+279
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+
+Table 4: HIRE cost model uses multi-dimensional cost vectors for each edge as specified in the table. Other edges have 𝜎 = 0. Before sending the graph to the solver, HIRE flattens 𝜎ì as shown in the second last row using a weighted average function into the range [0, 1], and for some edges we add a penalty (last row). ⊘ refers to the element wise division (Hadamard division).
+
+𝜎ì elements Utilization
+Multiplexing Locality Interference Priority
+Flattening Penalty
+
+M𝑠 → K avg(𝑢ì)
+1-stddv(𝑢ì) -
+avg(𝜎ì) -
+
+M𝑛 → K
+avg(𝑢ì)
+1-stddv(𝑢ì) ΦToR Φ ⌊P⌋ -
+avg(𝜎ì) -
+
+G𝑠 → N𝑠 /M𝑠 avg(𝑑ì ⊘ 𝑟ì) stddv(𝑑ì ⊘ 𝑟ì) Φloc 1 Φprio
+avg(𝜎ì) -
+
+G𝑛 → N𝑛/M𝑛 avg(𝑑ì ⊘ 𝑟ì) stddv(𝑑ì ⊘ 𝑟ì) Φloc Φnew Φprio
+avg(𝜎ì) -
+
+G→P
+-
+Φdelay
+avg(𝜎ì) 5
+
+F→G
+Φ𝑥ìˆ -
+avg(𝜎ì) Φpref
+
+F→P
+-
+Φ𝑤
+avg(𝜎ì) 3
+
+S→F -
+-
+1
+
+Table 5: List of notation used in the cost model.
+
+Symbol
+𝐸 |𝐺 | 𝜎𝐸 , 𝜎ì𝐸 Φ𝑖 𝑤𝐽 𝑢ì𝑀 𝜒 𝛾 𝜉 Γ𝑁 ,𝐺 Υ𝑁 ,𝐺
+
+Description Edge in the flow network Number of tasks in task group 𝐺 Cost (𝜎𝐸 ) of edge 𝐸, summarizes 𝜎ì𝐸 Cost function 𝑖 used in Tab. 4 Waiting time of job 𝐽 Utilization vector of node 𝑀 Parameter: Level of detail for shortcut edge Parameter: INC locality gain Parameter: Decay factor for 𝛾 propagation INC locality gain of task group 𝐺 and machine 𝑀 VM locality gain of task group 𝐺 and machine 𝑀
+
+instances of the same INC service to maximize resource sharing benefits and keep the set of active INC services (per switch) small, (3) informed flavor selection where the scheduler always tries to select the łcheapestž flavor with respect to the task counts in task groups and the aggregate flavor costs of tasks in all the task groups belonging to the flavor, and (4) locality-aware scheduling of tasks on machines close to (or covered by the same network topology tree) the running tasks of the same or directly connected task groups.
+HIRE uses a multi-dimensional cost vector 𝜎ì for each edge in the flow network. We further transform 𝜎ì to a scalar cost value 𝜎, so that HIRE can run the min-cost max-flow (MCMF) problem. To this end, we flatten 𝜎ì by applying a weighted sum. The weights can be used to model priorities or other custom policies. Tab. 4 summarizes all cost terms of 𝜎ì, and refers to sub-cost functions Φ specified below.
+Job-independent costs. The first two edge types in Tab. 4, i.e., M𝑠 /M𝑛 → K, are job-independent and evaluate machine resource utilization and balance. Costs are lower for machines with lower utilization, and with higher variation among the load of all resources dimensions. Furthermore, M𝑛 → K considers the network level in the topology and the number of different active INC services, so that it is less attractive to choose a switch for INC that is not close to a server or which combines more different INC services on the same M𝑛. More specifically, we define two cost functions:
+
+Φ⌊P⌋ ś A cost term proportional to the number of active INC services on an M𝑛, normalized to the maximum number of INC services that could run on a particular M𝑛.
+ΦToR ś A cost term inversely proportional to the number of network hops an M𝑛 node is away from its closest M𝑠 node, normalized to the largest possible distance.
+Job-dependent cost. The remaining columns of Tab. 4 are jobdependent edge costs. The first two rows (utilization and multiplexing) define cost terms so that HIRE prefers allocations for which the resource demand matches better the available resources. More specifically, the cost is smaller if the task group uses a similar portion, with respect to current load, in each resource dimension. Furthermore, we define the following cost functions for locality, resource interference, and priority. The high-level goal of these cost functions is to co-locate tasks (Φloc), leverage INC resource sharing (Φnew), and prioritize long waiting task groups (Φdelay).
+Φloc ś For server tasks, HIRE prefers subtrees which already host tasks of the same or a directly connected task group of the same polymorphic resource request (PolyReq). For INC tasks, HIRE prefers switches that are close (in terms of network hops) to other switches involved in the same or connected task group. We combine the two locality preferences so that switches consider servers and vice versa, simply by checking both flow network parts (server and shadow) for the same node in the topology for calculating the cost term. More specifically, we define two locality metrics, Υ (Eq. 6) for the server part of flow network (with M𝑠 and N𝑠 ), and Γ (Alg. 1) for the INC shadow network (with M𝑛 and N𝑛). HIRE takes the weighted average (using task counts) of Υ and Γ and normalizes the value afterwards. There are three cases to consider: (a) For G → N, Φloc checks the two nodes N𝑛, N𝑠 that correspond to the same location in the data center (DC), and returns the combination of norm(Γ𝑁 𝑛,𝐺 ) and Υ𝑁 𝑠,𝐺 , respectively. (b) For G → M𝑛, Φloc simply considers the corresponding N𝑛 to calculate the costs as per (a). (c) For G → M𝑠 , Φloc considers a simplified version of Eq. 6 to evaluate the number of tasks running on M, but considers Γ and Υ of the parent N𝑠 for the connected
+
+280
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+
+Algorithm 1: INC Locality Propagation
+
+1 procedure IncLocProp (𝑁 𝑠𝑡𝑎𝑟𝑡 , 𝐺, 𝛾 )
+
+2
+
+N 𝑣𝑖𝑠𝑖𝑡𝑒𝑑 ← ∅
+
+3 N 𝑣𝑖𝑠𝑖𝑡 ← {𝑁 𝑠𝑡𝑎𝑟𝑡 }
+
+4 while 𝛾 > 0 and N 𝑣𝑖𝑠𝑖𝑡 ≠ ∅ do
+
+5
+
+N𝑛𝑒𝑥𝑡 ← ∅
+
+6
+
+forall 𝑁 ∈ N 𝑣𝑖𝑠𝑖𝑡 \ N 𝑣𝑖𝑠𝑖𝑡𝑒𝑑 do
+
+7
+
+Γ𝑁 ,𝐺 ← Γ𝑁 ,𝐺 + 𝛾
+
+// propagate
+
+8
+
+N 𝑣𝑖𝑠𝑖𝑡𝑒𝑑 ← N 𝑣𝑖𝑠𝑖𝑡𝑒𝑑 ∪ {𝑁 }
+
+9
+
+N𝑛𝑒𝑥𝑡 ← N𝑛𝑒𝑥𝑡 ∪ neighbors(𝑁 )
+
+10
+
+N 𝑣𝑖𝑠𝑖𝑡 ← N𝑛𝑒𝑥𝑡 \ N 𝑣𝑖𝑠𝑖𝑡𝑒𝑑
+
+11
+
+𝛾 ← ⌊𝛾/𝜉⌋
+
+// decay propagation
+
+G𝑠 . Υ is recursively defined:
+
+Υ𝑁
+
+𝑠 1
+
+,𝐺
+
+=
+
+𝑁
+
+𝑠 2
+
+∈𝑐ℎ𝑖𝑙𝑑𝑟
+
+𝑒𝑛
+
+(𝑁
+
+𝑠 1
+
+)
+
+|𝐺
+
+|
+
+not
+
+running
+
+on
+
+𝑁
+
+𝑠 2
+
+|𝐺 |
+
+Υ𝑁 𝑠2,𝐺
+
+|𝑐ℎ𝑖𝑙𝑑
+
+𝑟
+
+𝑒𝑛
+
+(𝑁
+
+𝑠 1
+
+)
+
+|
+
+𝑁
+
+𝑠 2
+
+∈
+
+{𝑀𝑠 }
+
+𝑁
+
+𝑠 2
+
+∈
+
+{𝑁 𝑠
+
+}
+
+(6)
+
+Φnew ś Prefer switches with matching INC service already active, and switches with more active INC services. If a G𝑛
+node uses an INC service that is already active on a switch, return 0, otherwise, 1/(𝛿 + 1) with 𝛿 the number of active
+INC services on a switch divided by the max possible.
+Φpref ś This term adds a penalty cost according to the job’s waiting time, using two configuration parameters for lower and
+upper bound. If waiting time is below the thresholds, Φpref returns 1, if its above, it returns 0, otherwise 3× (−tanh(𝑟𝑎𝑡𝑖𝑜 × 3 − 3)), with 𝑟𝑎𝑡𝑖𝑜 the linearly scaled inverse waiting time
+within the range.
+Φ𝑥ìˆ ś HIRE uses a total cost estimate for each possible flavor, so that when selecting any of the possible task groups, also the
+costs of other tasks groups are considered. Φ𝑥ìˆ depends on G → M/N and 𝑓ì for estimating the overall cost of a flavor. While updating all shortcuts (G → M/N), HIRE updates an
+approximate cost estimate of each of the involved flavors of F as follows. The cheapest shortcut edge G → M/N of each task group multiplied by |𝐺 | gives the total cost estimate for
+𝐺. The cost estimate for a flavor is the sum of all involved 𝐺
+estimates. Φ𝑥ìˆ returns for each flavor a cost proportional to the ratio of the estimated flavor cost term compared to the
+largest flavor cost term.
+Φprio ś Proportional to job priority: 0 (highest), 1 (lowest). Φdelay ś Prefer placement of tasks with longer waiting time
+and with fewer tasks remaining. 𝑤 𝐽 compared to other jobs, considering number of scheduled tasks of the given 𝐺, using 𝑤 𝐽 × 𝑒 |𝐺 | scheduled /|𝐺 | /(max 𝑤 × 𝑒). Φ𝑤 ś Postpone the flavor decision, if there are only very expensive options available. Φ𝑤 uses a threshold and returns 1 if 𝑤 𝐽 is above the threshold, or 0.5 × cos((𝑟𝑎𝑡𝑖𝑜 − 1.0) ×𝜋) + 0.5, with 𝑟𝑎𝑡𝑖𝑜 equals 𝑤 𝐽 divided by the threshold.
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+B ARTIFACT APPENDIX
+B.1 Abstract
+Our artifact consists of three parts. (1) the source code of the HIRE simulator, including the implementations of Yarn++, Sparrow++, K8++, and CoCo++; (2) the runner tool (a Python3 program) that runs the experiments with the configurations presented in the paper and plotting scripts; and (3) Docker configurations to ease the setup.
+Users can reproduce all simulation results (Fig. 8 and Fig. 7). Furthermore, the artifact can be easily extended/modified to benchmark other schedulers, INC configurations, and workloads.
+B.2 Artifact Checklist (Meta-Information)
+• Program: HIRE simulator (discrete event-based simulator in Scala) and tooling (Python3)
+• Compilation: Scala 2.13, Sbt, Python3 • Run-time environment: JVM ≥ 11 (and Python3) • Hardware: A server/workstation ≥ 32GB RAM, x86_64 CPU with
+Linux or MacOS (Windows not tested). We used an AMD EPYC 7542 with 512 GB RAM with Ubuntu 20.04. • Execution: Automated by tooling. • Metrics: All metrics discussed in the paper (placement latency, switch resource load, switch detours, satisfied INC jobs). The simulator supports more metrics. • Experiments: (Deterministic3) discrete-event simulation; parameter sweeps: one out of 9 schedulers, 𝜇 (number of jobs requesting INC) from 5% − 100% (20 configs), with two switch setups, with 3 seeds = in total 1080 experiments • How much disk space required (approx.)?: less than 160GB (Docker 1.7GB, workload trace 1.5GB, experiments ≤150GB, depending on verbosity level) • How much time is needed to prepare workflow (approx.)?: less than 1 hour, mostly automated. • How much time is needed to complete experiments (approx.)?: usually 1-16 hours (up to 48 hours) per experiment. Parallelism recommended. Depends strictly on JVM and CPU performance. (AMD EPYC 7542 with 512 GB RAM finishes all experiments in ∼ 3 weeks). • Publicly available?: Yes. Open-source on Zenodo4 and GitHub5. • Code licenses (if publicly available)?: Apache v2. • Workflow framework used?: Custom tooling. • Archived (provide DOI)?: https://doi.org/10.5281/zenodo.4446702.
+B.3 Description
+B.3.1 How to Access: The artifact (source code, scripts, and instructions) is available on Zenodo4 and on GitHub5.
+The experiments of this paper use a cluster trace which is available on Zenodo4 and Github6 (setup scripts give more details on this).
+B.3.2 Hardware Dependencies: We recommend a x86_64 server with 512GB RAM and 64 cores (for running simulations in parallel). A minimum of 32GB RAM is sufficient for non-parallel simulations.
+B.3.3 Software Dependencies: Automated setup: the setup scripts use Docker on a x86_64 Linux host system (no further dependencies). Manual setup: We used Ubuntu 20.04, Python 3.7.5, Scala 2.13.4, SBT 1.4.4, and OpenJDK GraalVM CE 20.1.0 (build 11.0.7+10-jvmci-20.1-b02).
+3Some results may vary when the parallel MCMF solver is used. MCMF solvers find solutions of same cost but maybe with different flows. Schedulers take the result of the fastest MCMF solver. As a result, some simulations are not strictly deterministic. 4 https://doi.org/10.5281/zenodo.4446702 5 https://github.com/mblo/hire- cluster- simulator 6 https://github.com/alibaba/clusterdata/tree/master/cluster- trace- v2018
+
+281
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+
+B.4 Installation
+Please check the README.md of the artifact for a step-by-step guide. In short, the following steps are required:
+(1) Download this artifact from Zenodo4 or GitHub5. For the traces, either download the pre-compiled version4 or follow the steps described in the README.md and download the traces manually6. (Please note, the simulations do not use the full trace of 48GB)
+(2) Prepare simulator jar For the Docker setup:
+1 docker␣build␣--build-arg␣HOST_USER=$(id␣-u␣-n) ↩→ ␣--build-arg␣HOST_UID=$(id␣-u)␣-t␣asplos21↩→ hire/runner:latest␣.
+Alternatively, without Docker:
+1 #␣dependencies:␣Python3,␣JDK␣11,␣and␣SBT 2 pip3␣install␣-r␣requirements.txt 3 #␣or␣using␣a␣virtual␣environment... 4 #␣python3␣-m␣venv␣./py-env 5 #␣source␣"./py-env/bin/activate" 6 #␣pip3␣install␣-r␣requirements.txt 7 sbt␣assembly␣
+
+1 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire ↩→ /runner␣python3␣./src/main/evaluation/evals ↩→ /evaluate_paper_inc_success.py␣-e␣exp-rerun ↩→ -asplos-hire␣-e␣exp-rerun-asplos-baselines↩→ k8␣-o␣..␣--sweep␣mu-inp
+This example reads experiment data from two folders. The output is relative to the first experiment folder. • To run all plotting scripts of Fig. 8 with these two schedulers (K8++ and HIRE), run
+1 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire ↩→ /runner␣./src/main/evaluation/evals/run↩→ paper-eval.sh␣-e␣exp-rerun-asplos-hire␣-e␣ ↩→ exp-rerun-asplos-baselines-k8␣-o␣..␣--sweep ↩→ ␣mu-inp␣
+B.6 Evaluation and Expected Result
+The following commands run the entire paper evaluation. The Docker setup must be prepare before (cf . ğB.4).
+
+(3) Prepare workload traces (see README.md for details)
+
+1 #␣run␣yarn
+
+B.5 Experiment Workflow
+
+2 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/ ↩→ runner␣./src/main/evaluation/experiments/exp-
+
+The suggested workflow is described in the README.md file of this artifact, linked above. In short, ./src/main/evaluation/experiments/ contains experiment configurations for all experiments showed in the paper. A typical workflow includes:
+(1) Update/create an experiment configuration in ./src/main/evaluation/experiments/. The experiment runner creates a Cartesian product of all possible parameter sweeps (separated by colon) of an experiment, and queues simulations accordingly. For example, seed=0:1:2 and mu-inp=0.05:1.0:0.5 will end up in 9 simulations. You may want to set the number of parallel simulations with śworker XX.
+(2) Check the experiment configuration before starting the simulations using an interactive bash script, keyboard shortcuts are printed.
+
+↩→ asplos-baselines-yarn.sh 3 #␣run␣coco 4 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/
+↩→ runner␣./src/main/evaluation/experiments/exp↩→ asplos-baselines-coco.sh 5 #␣run␣k8 6 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/ ↩→ runner␣./src/main/evaluation/experiments/exp↩→ asplos-baselines-k8.sh 7 #␣run␣sparrow 8 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/ ↩→ runner␣./src/main/evaluation/experiments/exp↩→ asplos-baselines-sparrow.sh
+
+1 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire
+
+9 #␣run␣hire
+
+↩→ /runner␣./src/main/evaluation/experiments/
+
+10 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/
+
+↩→ exp-asplos-baselines-k8.sh␣--dry
+
+↩→ runner␣./src/main/evaluation/experiments/exp-
+
+(3) Run simulations with
+
+↩→ asplos-hire.sh 11 #␣run␣hire␣speed␣benchmark
+
+1 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire ↩→ /runner␣./src/main/evaluation/experiments/ ↩→ exp-asplos-baselines-k8.sh
+
+12 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/ ↩→ runner␣./src/main/evaluation/experiments/exp↩→ asplos-speed-benchmark.sh
+13 #␣create␣plots␣Fig␣6
+
+This will write all data to the output folder specified in the experi-
+
+14 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/
+
+ment script (śoutput XX ).
+
+↩→ runner␣./src/main/evaluation/evals/run-paper-
+
+The experiment runner creates for each simulation configuration a folder structure like ./exp-rerun-asplos-baselines-k8/run-0/, ./exp-rerun-asplos-baselinesk8/run-1/ ... Each simulation folder (./exp-rerun-asplos-baselines-k8/run-0/ ) contains a config.json and a cmd file with the configuration of the simulation, and a stats.zip with csv files. The statistics files (csv) are described in more detail in Statistics.md.
+Once all simulations finished running, all result data must be located in the local directory. /src/main/evaluation/evals/ contains plotting scripts (Python3), each creating multiple plots (PDFs).
+• To run a single plotting scripts, (e.g., Fig. 8a) with results from K8++
+
+↩→ eval.sh␣-e␣exp-rerun-asplos-hire␣-e␣exp-rerun↩→ asplos-baselines-k8␣-e␣exp-rerun-asplos↩→ baselines-sparrow␣-e␣exp-rerun-asplos-baselines↩→ yarn␣-e␣exp-rerun-asplos-baselines-coco␣-o␣..␣-↩→ sweep␣mu-inp␣--ignore␣time-it:shared-resource↩→ mode:useSimpleTwoStateInpServerFlavorOptions 15 #␣create␣plots␣Fig␣7 16 docker␣run␣-it␣-v␣$PWD:/app␣--rm␣asplos21-hire/ ↩→ runner␣python3␣src/main/evaluation/evals/ ↩→ evaluate_paper_solver.py␣-e␣exp-rerun-asplos↩→ hire-speed-benchmark␣-o␣..␣--sweep␣mu-inp
+
+and HIRE run
+
+282
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+B.7 Experiment Customization
+The artifact contains the configurations of all experiments reported in this paper. There are a bunch of parameters and flags for each experiment that modify the behavior of the scheduler, the workload, and the cluster configuration. Additionally, the code is well-documented and written to be easily extensible.
+B.8 Notes
+For a quick evaluation, the artifact contains an experiment configuration (exp-asplos-quick-test.sh) which runs a small subset of the full paper evaluation. The README.md has more information on this.
+B.9 Methodology
+Submission, reviewing and badging methodology:
+• https://www.acm.org/publications/policies/artifact-review-badging • http://cTuning.org/ae/submission-20201122.html • http://cTuning.org/ae/reviewing-20201122.html
+REFERENCES
+[1] Hitesh Ballani, Paolo Costa, Thomas Karagiannis, and Ant Rowstron. 2011. Towards predictable datacenter networks. In ACM SIGCOMM Computer Communication Review (CCR), Vol. 41. 242ś253. https://doi.org/10.1145/2018436.2018465
+[2] Ran Ben Basat, Sivaramakrishnan Ramanathan, Yuliang Li, Gianni Antichi, Minlan Yu, and Michael Mitzenmacher. 2020. PINT: Probabilistic In-band Network Telemetry. In ACM SIGCOMM. ACM, 662ś680. https://doi.org/10.1145/3387514. 3405894
+[3] Theophilus A. Benson. 2019. In-Network Compute: Considered Armed and Dangerous. In ACM Workshop on Hot Topics in Operating Systems (HotOS). New York, NY, USA, 216ś224. https://doi.org/10.1145/3317550.3321436
+[4] Pat Bosshart, Dan Daly, Glen Gibb, Martin Izzard, Nick McKeown, Jennifer Rexford, Cole Schlesinger, Dan Talayco, Amin Vahdat, George Varghese, et al. 2014. P4: Programming protocol-independent packet processors. ACM SIGCOMM Computer Communication Review (CCR) 44, 3 (2014), 87ś95. https://doi.org/10. 1145/2656877.2656890
+[5] Pat Bosshart, Glen Gibb, Hun-Seok Kim, George Varghese, Nick McKeown, Martin Izzard, Fernando Mujica, and Mark Horowitz. 2013. Forwarding metamorphosis: Fast programmable match-action processing in hardware for SDN. In ACM SIGCOMM Computer Communication Review (CCR), Vol. 43. 99ś110. https://doi.org/10.1145/2486001.2486011
+[6] Eric Boutin, Jaliya Ekanayake, Wei Lin, Bing Shi, Jingren Zhou, Zhengping Qian, Ming Wu, and Lidong Zhou. 2014. Apollo: Scalable and Coordinated Scheduling for Cloud-Scale Computing. In USENIX Symposium on Operating Systems Design and Implementation (OSDI). 285ś300.
+[7] Brendan Burns, Brian Grant, David Oppenheimer, Eric Brewer, and John Wilkes. 2016. Borg, Omega, and Kubernetes. Commun. ACM 59, 5 (2016), 50ś57. https: //doi.org/10.1145/2890784
+[8] Mosharaf Chowdhury, Zhenhua Liu, Ali Ghodsi, and Ion Stoica. 2016. HUG: MultiResource Fairness for Correlated and Elastic Demands. In USENIX Symposium on Networked Systems Design and Implementation (NSDI). 407ś424.
+[9] Carlo Curino, Djellel Eddine Difallah, Chris Douglas, Subru Krishnan, Raghu Ramakrishnan, and Sriram Rao. 2014. Reservation-based Scheduling: If You’re Late Don’t Blame Us!. In ACM Symposium on Cloud Computing (SoCC). 2:1ś2:14. https://doi.org/10.1145/2670979.2670981
+[10] Carlo Curino, Subru Krishnan, Konstantinos Karanasos, Sriram Rao, Giovanni M. Fumarola, Botong Huang, Kishore Chaliparambil, Arun Suresh, Young Chen, Solom Heddaya, Roni Burd, Sarvesh Sakalanaga, Chris Douglas, Bill Ramsey, and Raghu Ramakrishnan. 2019. Hydra: a federated resource manager for datacenter scale analytics. In USENIX Symposium on Networked Systems Design and Implementation (NSDI). 177ś192.
+[11] Huynh Tu Dang, Marco Canini, Fernando Pedone, and Robert Soulé. 2016. Paxos made switch-y. ACM SIGCOMM Computer Communication Review (CCR) 46, 1 (2016), 18ś24. https://doi.org/10.1145/2935634.2935638
+[12] Huynh Tu Dang, Daniele Sciascia, Marco Canini, Fernando Pedone, and Robert Soulé. 2015. NetPaxos: Consensus at Network Speed. In ACM Symposium on Software Defined Networking Research (SOSR). https://doi.org/10.1145/2774993. 2774999
+[13] Pamela Delgado, Diego Didona, Florin Dinu, and Willy Zwaenepoel. 2016. Jobaware Scheduling in Eagle: Divide and Stick to Your Probes. In ACM Symposium on Cloud Computing (SoCC). 497ś509. https://doi.org/10.1145/2987550.2987563
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+[14] Pamela Delgado, Diego Didona, Florin Dinu, and Willy Zwaenepoel. 2018. Kairos: Preemptive Data Center Scheduling Without Runtime Estimates. In ACM Symposium on Cloud Computing (SoCC). 135ś148. https://doi.org/10.1145/3267809. 3267838
+[15] Pamela Delgado, Florin Dinu, Anne-Marie Kermarrec, and Willy Zwaenepoel. 2015. Hawk: hybrid datacenter scheduling. In USENIX Annual Technical Conference (ATC). 499ś510.
+[16] Christina Delimitrou and Christos Kozyrakis. 2013. Paragon: QoS-aware scheduling for heterogeneous datacenters. In ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS). 77ś88. https://doi.org/10.1145/2451116.2451125
+[17] Christina Delimitrou and Christos Kozyrakis. 2014. Quasar: resource-efficient and QoS-aware cluster management. In ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS). 127ś144. https://doi.org/10.1145/2541940.2541941
+[18] Carlo Fuerst, Stefan Schmid, Lalith Suresh, and Paolo Costa. 2018. Kraken: Online and Elastic Resource Reservations for Cloud Datacenters. IEEE/ACM Transactions on Networking (ToN) 26, 1 (2018), 422ś435. https://doi.org/10.1109/TNET.2017. 2782006
+[19] Jiaqi Gao, Ennan Zhai, Hongqiang Harry Liu, Rui Miao, Yu Zhou, Bingchuan Tian, Chen Sun, Dennis Cai, Ming Zhang, and Minlan Yu. 2020. Lyra: A Cross-Platform Language and Compiler for Data Plane Programming on Heterogeneous ASICs. In ACM SIGCOMM. 435ś450. https://doi.org/10.1145/3387514.3405879
+[20] Xiangyu Gao, Taegyun Kim, Aatish Kishan Varma, Anirudh Sivaraman, and Srinivas Narayana. 2019. Autogenerating Fast Packet-Processing Code Using Program Synthesis. In ACM Workshop on Hot Topics in Networks (HotNets). 150ś 160. https://doi.org/10.1145/3365609.3365858
+[21] Xiangyu Gao, Taegyun Kim, Michael D. Wong, Divya Raghunathan, Aatish Kishan Varma, Pravein Govindan Kannan, Anirudh Sivaraman, Srinivas Narayana, and Aarti Gupta. 2020. Switch Code Generation Using Program Synthesis. In ACM SIGCOMM. 44ś61. https://doi.org/10.1145/3387514.3405852
+[22] Ali Ghodsi, Matei Zaharia, Benjamin Hindman, Andy Konwinski, Scott Shenker, and Ion Stoica. 2011. Dominant Resource Fairness: Fair Allocation of Multiple Resource Types. In USENIX Symposium on Networked Systems Design and Implementation (NSDI). 24ś24.
+[23] Ionel Gog, Malte Schwarzkopf, Adam Gleave, Robert NM Watson, and Steven Hand. 2016. Firmament: fast, centralized cluster scheduling at scale. In USENIX Symposium on Operating Systems Design and Implementation (OSDI). 99.
+[24] Richard L Graham, Devendar Bureddy, Pak Lui, Hal Rosenstock, Gilad Shainer, Gil Bloch, Dror Goldenerg, Mike Dubman, Sasha Kotchubievsky, Vladimir Koushnir, et al. 2016. Scalable hierarchical aggregation protocol (SHArP): a hardware architecture for efficient data reduction. In IEEE International Workshop on Communication Optimizations in HPC (COMHPC). 1ś10. https://doi.org/10.1109/ COMHPC.2016.006
+[25] Robert Grandl, Ganesh Ananthanarayanan, Srikanth Kandula, Sriram Rao, and Aditya Akella. 2014. Multi-Resource Packing for Cluster Schedulers. ACM SIGCOMM Computer Communication Review (CCR) 44, 4 (2014), 455ś466. https: //doi.org/10.1145/2619239.2626334
+[26] Robert Grandl, Mosharaf Chowdhury, Aditya Akella, and Ganesh Ananthanarayanan. 2016. Altruistic Scheduling in Multi-Resource Clusters. In USENIX Symposium on Operating Systems Design and Implementation (OSDI). 65ś80.
+[27] Robert Grandl, Srikanth Kandula, Sriram Rao, Aditya Akella, and Janardhan Kulkarni. 2016. GRAPHENE: Packing and Dependency-Aware Scheduling for Data-Parallel Clusters. In USENIX Symposium on Operating Systems Design and Implementation (OSDI). 81ś97.
+[28] Alibaba Group. 2018. Alibaba Cluster Trace Program 2018. https://github.com/ alibaba/clusterdata/tree/23c0b40.
+[29] Juncheng Gu, Mosharaf Chowdhury, Kang G. Shin, Yibo Zhu, Myeongjae Jeon, Junjie Qian, Hongqiang Liu, and Chuanxiong Guo. 2019. Tiresias: A GPU Cluster Manager for Distributed Deep Learning. In USENIX Symposium on Networked Systems Design and Implementation (NSDI). Boston, MA, 485ś500.
+[30] Chuanxiong Guo, Guohan Lu, Helen J. Wang, Shuang Yang, Chao Kong, Peng Sun, Wenfei Wu, and Yongguang Zhang. 2010. SecondNet: a data center network virtualization architecture with bandwidth guarantees. In ACM Conference on Emerging Networking Experiments and Technology (CoNEXT). 15. https://doi.org/ 10.1145/1921168.1921188
+[31] Arpit Gupta, Rob Harrison, Marco Canini, Nick Feamster, Jennifer Rexford, and Walter Willinger. 2018. Sonata: query-driven streaming network telemetry. In ACM SIGCOMM. 357ś371. https://doi.org/10.1145/3230543.3230555
+[32] David Hancock and Jacobus E. van der Merwe. 2016. HyPer4: Using P4 to Virtualize the Programmable Data Plane. In ACM International on Conference on Emerging Networking EXperiments and Technologies (CoNEXT). 35ś49.
+[33] Benjamin Hindman, Andy Konwinski, Matei Zaharia, Ali Ghodsi, Anthony D Joseph, Randy H Katz, Scott Shenker, and Ion Stoica. 2011. Mesos: A Platform for Fine-Grained Resource Sharing in the Data Center.. In USENIX Symposium on Networked Systems Design and Implementation (NSDI), Vol. 11. 22ś22.
+[34] Michael Isard, Vijayan Prabhakaran, Jon Currey, Udi Wieder, Kunal Talwar, and Andrew Goldberg. 2009. Quincy: fair scheduling for distributed computing
+
+283
+
+Switches for HIRE: Resource Scheduling for Data Center In-Network Computing
+clusters. In ACM Symposium on Operating Systems Principles (SOSP). 261ś276. https://doi.org/10.1145/1629575.1629601 [35] Brendan Jennings and Rolf Stadler. 2014. Resource management in clouds: Survey and research challenges. Journal of Network and Systems Management (2014), 1ś53. https://doi.org/10.1007/s10922-014-9307-7 [36] Myeongjae Jeon, Shivaram Venkataraman, Amar Phanishayee, Junjie Qian, Wencong Xiao, and Fan Yang. 2019. Analysis of Large-Scale Multi-Tenant GPU Clusters for DNN Training Workloads. In USENIX Annual Technical Conference (ATC), Dahlia Malkhi and Dan Tsafrir (Eds.). 947ś960. [37] Xin Jin, Xiaozhou Li, Haoyu Zhang, Nate Foster, Jeongkeun Lee, Robert Soulé, Changhoon Kim, and Ion Stoica. 2018. NetChain: Scale-Free Sub-RTT Coordination. In USENIX Symposium on Networked Systems Design and Implementation (NSDI). 35ś49. [38] Xin Jin, Xiaozhou Li, Haoyu Zhang, Robert Soulé, Jeongkeun Lee, Nate Foster, Changhoon Kim, and Ion Stoica. 2017. NetCache: Balancing Key-Value Stores with Fast In-Network Caching. In ACM Symposium on Operating Systems Principles (SOSP). 121ś136. https://doi.org/10.1145/3132747.3132764 [39] Lavanya Jose, Lisa Yan, George Varghese, and Nick McKeown. 2015. Compiling packet programs to reconfigurable switches. In USENIX Symposium on Networked Systems Design and Implementation (NSDI). 103ś115. [40] Konstantinos Karanasos, Sriram Rao, Carlo Curino, Chris Douglas, Kishore Chaliparambil, Giovanni Matteo Fumarola, Solom Heddaya, Raghu Ramakrishnan, and Sarvesh Sakalanaga. 2015. Mercury: Hybrid Centralized and Distributed Scheduling in Large Shared Clusters. In USENIX Annual Technical Conference (ATC). 485ś497. [41] Changhoon Kim, Parag Bhide, E Doe, H Holbrook, A Ghanwani, D Daly, M Hira, and B Davie. 2016. In-band Network Telemetry (INT) Dataplane Specification. https://p4.org/assets/INT- current- spec.pdf . [42] Marios Kogias and Edouard Bugnion. 2020. HovercRaft: Achieving Scalability and Fault-Tolerance for Microsecond-Scale Datacenter Services. In ACM European Conference on Computer Systems (EuroSys). https://doi.org/10.1145/3342195. 3387545 [43] Marios Kogias, George Prekas, Adrien Ghosn, Jonas Fietz, and Edouard Bugnion. 2019. R2P2: Making RPCs first-class datacenter citizens. In USENIX Annual Technical Conference (ATC). 863ś880. [44] Tan N. Le, Xiao Sun, Mosharaf Chowdhury, and Zhenhua Liu. 2020. AlloX: Compute Allocation in Hybrid Clusters. In ACM European Conference on Computer Systems (EuroSys). 31:1ś31:16. https://doi.org/10.1145/3342195.3387547 [45] Jeongkeun Lee, Myungjin Lee, Lucian Popa, Yoshio Turner, Sujata Banerjee, Puneet Sharma, and Bryan Stephenson. 2013. CloudMirror: Application-Aware Bandwidth Reservations in the Cloud. In USENIX Workshop on Hot Topics in Cloud Computing (HotCloud). [46] Jialin Li, Ellis Michael, and Dan RK Ports. 2017. Eris: Coordination-free consistent transactions using in-network concurrency control. In ACM Symposium on Operating Systems Principles (SOSP). 104ś120. https://doi.org/10.1145/3132747.3132751 [47] Jialin Li, Ellis Michael, Naveen Kr Sharma, Adriana Szekeres, and Dan RK Ports. 2016. Just say NO to paxos overhead: Replacing consensus with network ordering. In USENIX Symposium on Operating Systems Design and Implementation (NSDI). 467ś483. [48] Mu Li, David G. Andersen, Jun Woo Park, Alexander J. Smola, Amr Ahmed, Vanja Josifovski, James Long, Eugene J. Shekita, and Bor-Yiing Su. 2014. Scaling Distributed Machine Learning with the Parameter Server. In USENIX Symposium on Operating Systems Design and Implementation (OSDI). 583ś598. [49] Yuliang Li, Rui Miao, Hongqiang Harry Liu, Yan Zhuang, Fei Feng, Lingbo Tang, Zheng Cao, Ming Zhang, Frank Kelly, Mohammad Alizadeh, and Minlan Yu. 2019. HPCC: high precision congestion control. In ACM SIGCOMM. ACM, 44ś58. https://doi.org/10.1145/3341302.3342085 [50] Richard Liaw, Romil Bhardwaj, Lisa Dunlap, Yitian Zou, Alexey Tumanov, Joseph Gonzalez, and Ion Stoica. 2019. HyperSched: Dynamic Resource Reallocation for Model Development on a Deadline. In ACM Symposium on Cloud Computing (SoCC). https://doi.org/10.1145/3357223.3362719 [51] Ming Liu, Liang Luo, Jacob Nelson, Luis Ceze, Arvind Krishnamurthy, and Kishore Atreya. 2017. IncBricks: Toward In-Network Computation with an In-Network Cache. In ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS). 795ś809. https://doi.org/10.1145/ 3037697.3037731 [52] Zaoxing Liu, Zhihao Bai, Zhenming Liu, Xiaozhou Li, Changhoon Kim, Vladimir Braverman, Xin Jin, and Ion Stoica. 2019. DistCache: Provable Load Balancing for Large-Scale Storage Systems with Distributed Caching. In USENIX Conference on File and Storage Technologies (FAST), Arif Merchant and Hakim Weatherspoon (Eds.). 143ś157. [53] Kshiteej Mahajan, Arjun Balasubramanian, Arjun Singhvi, Shivaram Venkataraman, Aditya Akella, Amar Phanishayee, and Shuchi Chawla. 2020. Themis: Fair and Efficient GPU Cluster Scheduling. In USENIX Symposium on Networked Systems Design and Implementation (NSDI). [54] Kshiteej Mahajan, Arjun Singhvi, Arjun Balasubramanian, Varun Batra, Surya Teja Chavali, Shivaram Venkataraman, Aditya Akella, Amar Phanishayee, and Shuchi Chawla. 2020. Themis: Fair and Efficient GPU Cluster Scheduling for
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+Machine Learning Workloads. In USENIX Symposium on Network Systems Design and Implementation (NSDI). [55] Hongzi Mao, Malte Schwarzkopf, Shaileshh Bojja Venkatakrishnan, Zili Meng, and Mohammad Alizadeh. 2019. Learning scheduling algorithms for data processing clusters. In ACM Special Interest Group on Data Communication (SIGCOMM). 270ś288. https://doi.org/10.1145/3341302.3342080 [56] Michael Mitzenmacher. 2001. The power of two choices in randomized load balancing. IEEE Transactions on Parallel and Distributed Systems 12, 10 (2001), 1094ś1104. https://doi.org/10.1109/71.963420 [57] Srinivas Narayana, Anirudh Sivaraman, Vikram Nathan, Prateesh Goyal, Venkat Arun, Mohammad Alizadeh, Vimalkumar Jeyakumar, and Changhoon Kim. 2017. Language-Directed Hardware Design for Network Performance Monitoring. In ACM SIGCOMM. 85ś98. https://doi.org/10.1145/3098822.3098829 [58] Deepak Narayanan, Keshav Santhanam, Fiodar Kazhamiaka, Amar Phanishayee, and Matei Zaharia. 2020. Heterogeneity-Aware Cluster Scheduling Policies for Deep Learning Workloads. In 14th Symposium on Operating Systems Design and Implementation (OSDI). USENIX Association, 481ś498. [59] Kay Ousterhout, Patrick Wendell, Matei Zaharia, and Ion Stoica. 2013. Sparrow: distributed, low latency scheduling. In ACM Symposium on Operating Systems Principles (SOSP). 69ś84. https://doi.org/10.1145/2517349.2522716 [60] Yanghua Peng, Yixin Bao, Yangrui Chen, Chuan Wu, and Chuanxiong Guo. 2018. Optimus: an efficient dynamic resource scheduler for deep learning clusters. In ACM European Conference on Computer Systems (EuroSys), Rui Oliveira, Pascal Felber, and Y. Charlie Hu (Eds.). 3:1ś3:14. https://doi.org/10.1145/3190508.3190517 [61] Yanghua Peng, Yibo Zhu, Yangrui Chen, Yixin Bao, Bairen Yi, Chang Lan, Chuan Wu, and Chuanxiong Guo. 2019. A generic communication scheduler for distributed DNN training acceleration. In ACM Symposium on Operating Systems Principles (SOSP), Tim Brecht and Carey Williamson (Eds.). 16ś29. https://doi.org/10.1145/3341301.3359642 [62] Lucian Popa, Gautam Kumar, Mosharaf Chowdhury, Arvind Krishnamurthy, Sylvia Ratnasamy, and Ion Stoica. 2012. FairCloud: sharing the network in cloud computing. In ACM Conference on Applications, Technologies, Architectures, and Protocols for Computer Communications (SIGCOMM). 187ś198. https://doi.org/ 10.1145/2342356.2342396 [63] Dan R. K. Ports and Jacob Nelson. 2019. When Should The Network Be The Computer?. In ACM Workshop on Hot Topics in Operating Systems (HotOS). 209ś 215. https://doi.org/10.1145/3317550.3321439 [64] Chenhao Qu, Rodrigo N. Calheiros, and Rajkumar Buyya. 2018. Auto-Scaling Web Applications in Clouds: A Taxonomy and Survey. Comput. Surveys 51, 4 (2018), 73:1ś73:33. https://doi.org/10.1145/3148149 [65] Amedeo Sapio, Ibrahim Abdelaziz, Abdulla Aldilaijan, Marco Canini, and Panos Kalnis. 2017. In-Network Computation is a Dumb Idea Whose Time Has Come. In ACM Workshop on Hot Topics in Networks (HotNets). https://doi.org/10.1145/ 3152434.3152461 [66] Amedeo Sapio, Marco Canini, Chen-Yu Ho, Jacob Nelson, Panos Kalnis, Changhoon Kim, Arvind Krishnamurthy, Masoud Moshref, Dan R. K. Ports, and Peter Richtárik. 2019. Scaling Distributed Machine Learning with In-Network Aggregation. CoRR abs/1903.06701 (2019). http://arxiv.org/abs/1903.06701 [67] Malte Schwarzkopf. 2015. Operating system support for warehouse-scale computing. Ph.D. Dissertation. PhD thesis. University of Cambridge Computer Laboratory. https://doi.org/10.17863/CAM.26443 [68] Malte Schwarzkopf and Peter Bailis. 2018. Research for practice: cluster scheduling for datacenters. Commun. ACM 61, 5 (2018), 50ś53. [69] Malte Schwarzkopf, Andy Konwinski, Michael Abd-El-Malek, and John Wilkes. 2013. Omega: flexible, scalable schedulers for large compute clusters. In ACM European Conference on Computer Systems (EuroSys). 351ś364. https://doi.org/10. 1145/2465351.2465386 [70] Michael Sindelar, Ramesh K. Sitaraman, and Prashant J. Shenoy. 2011. Sharingaware algorithms for virtual machine colocation. In ACM Symposium on Parallelism in Algorithms and Architectures (SPAA). 367ś378. https://doi.org/10.1145/ 1989493.1989554 [71] Anirudh Sivaraman, Thomas Mason, Aurojit Panda, Ravi Netravali, and Sai Anirudh Kondaveeti. 2020. Network architecture in the age of programmability. ACM SIGCOMM Computer Communication Review (CCR) 50, 1 (2020). https://doi.org/10.1145/3390251.3390257 [72] Hardik Soni, Myriana Rifai, Praveen Kumar, Ryan Doenges, and Nate Foster. 2020. Composing Dataplane Programs with 𝜇P4. In ACM SIGCOMM. 329ś343. https://doi.org/10.1145/3387514.3405872 [73] Muhammad Tirmazi, Adam Barker, Nan Deng, Md E. Haque, Zhijing Gene Qin, Steven Hand, Mor Harchol-Balter, and John Wilkes. 2020. Borg: The next Generation. In ACM European Conference on Computer Systems (EuroSys). https://doi.org/10.1145/3342195.3387517 [74] Yuta Tokusashi, Huynh Tu Dang, Fernando Pedone, Robert Soulé, and Noa Zilberman. 2019. The Case For In-Network Computing On Demand. In ACM European Conference on Computer Systems (EuroSys). New York, NY, USA. https: //doi.org/10.1145/3302424.3303979
+
+284
+
+ASPLOS ’21, April 19–23, 2021, Virtual, USA
+[75] Alexey Tumanov, Timothy Zhu, Jun Woo Park, Michael A. Kozuch, Mor HarcholBalter, and Gregory R. Ganger. 2016. TetriSched: global rescheduling with adaptive plan-ahead in dynamic heterogeneous clusters. In ACM European Conference on Computer Systems (EuroSys). 35:1ś35:16. https://doi.org/10.1145/2901318. 2901355
+[76] Vinod Kumar Vavilapalli, Arun C Murthy, Chris Douglas, Sharad Agarwal, Mahadev Konar, Robert Evans, Thomas Graves, Jason Lowe, Hitesh Shah, Siddharth Seth, et al. 2013. Apache hadoop yarn: Yet another resource negotiator. In ACM Symposium on Cloud Computing (SoCC). 5. https://doi.org/10.1145/2523616. 2523633
+[77] Abhishek Verma, Luis Pedrosa, Madhukar Korupolu, David Oppenheimer, Eric Tune, and John Wilkes. 2015. Large-scale cluster management at Google with Borg. In ACM European Conference on Computer Systems (EuroSYs). 18. https: //doi.org/10.1145/2741948.2741964
+[78] Tao Wang, Hang Zhu, Fabian Ruffy, Xin Jin, Anirudh Sivaraman, Dan R. K. Ports, and Aurojit Panda. 2020. Multitenancy for Fast and Programmable Networks in the Cloud. In USENIX Symposium on Hot Topics in Cloud Computing (HotCloud).
+[79] Zhijun Wang, Huiyang Li, Zhongwei Li, Xiaocui Sun, Jia Rao, Hao Che, and Hong Jiang. 2019. Pigeon: An Effective Distributed, Hierarchical Datacenter Job Scheduler. In ACM Symposium on Cloud Computing (SoCC). New York, NY, USA, 246ś258. https://doi.org/10.1145/3357223.3362728
+[80] Heng Wu, Wenbo Zhang, Yuanjia Xu, Hao Xiang, Tao Huang, Haiyang Ding, and Zheng Zhang. 2019. Aladdin: Optimized Maximum Flow Management for Shared Production Clusters. In IEEE International Parallel and Distributed Processing Symposium (IPDPS). 696ś707. https://doi.org/10.1109/IPDPS.2019.00078
+[81] Wencong Xiao, Romil Bhardwaj, Ramachandran Ramjee, Muthian Sivathanu, Nipun Kwatra, Zhenhua Han, Pratyush Patel, Xuan Peng, Hanyu Zhao, Quanlu Zhang, Fan Yang, and Lidong Zhou. 2018. Gandiva: Introspective Cluster Scheduling for Deep Learning. In USENIX Symposium on Operating Systems Design and Implementation (OSDI), Andrea C. Arpaci-Dusseau and Geoff Voelker (Eds.). 595ś610.
+[82] Di Xie, Ning Ding, Y. Charlie Hu, and Ramana Rao Kompella. 2012. The only constant is change: incorporating time-varying network reservations in data centers. In ACM Conference on Applications, Technologies, Architectures, and Protocols for Computer Communications (SIGCOMM). 199ś210. https: //doi.org/10.1145/2342356.2342397
+
+Marcel Blöcher, Lin Wang, Patrick Eugster, and Max Schmidt
+[83] Zhaoqi Xiong and Noa Zilberman. 2019. Do Switches Dream of Machine Learning? Toward In-Network Classification. In ACM Workshop on Hot Topics in Networks (HotNets). 25ś33. https://doi.org/10.1145/3365609.3365864
+[84] Zhuolong Yu, Yiwen Zhang, Vladimir Braverman, Mosharaf Chowdhury, and Xin Jin. 2020. NetLock: Fast, Centralized Lock Management Using Programmable Switches. In ACM SIGCOMM. 126ś138. https://doi.org/10.1145/3387514.3405857
+[85] Matei Zaharia, Khaled Elmeleegy, Dhruba Borthakur, Scott Shenker, Joydeep Sen Sarma, and Ion Stoica. 2010. Delay Scheduling: A Simple Technique for Achieving Locality and Fairness in Cluster Scheduling. In Proceedings of the 5th European conference on Computer systems (EuroSys). https://doi.org/10.1145/1755913.1755940
+[86] Cheng Zhang, Jun Bi, Yu Zhou, Abdul Basit Dogar, and Jianping Wu. 2017. HyperV: A high performance hypervisor for virtualization of the programmable data plane. In IEEE International Conference on Computer Communication and Networks (ICCCN). 1ś9. https://doi.org/10.1109/ICCCN.2017.8038396
+[87] Cheng Zhang, Jun Bi, Yu Zhou, and Jianping Wu. 2019. HyperVDP: HighPerformance Virtualization of the Programmable Data Plane. IEEE Journal on Selected Areas in Communications 37, 3 (2019), 556ś569. https://doi.org/10.1109/ JSAC.2019.2894308
+[88] Haoyu Zhang, Logan Stafman, Andrew Or, and Michael J. Freedman. 2017. SLAQ: quality-driven scheduling for distributed machine learning. In ACM Symposium on Cloud Computing (SoCC). ACM, 390ś404. https://doi.org/10.1145/3127479. 3127490
+[89] Yunming Zhang, Mengjiao Yang, Riyadh Baghdadi, Shoaib Kamil, Julian Shun, and Saman P. Amarasinghe. 2018. GraphIt: a high-performance graph DSL. Proceedings of the ACM on Programming Languages 2 (2018), 121:1ś121:30. https: //doi.org/10.1145/3276491
+[90] Peng Zheng, Theophilus Benson, and Chengchen Hu. 2018. P4Visor: lightweight virtualization and composition primitives for building and testing modular programs. In ACM International Conference on emerging Networking EXperiments and Technologies (CoNEXT). 98ś111. https://doi.org/10.1145/3281411.3281436
+[91] Wei Zhou, K Preston White, and Hongfeng Yu. 2019. Improving Short Job Latency Performance in Hybrid Job Schedulers with Dice. In International Conference on Parallel Processing (ICPP). 56. https://doi.org/10.1145/3337821.3337851
+[92] Hang Zhu, Zhihao Bai, Jialin Li, Ellis Michael, Dan RK Ports, Ion Stoica, and Xin Jin. 2019. Harmonia: Near-linear scalability for replicated storage with innetwork conflict detection. Proceedings of the VLDB Endowment 13, 3 (2019), 376ś389. https://doi.org/10.14778/3368289.3368301
+
+285
+

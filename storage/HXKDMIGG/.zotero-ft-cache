@@ -1,0 +1,666 @@
+Optimising Resource Management for Embedded Machine Learning
+Lei Xun, Long Tran-Thanh, Bashir M Al-Hashimi, Geoff V. Merrett School of Electronics and Computer Science University of Southampton Southampton, UK {lx2u16, ltt08r, bmah, gvm}@ecs.soton.ac.uk
+
+arXiv:2105.03608v1 [cs.CV] 8 May 2021
+
+Abstract—Machine learning inference is increasingly being executed locally on mobile and embedded platforms, due to the clear advantages in latency, privacy and connectivity. In this paper, we present approaches for online resource management in heterogeneous multi-core systems and show how they can be applied to optimise the performance of machine learning workloads. Performance can be deﬁned using platform-dependent (e.g. speed, energy) and platform-independent (accuracy, conﬁdence) metrics. In particular, we show how a Deep Neural Network (DNN) can be dynamically scalable to trade-off these various performance metrics. Achieving consistent performance when executing on different platforms is necessary yet challenging, due to the different resources provided and their capability, and their time-varying availability when executing alongside other workloads. Managing the interface between available hardware resources (often numerous and heterogeneous in nature), software requirements, and user experience is increasingly complex.
+Index Terms—Embedded Machine Learning, Dynamic Deep Neural Network, Runtime Resource Management
+I. INTRODUCTION
+Deep Neural Networks (DNNs) [1] are widely used in many applications including computer vision [2], [3] and natural language processing [4]. Compared to traditional hand-engineered machine learning algorithms, DNNs have demonstrated near or super-human accuracy.
+The execution of DNNs has two stages: training and inference. At the training stage, DNNs learn the rules to execute speciﬁc tasks from a corresponding dataset. During this process, millions of DNN parameters are adjusted, hence training is usually executed on cloud GPU(s). At the inference stage, the DNN is loaded with pre-trained parameters to execute the tasks, and the parameters are not changed. Inference can be executed on cloud GPU(s), where the data is sent from end-users to the cloud for processing and the inference result is returned. However, there is increasing interest in moving inference to be executed locally on mobile and embedded platforms due to a number of advantages. First, executing DNNs on the device can offer lower latency than executing them in the cloud. This lower latency leads to improved user experience, and/or the ability to meet the strict timing requirements of real-time applications such as self-driving cars [7]. Second, mobile and embedded devices often collect and process personal data; keeping these data locally helps to
+
+DNN model
+
+Platforms
+
+RAM
+
+CPU CPU
+
+CPU CPU
+
+CPU CPU CPU CPU
+DSP
+
+GPU
+
+CPUs of two different types, GPU and DSP
+
+RAM
+
+CPU
+
+GPU
+
+CPU
+
+CPU
+
+CPU
+
+High performance GPU with CPUs
+
+RAM
+
+CPU CPU CPU CPU
+GPU
+
+CPU CPU CPU CPU
+NPU DSP
+
+CPUs of two different types, DSP, GPU and NPU
+
+Application requirements
+
+1 fps Very-high accuracy
+
+25 fps
+
+...
+
+60 fps
+
+High accuracy
+
+Medium accuracy
+
+Fig. 1. DNNs can be deployed on a variety of hardware platforms with different computing resources. At design time, the DNN is compressed using techniques such as static model pruning [5], [6] (see Section III), and then mapped onto different computing resources to meet the performance requirements of the application.
+
+mitigate potential privacy concerns [8]. Finally, in areas with slow, intermittent or non-existent internet connectivity, timely cloud access can be difﬁcult. Performing inference locally allows this issue to be mitigated.
+It is attractive to be able to deploy DNN inference on a variety of platforms with distinct different computing resources, and to meet diverse application requirements (Fig 1). However, the high accuracy of DNNs comes at the cost of high computational requirements. DNNs are often too computationally intensive for resource-constrained platforms like mobile and embedded platforms [5], [9], and this makes their efﬁcient execution demanding and challenging. To efﬁciently execute DNNs on mobile and embedded platforms, a signiﬁcant amount of recent work has focused on specialist hardware accelerator (also known as a Neural Processing Unit (NPU)) design [10]–[12]. Design-time/ofﬂine approaches such as static model pruning [5], [6] have been proposed to compress DNN models according to the application requirements and target hardware. However, while this can be applied ofﬂine to com-
+
+Memory
+
+CPU CPU CPU CPU
+GPU
+
+CPU CPU CPU CPU
+NPU (a) t=0s
+
+Memory
+
+Memory
+
+CPU CPU
+
+CPU CPU
+
+CPU CPU CPU CPU
+
+NPU
+
+GPU
+
+(b) t=5s
+
+Memory
+
+CPU
+
+CPU
+
+CPU
+
+CPU
+
+GPU
+
+CPU CPU CPU CPU
+NPU
+(c) t=15s
+
+CPU CPU
+
+CPU CPU
+
+CPU CPU CPU CPU
+
+GPU
+
+NPU (d) t=25s
+
+DNN 1
+
+DNN 2
+
+VR/AR
+
+Fig. 2. At runtime, the local computing resources available to DNNs may vary considerably due to multiple applications running concurrently.
+
+press the model to approximately the ‘right size’, managing the interface between available hardware resources (often numerous and heterogeneous in nature), software requirements, and user experience all of which are typically intractable at designtime. At runtime, since modern System on Chips (SoCs) typically execute a combination of different and dynamic workloads concurrently, it is challenging to consistently meet inference time/energy budgets because the local computing resources available to the DNN vary considerably (Fig 2). A variety of dynamic DNNs have been proposed to dynamically change the number of active ﬁlters to trade-off accuracy for time/energy reduction [9], [13]. However, these approaches did not explore optimisation opportunities in hardware (e.g. Dynamic Voltage and Frequency Scaling (DVFS) and task mapping).
+In this paper, we motivate the opportunities in online resource management for DNN inference on mobile and embedded platforms (Section II), and explore how state-of-theart approaches are enabling the dynamic performance scaling of DNNs that can be applied (Section III). In particular, we use a case study (Section IV) to show how a Deep Neural Network (DNN) can be dynamically scalable to trade-off these various performance metrics. We then identify the opportunities for runtime resource management in this area, such that the performance trade-offs in both application and device can be explored and managed (Section V).
+II. MOTIVATION FOR ONLINE RESOURCE MANAGEMENT
+Modern mobile and embedded SoCs typically contains multiple heterogeneous computing cores, such as CPUs, GPUs, DSPs, FPGAs, etc. In the last few years, the inclusion of NPU has become a trend to improve the efﬁciency of DNN inference execution. For example, the Huawei Kirin 990 5G [14] contains 8 CPU cores of three different types, a 16-core
+
+GPU and an NPU with 3 cores of two different types. The Apple A13 Bionic [15] contains 6 CPU cores of two different types, a quad-core GPU and an NPU with 8 cores. In addition, dedicated matrix multipliers are attached to the CPU cluster for the acceleration of machine learning workloads.
+It is attractive to be able to deploy DNN applications on a variety of different hardware platforms while consistently meeting pre-deﬁned performance requirements. The performance of inference can be deﬁned using platform-dependent (e.g. speed, energy) and platform-independent (accuracy, conﬁdence) metrics. As shown in Table I, when the same DNN model is deployed across different hardware platforms/cores, the execution time, energy and power consumption of inference vary considerably, but the accuracy remains the same.
+Two main challenges exist at design time and runtime. Different hardware platforms have vastly different computing resources and capabilities, and different applications have different performance requirements. Approaches are therefore needed to adapt DNN models to different hardware accordingly. This can be solved, at design-time (Fig 1), by ‘compressing’ the DNN for target platform. For example, the same DNN might be used uncompressed on one platform with an NPU, while a compressed model (with offering lower accuracy but requiring fewer computations) is deployed on a different platform containing only CPU and GPU cores in order to meet the same execution time and energy consumption requirements.
+While design-time approaches compress a model to a size that should be executable on the target platform, at runtime, the available computing resources may vary considerably due to multiple applications executing concurrently. Fig 2 shows an example of how available computing resources may vary at runtime when different applications are executing:
+• Single DNN [t=0s, Fig 2(a)]: at the beginning, when there is only one DNN running on the platform, the NPU is used along with a CPU for pre-processing (e.g. image resizing). This may be the ‘compressed’ model that was created for the platform at design time.
+• Two DNNs [t=5s, Fig 2(b)]: a second DNN is deployed on the platform. It has higher requirements on the desired classiﬁcation execution time, therefore it is executed on the NPU, and the ﬁrst DNN is migrated to the GPU. Since GPU is typically slower than NPU for machine learning workloads, the ﬁrst DNN is dynamically compressed which requires fewer computations by trading accuracy (see Section III). This makes sure the performance requirements of two DNNs are both met.
+• Two DNNs and a VR/AR application [t=15s, Fig 2(c)]: a VR/AR application is deployed onto the GPU, therefore the ﬁrst DNN is migrated to the big CPU cluster and all four CPU cores are used due to the sheer volume of computations. Shortly after, the temperature of the SoC exceeds thermal limits. Therefore, the ﬁrst DNN is dynamically compressed further and mapped onto a single core CPU in order to meet system thermal budgets.
+
+TABLE I PLATFORM-DEPENDENT & INDEPENDENT DNN PERFORMANCE METRICS
+
+Platform Jetson Nano
+Odroid XU3
+
+Computing cores
+GPU (614MHz) + A57 CPU (921MHz) GPU (921MHz) + A57 CPU (1.43GHz)
+A57 CPU (921MHz) A57 CPU (1.43GHz) A15 CPU (200MHz)
+A15 CPU (1GHz) A15 CPU (1.8GHz) A7 CPU (200MHz) A7 CPU (700MHz) A7 CPU (1.3GHz)
+
+Platform-dependent metrics
+
+Execution time (ms) Power (mW) Energy (mJ)
+
+7.4
+
+1340
+
+9.92
+
+4.93
+
+2500
+
+12.3
+
+69.4
+
+878
+
+60.9
+
+46.9
+
+1490
+
+69.9
+
+1020
+
+326
+
+320
+
+204
+
+846
+
+173
+
+117
+
+2120
+
+248
+
+1780
+
+72.4
+
+129
+
+504
+
+141
+
+71.4
+
+280
+
+329
+
+92.1
+
+Platform-independent metrics Top-1 Accuracy (%)
+71.2
+
+• Application performance requirement is changed [t=25s, Fig 2(d)]: the accuracy requirement of the second DNN is reduced (e.g. by the user), therefore it can be dynamically compressed to a smaller model conﬁguration and offers the spare NPU memory and computing capabilities to the ﬁrst DNN. Two DNNs are dynamically scaled together to a model conﬁguration where they are deployed on the same NPU.
+Existing approaches for efﬁcient execution of DNNs mainly focus on either hardware or software approaches. Although these works expose the optimisation opportunities on both sides, managing the interface between available hardware resources, software requirements, and user experience is not addressed, this identiﬁes the opportunities for runtime resource management in this area.
+III. APPROACHES FOR EFFICIENT EXECUTION OF DNNS
+This section introduces state-of-the-art works on the efﬁcient execution of DNNs from both the hardware and software perspectives. In particular, hardware accelerators for machine learning and static model pruning are widely used to address design time challenges, and dynamic model pruning approaches are used to let DNN consistently meet the performance requirements while running on dynamically available computing resources.
+A. Specialist DNN hardware accelerator
+A signiﬁcant amount of work has been proposed from both academia (e.g. DianNao [10], EIE [12] and Eyeriss v2 [11]) and industry (e.g. Apple A13 Bionic [15] and Huawei Kirin 990 5G [14]).
+In a typical DNN, the most computational intensive operation is matrix multiplication. Therefore, NPUs usually contain dedicated matrix multipliers, and since data movement dominates the energy consumption in DNN computation [16], large on-chip memories are used to reduce off-chip accesses. It is attractive to be able to execute all DNNs on NPU, but not every hardware platform contains an NPU, and multiple DNNs executing concurrently will compete for the limited NPU resources at runtime. Mapping DNNs onto CPUs or GPUs may result in the violation of inference execution time and energy budgets. Therefore, DNN model pruning is also needed.
+
+B. Static Model Pruning
+Weight pruning is a static model compression approach to reduce the number of parameters in a DNN, Han et al. [17] proposed a magnitude-based algorithm, where parameters with small values are pruned. However, this approach leads to unstructured sparse ﬁlters which cannot be accelerated by most hardware [18], except hardware accelerators that are designed speciﬁcally for sparse DNNs [11], [12]. Unlike weight pruning, ﬁlter pruning [19] prunes whole ﬁlters to compress the model. Although this approach has a lower model compression rate compared to weight pruning, it does not generate unstructured ﬁlters, and hence can gain actual acceleration on all hardware platforms.
+Yang et al. [5] use ﬁlter pruning to compress DNNs to a meet pre-deﬁned inference execution time budget on any target hardware platform. This approach offers a trade-off between accuracy and execution time. To achieve consistent performance across different platforms, the DNN is compressed more on platforms with less computing capabilities (i.e. sacriﬁcing more accuracy for a reduction in execution time). For example, the full DNN model can be deployed on an NPU, yet the smaller compressed models can be deployed on GPUs and CPUs to meet the same time budget with less accuracy. This approach generates one DNN for a given performance budget at a pre-deﬁned hardware setting (e.g. computing core and voltage/frequency level).
+This raises a signiﬁcant problem, since modern SoCs typically execute a combination of different dynamic workloads concurrently, and hence the local resources available to the DNN vary considerably at runtime. The performance budgets cannot be met when the pre-deﬁned hardware setting is unavailable at runtime. For example, the computing core may be unavailable because other applications are running on it, or available at a lower voltage/frequency due to other computing cores executing in the same voltage/frequency domain, or ﬁxed power/thermal budgets. Multiple DNNs are needed to cover all hardware settings, which result in signiﬁcant memory storage overhead. Furthermore, the switching activities of these DNNs at runtime may cause signiﬁcant delay and energy consumption [20].
+
+a. Group Convolution
+
+Convolution layer (Conv)
+
+Fully connected layer (FC)
+
+Original DNN
+Input
+
+Output
+
+b. Group-wise incremental training
+
+Untrained Initialization
+
+Training
+
+Trained and Frozen
+
+Step 1
+
+Ignored Step 2
+
+c. Runtime Group Convolution Pruning
+
+Enabled 25% model
+
+Pruned 50% model
+
+G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2
+
+Modified DNN
+
+Step 3
+
+Step 4
+
+75% model
+
+100% model
+
+G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2 G2
+
+Input
+
+Output
+
+Channels
+
+Layers
+
+Initialization: all groups are untrained. Step 1: Train group 1 of all layers, ignore all other groups. Step 2: Train group 2 of all layers while incorporate pretrained group 1, ignore group 3-4. Step 3: Train group 3 of all layers while incorporate pretrained group 1-2, ignore group 4. Step 4: Train group 4 of all layers while incorporate pretrained group 1-3.
+
+Dynamic DNN can switch to 4 different sizes at runtime for the trade-off between platformindependent metrics (accuracy, confidence) and platform-dependent metrics (time and energy) without model retraining
+
+Fig. 3. Dynamic DNN using incremental training and group convolution pruning. The (a) channels of the DNN convolution layer are divided into groups, which are then trained incrementally (b). At runtime, (c) later groups can be pruned for inference time/energy reduction or added back for accuracy recovery without model retraining.
+
+C. Dynamic Model Pruning
+Static model pruning generates one DNN for a given performance budget and hardware setting combination. Multiple DNNs need to be generated to cover all hardware combinations (i.e. core, voltage and frequency) in an SoC. Dynamic Model Pruning (also known as dynamic DNNs) contains multiple DNN conﬁgurations in a single model. These conﬁgurations use a different number of ﬁlters within the same model, hence they are stored within a single model memory footprint and have different sizes, accuracies and computation requirements.
+Dynamic DNNs [9], [13], [21], [22] can be partially executed to consistently meet the performance budget (e.g. time, energy), while adapting to runtime resource varieties on the hardware. For example, smaller DNN conﬁgurations that are less accurate but require less computation are deployed when the computing capabilities of the hardware resources available at runtime are reduced (e.g. at a lower voltage/frequency).
+IV. CASE STUDY: EXPLORING PERFORMANCE TRADE-OFFS WITH DYNAMIC DNNS
+Modern mobile and embedded SoCs are highly efﬁcient because of the use of runtime resource management techniques, such as scheduling task mapping, DPM and DVFS. Although the dynamic DNNs presented above are scalable to tradeoff various performance metrics, they can be combined with task mapping and DVFS to achieve a wider dynamic range of performance trade-off. To illustrate this, we proposed a dynamic DNN that can be scaled with task mapping and DVFS [23]. The DNN is built using incremental training and group convolution pruning, and is shown in Fig 3. The channels of the DNN’s convolution layers are divided into groups (Fig 3 (a)), which are then trained incrementally (Fig 3 (b)). At
+
+runtime, later groups can be pruned for inference time/energy reduction, or added back for accuracy recovery when more computing resources become available. This is all possible at runtime without model retraining (Fig 3 (c)).
+We use a four-increment design to obtain four different DNN conﬁgurations, and refer them as the 25%, 50%, 75% and 100% models. The impact on classiﬁcation accuracy is shown in Fig 4(b). The 25% model uses only one group of DNN parameters; therefore it is the least accurate model but requires the minimum computation. The 100% model is the full model; therefore it is the most accurate and computationally expensive model. The design is validated through empirical measurements on the Odroid XU3 heterogeneous multi-core platform. The DNN is mapped on both Arm A15 and A7 CPU cores, and under 17 and 12 different frequency levels respectively. The results are shown in Fig 4(a). Task mapping, DVFS and the dynamic DNN can be seen as three adjustable knobs which can be adjusted to meet dynamic E, P, t and accuracy budgets/targets at runtime. For example, in Fig 4, for a budget of 400 ms and 100 mJ, a 100% model on the A7 CPU at 900 MHz could offer the highest accuracy and lowest energy consumption. If the budgets change to 200 ms and 150 mJ, then a 75% model on the A15 CPU at 1 GHz becomes the new optimal conﬁguration. In the case of multiple applications executing concurrently, the frequency setting may be sub-optimal due to other applications in the same frequency domain are using that frequency level.
+V. ONLINE RESOURCE MANAGEMENT OF MACHINE LEARNING
+The above approaches offer a number of dynamically selectable operating point in the E, P, t, accuracy space. However,
+
+Energy consumption (mJ)
+
+350
+(a)
+300
+250
+200
+150
+100
+50
+
+A7, 25% model A7, 50% model A7, 75% model A7, 100% model A15, 25% model A15, 50% model A15, 75% model A15, 100% model
+
+Top-1 Accuracy (%)
+
+75
+(b)
+70
+
+71.2 68.8
+
+65
+
+62.7
+
+60 56
+55
+
+0
+
+50
+
+0
+
+200
+
+400
+
+600
+
+800
+
+1000
+
+1200
+
+25% model 50% model 75% model 100% model
+
+Classification time (ms)
+
+Fig. 4. (a) E, t operating points sapce. A Dynamic DNN (different colours show different levels of ‘compression’) is combined with task mapping (different symbols) and DVFS (different points) on the Odroid XU3 platform. (b) Top-1 image classiﬁcation accuracy on 10,000 CIFAR10 validation images. The error bar shows the variance over 10 image classes of CIFAR10.
+
+to meet the opportunities of Fig 2, these approaches need to be integrated with online resource management.
+A variety of online resource management approaches have been proposed, such as DVFS [24], task mapping [25] and power gating [26]. These approaches optimise hardware behaviour to satisfy constraints (e.g. temperature, power); the performance requirements and optimisation opportunities in the application are traditionally not addressed.
+Runtime management (RTM) can be enhanced by using ‘knobs’ and ‘monitors’ of the application and device, which provide interfaces to convey information between RTM, applications and devices. A variety of works have been proposed [27]–[30], which focus on the opportunities in either applications or devices. It is necessary to explore the opportunities on both sides at the same time to address the sheer volume of computation in DNN applications. Bragg et al. [31] proposed the PRiME framework, that abstracts the system into three layers: application, device and RTM; control between them operates through knobs and monitors in the application and hardware devices. In particular, knobs are adjustable parameters in the application (e.g. execution iteration, data precision) and device (e.g. voltage/frequency, core), and monitors offer performance information about the application (e.g. accuracy, frame rate) and device (e.g. power, temperature).
+Fig 5 shows how dynamic DNN, task mapping and DVFS can be combined together alongside an RTM framework such as PRiME. The opportunities for DNN performance trade-off in both hardware and software are managed through knobs and monitors that are controlled by RTM. For example, dynamic DNN (application knob) can be scaled with DVFS and task mapping (device knobs) to meet the DNN performance
+
+DNN 1
+Number of channels/filters,
+etc.
+
+Application knob
+
+DNN 2 DNN 3
+
+Application layer
+
+. . .
+
+Background Task 1
+
+Background Task 2
+
+Application knob
+
+Application monitor
+
+Accuracy, Confidence, Execution time,
+etc.
+
+Kernel, Data type, Execution
+iteration, etc.
+
+Runtime management layer
+
+OS schedular
+
+Mapping
+
+RTM
+
+Application monitor
+
+AR/VR
+Execution time, frame rate, etc.
+
+Device knob
+
+DVFS, DPM, Task mapping,
+etc.
+
+CPU Type1
+
+CPU Type2
+
+Device layer
+
+GPU
+
+FPGA . . .
+
+Device monitor
+
+Temperature, Power, PMCs,
+etc.
+
+DSP
+
+NPU
+
+Fig. 5. Apply state-of-the-art runtime resource management for embedded machine learning. The DNN performance trade-off opportunities in the hardware and software are managed through knobs and monitors controlled by RTM.
+
+requirements (application monitors), and meet any hardware temperature and power constraints (device monitors). In the case of Fig 2 (d), the RTM received new accuracy requirements for the DNNs through the application monitor, and hence RTM changed the size of the DNNs using the application knob, mapping them onto the NPU using the device knob. In addition, system physical limits like temperature and power are monitored using the device monitors, as DVFS could be then applied in order to meet these limits.
+
+VI. CONCLUSIONS
+
+[13] H. Tann, S. Hashemi, R. Bahar, and S. Reda, “Runtime conﬁgurable
+
+deep neural networks for energy-accuracy trade-off,” in International
+
+This paper has presented the challenges of deploying DNNs
+
+Conference on Hardware/Software Codesign and System Synthesis.
+
+on mobile and embedded platforms, at both design time and
+
+ACM, 2016, p. 34.
+
+[14] “Huawei kirin 990 series,” [Online]. Available: https://consumer.huawei.
+
+runtime. At design time, DNNs are deployed on a variety of
+
+com/en/campaign/kirin-990-series/.
+
+hardware platforms with vastly different computing resources [15] J. Cross, “Inside Apple’s A13 Bionic system-on-chip,”
+
+to meet different application requirements. However, at run-
+
+[Online]. Available: https://www.macworld.com/article/3442716/
+
+inside-apples-a13-bionic-system-on-chip.html.
+
+time, it is very challenging to consistently meet performance [16] Y.-H. Chen, J. Emer, and V. Sze, “Eyeriss: A spatial architecture
+
+requirements, since the availability of the local computing
+
+for energy-efﬁcient dataﬂow for convolutional neural networks,” in
+
+resources vary considerably due to other applications execut-
+
+International Symposium on Computer Architecture (ISCA), 2016, pp.
+
+367–379.
+
+ing concurrently. We showed how approaches enabling the [17] S. Han, J. Pool, J. Tran, and W. Dally, “Learning both weights and con-
+
+dynamic performance scaling of DNNs can be applied to
+
+nections for efﬁcient neural network,” in Advances in Neural Information
+
+address these challenges, and proposed how online resource
+
+Processing Systems (NeurIPS), 2015, pp. 1135–1143.
+
+[18] J. Yu, A. Lukefahr, D. Palframan, G. Dasika, R. Das, and S. Mahlke,
+
+management approaches can be applied to manage and opti-
+
+“Scalpel: Customizing dnn pruning to the underlying hardware paral-
+
+mise machine learning workloads alongside other applications
+
+lelism,” in International Symposium on Computer Architecture (ISCA),
+
+at runtime. Execution of DNN inference on mobile and em-
+
+2017, pp. 548–560.
+
+[19] H. Li, A. Kadav, I. Durdanovic, H. Samet, and H. P. Graf, “Pruning
+
+bedded platforms is clearly important, but also challenging,
+
+ﬁlters for efﬁcient convnets,” arXiv preprint arXiv:1608.08710, 2016.
+
+and we believe that further research is necessitated in runtime [20] E. Park, D. Kim, S. Kim, Y.-D. Kim, G. Kim, S. Yoon, and S. Yoo,
+
+resource allocation and adaptation to optimise this.
+
+“Big/little deep neural network for ultra low power inference,” in International Conference on Hardware/Software Codesign and System
+
+Synthesis. IEEE Press, 2015, pp. 124–132.
+
+VII. ACKNOWLEDGEMENT
+
+[21] J. Lin, Y. Rao, J. Lu, and J. Zhou, “Runtime neural pruning,” in Advances
+
+in Neural Information Processing Systems (NeurIPS), 2017, pp. 2181–
+
+This work was supported in part by the Engineering and
+
+2191.
+
+Physical Sciences Research Council (EPSRC) under Grant
+
+[22] B. Fang, X. Zeng, and M. Zhang, “Nestdnn: Resource-aware multitenant on-device deep learning for continuous mobile vision,” in Inter-
+
+EP/S030069/1. Experimental data can be found at DOI:
+
+national Conference on Mobile Computing and Networking. ACM,
+
+10.5258/SOTON/D1154
+
+2018, pp. 115–127.
+
+[23] L. Xun, L. Tran-Thanh, B. M. Al-Hashimi, and G. V. Merrett, “Incre-
+
+REFERENCES
+
+mental training and group convolution pruning for runtime dnn performance scaling on heterogeneous embedded platforms,” in Workshop on
+
+Machine Learning for CAD (MLCAD), 2019.
+
+[1] Y. LeCun, Y. Bengio, and G. Hinton, “Deep learning,” Nature, vol. 521, [24] A. Das, R. A. Shaﬁk, G. V. Merrett, B. M. Al-Hashimi, A. Kumar, and
+
+no. 7553, p. 436, 2015.
+
+B. Veeravalli, “Reinforcement learning-based inter-and intra-application
+
+[2] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “Imagenet classiﬁcation
+
+thermal optimization for lifetime improvement of multicore systems,” in
+
+with deep convolutional neural networks,” in Advances in Neural Infor-
+
+Design Automation Conference (DAC), 2014, pp. 1–6.
+
+mation Processing Systems (NeurIPS), 2012, pp. 1097–1105.
+
+[25] B. K. Reddy, A. K. Singh, D. Biswas, G. V. Merrett, and B. M. Al-
+
+[3] J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, “You only look
+
+Hashimi, “Inter-cluster thread-to-core mapping and dvfs on heteroge-
+
+once: Uniﬁed, real-time object detection,” in Conference on Computer
+
+neous multi-cores,” Transactions on Multi-Scale Computing Systems,
+
+Vision and Pattern Recognition (CVPR), 2016, pp. 779–788.
+
+vol. 4, no. 3, pp. 369–382, 2017.
+
+[4] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, [26] A. M. Rahmani, M.-H. Haghbayan, A. Miele, P. Liljeberg, A. Jantsch,
+
+Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” in Advances
+
+and H. Tenhunen, “Reliability-aware runtime power management for
+
+in Neural Information Processing Systems (NeurIPS), 2017, pp. 5998–
+
+many-core systems in the dark silicon era,” IEEE Transactions on Very
+
+6008.
+
+Large Scale Integration (VLSI) Systems, vol. 25, no. 2, pp. 427–440,
+
+[5] T.-J. Yang et al., “Netadapt: Platform-aware neural network adaptation
+
+2016.
+
+for mobile applications,” in European Conference on Computer Vision [27] B. Donyanavard, T. Mu¨ck, A. M. Rahmani, N. Dutt, A. Sadighi,
+
+(ECCV), 2018, pp. 285–300.
+
+F. Maurer, and A. Herkersdorf, “Sosa: Self-optimizing learning with
+
+[6] Y. He, J. Lin, Z. Liu, H. Wang, L.-J. Li, and S. Han, “Amc: Automl for
+
+self-adaptive control for hierarchical system-on-chip management,” in
+
+model compression and acceleration on mobile devices,” in European
+
+International Symposium on Microarchitecture (MICRO). ACM, 2019,
+
+Conference on Computer Vision (ECCV), 2018, pp. 784–800.
+
+pp. 685–698.
+
+[7] V. Sze, Y.-H. Chen, T.-J. Yang, and J. S. Emer, “Efﬁcient processing of [28] K. Moazzemi, B. Maity, S. Yi, A. M. Rahmani, and N. Dutt, “Hessle-
+
+deep neural networks: A tutorial and survey,” Proceedings of the IEEE,
+
+free: Heterogeneous systems leveraging fuzzy control for runtime
+
+vol. 105, no. 12, pp. 2295–2329, 2017.
+
+resource management,” ACM Transactions on Embedded Computing
+
+[8] D. Lynskey, “Alexa, are you invading my privacy?” [Online].
+
+Systems (TECS), vol. 18, no. 5s, p. 74, 2019.
+
+Available:
+
+https://www.theguardian.com/technology/2019/oct/09/ [29] D. Gadioli, G. Palermo, and C. Silvano, “Application autotuning to
+
+alexa-are-you-invading-my-privacy-the-dark-side-of-our-voice-assistants.
+
+support runtime adaptivity in multicore architectures,” in International
+
+[9] Z. Xu, F. Yu, C. Liu, and X. Chen, “Reform: Static and dynamic
+
+Conference on Embedded Computer Systems: Architectures, Modeling,
+
+resource-aware dnn reconﬁguration framework for mobile device,” in
+
+and Simulation (SAMOS). IEEE, 2015, pp. 173–180.
+
+Design Automation Conference (DAC), 2019, p. 183.
+
+[30] S. T. Fleming and D. B. Thomas, “Heterogeneous heartbeats: A frame-
+
+[10] T. Chen, Z. Du, N. Sun, J. Wang, C. Wu, Y. Chen, and O. Temam,
+
+work for dynamic management of autonomous socs,” in International
+
+“Diannao: A small-footprint high-throughput accelerator for ubiquitous
+
+Conference on Field Programmable Logic and Applications (FPL).
+
+machine-learning,” in ASPLOS, 2014, pp. 269–284.
+
+IEEE, 2014, pp. 1–6.
+
+[11] Y.-H. Chen, T.-J. Yang, J. Emer, and V. Sze, “Eyeriss v2: A ﬂexible [31] G. M. Bragg, C. R. Leech, D. Balsamo, J. J. Davis, E. Weber Wachter,
+
+accelerator for emerging deep neural networks on mobile devices,” IEEE
+
+G. Merrett, G. A. Constantinides, and B. Al-Hashimi, “An application-
+
+Journal on Emerging and Selected Topics in Circuits and Systems, 2019.
+
+and platform-agnostic control and monitoring framework for multicore
+
+[12] S. Han, X. Liu, H. Mao, J. Pu, A. Pedram, M. A. Horowitz, and
+
+systems,” in International Conference on Pervasive and Embedded
+
+W. J. Dally, “EIE: efﬁcient inference engine on compressed deep neural
+
+Computing (PEC), 2018.
+
+network,” in International Symposium on Computer Architecture (ISCA),
+
+2016, pp. 243–254.
+

@@ -1,0 +1,646 @@
+SPARTA: Runtime Task Allocation for Energy Efﬁcient Heterogeneous Many-cores
+
+Bryan Donyanavard*, Tiago Mück*, Santanu Sarma and Nikil Dutt
+Department of Computer Science University of California, Irvine, USA
+{bdonyana,tmuck,santanus,dutt}@uci.edu
+
+ABSTRACT
+To meet the performance and energy eﬃciency demands of emerging complex and variable workloads, heterogeneous many-core architectures are increasingly being deployed, necessitating operating systems support for adaptive task allocation to eﬃciently exploit this heterogeneity in the face of unpredictable workloads. We present SPARTA, a throughputaware runtime task allocation approach for Heterogeneous Many-core Platforms (HMPs) to achieve energy eﬃciency. SPARTA collects sensor data to characterize tasks at runtime and uses this information to prioritize tasks when performing allocation in order to maximize energy-eﬃciency (instructions-per-Joule) without sacriﬁcing performance. Our experimental results on heterogeneous many-core architectures executing mixes of MiBench and PARSEC benchmarks demonstrate energy reductions of up to 23% when compared to state-of-the-art alternatives. SPARTA is also scalable with low overhead, enabling energy savings in large-scale architectures with up to hundreds of cores.
+1. INTRODUCTION
+Modern embedded platforms (e.g. mobile devices) must support highly diverse and complex workloads that typically exhibit dynamically varying resource demands, thus requiring adaptive mechanisms for energy-eﬃcient resource management. Previous work has shown [1, 2] that memory and computational needs vary across applications. Furthermore, a workload’s characteristics may dynamically change during execution. To address this trend, emerging mobile SoCs are increasingly incorporating heterogeneity in order to balance energy eﬃcient execution with the performance demands of applications. For instance, in ARM’s big.LITTLE architecture [3] the big core has both more cache capacity and computational power (i.e. wider OoO pipeline) than the LITTLE core. Samsung’s Exynos and Mediatek’s Helio x20 are examples of platforms that both incorporate big.LITTLE cores in
+∗These authors contributed equally to this work. This work was partially supported by CAPES (CSF program).
+Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for proﬁt or commercial advantage and that copies bear this notice and the full citation on the ﬁrst page. Copyrights for components of this work owned by others than ACM must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior speciﬁc permission and/or a fee. Request permissions from permissions@acm.org.
+CODES/ISSS ’16, October 01-07, 2016, Pittsburgh, PA, USA
+c 2016 ACM. ISBN 978-1-4503-4483-8/16/10. . . $15.00
+DOI: http://dx.doi.org/10.1145/2968456.2968459
+
+^t ƚĂƐŬƐ
+
+K^ ^WZd
+
+Wh Ψ
+
+Wh Ψ
+
+Wh
+
+Ψ
+
+,t
+
+Wh Ψ Wh Ψ
+
+Wh
+
+Ψ
+
+Figure 1: SPARTA role in many-core system.
+clusters on a single SoC. Although integrating architecturally diﬀerentiated cores may yield power-performance beneﬁts [4], these heterogeneous many-core platforms (HMPs) require intelligent management by the operating system, speciﬁcally for task allocation.
+However, existing operating systems are unable to fully exploit architectural heterogeneity for scalable, energy-eﬃcient execution of dynamic workloads. Linux extensions that explicitly address this issue are limited to ﬁxed heterogeneous platforms (e.g. ARM’s GTS for big.LITTLE architectures [5]), without being adaptable to other underlying platforms. A robust solution should be adaptive enough to integrate with adverse existing and emerging HMPs. Adaptive and intelligent task allocation is necessary to meet both the system goals (e.g. maximum energy-eﬃciency) and the demands of diverse workloads which include both computational- and data-intensive interactive tasks concurrently, thus requiring task allocators to consider resource constraints explicitly (e.g. computational, memory).
+In this paper we propose SPARTA (Figure 1), a runtime task allocator for heterogeneous many-core platforms that leverages the variability in workload memory and computational requirements in order to provide energy eﬃcient task-to-core allocations. SPARTA’s runtime adaptivity provides support for workloads that consist of numerous tasks with diverse behavior (e.g. in terms of compute and memory demands) that may enter and exit the system at any time. SPARTA deﬁnes the task allocation policy that is
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+executed periodically by the operating system at runtime. SPARTA achieves energy eﬃcient allocations by collecting on-chip sensor data (Section 4), using it to predict task performance/power (Section 5), and identifying opportunities to maintain a task’s performance while reducing its energy consumption (Section 6). SPARTA’s task allocation policies work in tandem with other run-time power management approaches such as DVFS, which further increase energyeﬃciency. The main contributions of our work are:
+• We propose a classiﬁcation-based prediction method for predicting tasks’ behavior across heterogeneous core types based on an epoch of runtime observations. Our predictor allows a comprehensive modeling of runtime performance/power by also incorporating models for Linux’s ondemand DVFS governor and the completely fair scheduler (Section 5).
+• We propose a task mapping heuristic that opportunistically exploits diverse workload and platform performancepower characteristics and maximizes energy-eﬃciency while maintaining application performance (Section 6).
+• We demonstrate the eﬃcacy of SPARTA compared to state-of-the-art alternatives for various diverse workloads executing on a real big.LITTLE-based platform, as well as simulations of 4 heterogeneous core conﬁgurations from 8 to 128 cores, showing up to 23% reduction in power without performance degradation (Section 7).
+2. RELATED WORK
+Several works have been proposed in the context of task mapping to heterogeneous platforms. Table 1 summarizes these works and positions SPARTA. The in kernel switcher (IKS) [6] is an early solution developed for ARM’s big.LITTLE [3]. IKS enables only one core type to be used at a time and migrates all tasks when the overall system load reaches a certain threshold. ARM’s GTS [5] improve IKS by bringing the per-core utilization awareness to the scheduler. However, they optimize for throughput only and do not consider performance variations from diﬀerent memory/compute-boundness levels. Furthermore these works are limited to a speciﬁc architecture with two core types. Koufaty [7], Saez [8], and PIE [1] introduce performance models to predict workload behavior at runtime considering the diﬀerent computational/memory capabilities of each core type, but do not account for power. Annamalai et al [9] aims at maximizing the total system energy eﬃciency without taking performance degradation into account. MTS [10] attempts to maximize the overall system throughput given a maximum power envelope. MTS, however, does not take into account throughput requirements of individual tasks (e.g. priority is given to tasks that provide the highest improvement in overall throughput) nor support multiple tasks mapped to the same core. Procrustes [11] applies MTS to the context of heterogeneous cores with dynamic microarchitectures (e.g. ElasticCore [12]). SmartBalance [13] provides a task mapping heuristic that optimizes the overall energy eﬃciency of the system. It ﬁnds near optimal mappings in terms of throughput/Watt, however it doesn’t consider throughput requirements of individual tasks. Muthukaruppan et al. [14] proposes a price theory power management that uses application heartbeats [15] as the QoS metric and aims at minimizing power while maintaining throughput. A similar approach is proposed by Shaﬁk et
+
+Table 1: Summary of state-of-the-art in terms of: awarness to workload IPC variation (e.g due to varying ILP, cache missrates, etc), load/core utilization, power, and QoS (mapping attempts to meet throughput requirements); scalability of heterogeneity (# of supported core types >2); generality of task model (supports multiple tasks in the same core); implemented on a real OS/platform; and awareness to DVFS.
+
+Workload awareness: Gen. Gen. OS DVFS IPS/Load/Power/QoS HMP tasks impl. awr.
+
+GTS[5]
+
+
+
+
+
+
+
+PIE[1]  
+
+Saez[8] 
+
+
+
+
+
+Koufaty[7]  
+
+
+
+
+
+
+
+Annam. et al[9]   
+
+MTS[10]  
+
+
+
+
+
+Muth. et al.[14]
+
+
+
+
+
+
+
+
+
+
+
+SmartBalance[13]   
+
+
+
+
+
+
+
+SPARTA  
+
+
+
+
+
+
+
+
+
+
+
+al. [16] and Das et al. [17], which both perform QoS-aware DVFS by using reinforcement-learning and control theory. In SPARTA, we similarly use throughput as the QoS metric, and consider QoS satisﬁed if the maximum achievable throughput (or target throughput) is being met (Section 4). [14, 17, 16] focus mostly on DVFS aspects ([14] focuses on clustered architectures such as ARM’s big.LITTLE, while [17, 16] consider only homogeneous cores), while SPARTA focuses on the orthogonal issue of eﬃcient task mapping to HMPs. Furthermore we use a QoS notion based on the predicted task throughput across core types, which does not require the use of external frameworks or modiﬁcations on the application.
+SPARTA eﬃciently predicts both task performance and power at runtime, but, in contrast to previous works, SPARTA incorporates per-task QoS into its allocation decisions in order to identify power savings without sacriﬁcing performance. Also, current solutions for performance and power prediction [1, 9, 14, 13, 11, 18] either do not support a generic task and architecture model (i.e. limit the number of tasks that can be mapped to a single core or the number of core types) or do not consider dynamic frequency variability due to ondemand DVFS. SPARTA addresses these issues with predictive DVFS models that synergistically couple task mapping, frequency scaling, and a model of the Linux CFS scheduler to support the generic Linux task model. It’s worth mentioning that SPARTA is proposed in the scope of a generic Linux environment and single-ISA shared memory HMPs. Other works such as [19, 20, 21] address task partitioning in the scope of heterogeneous processing elements with multiple ISAs (e.g. CPUs vs DSPs vs FGPAs). These techniques work under speciﬁc assumptions for the runtime environment and programming models (e.g. availability of multiple implementations for the same function, application ability to reconﬁgure itself, no shared memory between elements, etc.), therefore are not directly comparable to SPARTA.
+
+3. HMP ARCHITECTURE AND EXECUTION MODEL
+Platform model assumptions and deﬁnitions: In this work, we consider single-ISA HMP platforms consisting of many heterogeneous cores on a single chip (Figure 1).
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+Throughout the paper, we deﬁne the set of cores as C =
+
+{c1, c2, . . . , cn} and the set of core type as D = {d1, d2, . . . , do}, such that γ : C → D gives the type d of a particular core
+
+c. Cores support multiple voltage/frequency (VF) pairs and
+
+DVFS. For DVFS purposes, we deﬁned the set of clusters as
+
+E = {e1, e2, . . . , eq}, such that every core belongs to a cluster
+
+and all cores in the same cluster are set to the same VF pair.
+
+Core-level DVFS is deﬁned by having clusters contain a single
+
+core, i.e., |C|= |E|. The set of frequencies supported by a
+
+core of type d is deﬁned as Fd. Section 7 evaluates SPARTA
+
+and describes our experimental platforms in details.
+
+Application model assumptions and deﬁnitions: We
+
+assume task are encapsulating threads similar to the Pthread
+
+model, so there is no formal or explicit dependency between
+
+tasks. Within the Linux scheduling subsystem, threads are
+
+all treated as a task entity and scheduled independently. For
+
+uniformity, in this paper the term task is used interchange-
+
+ably for both single-threaded processes and for threads of the
+
+same process. Task-to-core allocations are performed period-
+
+ically, and, since tasks can enter and leave the system at any
+
+time and their total execution time is unknown, we deﬁne
+
+the set of tasks to be allocated to cores T = {t1, t2, . . . , tm}
+
+as the tasks currently active at the moment. We assume that
+
+multiple tasks mapped to the same core are scheduled ac-
+
+cording to Linux’s CFS policy with the same priority. Newly
+
+(a)
+
+created tasks are initially mapped to a random core until
+
+they can be taken into account by the SPARTA allocation
+
+approach (Section 6).
+
+4. RUNTIME TASK ALLOCATION
+
+SPARTA is a runtime task allocator for HMPs that con-
+
+sists of three phases as shown in Figure 1: sensing, classiﬁca-
+
+tion/prediction, and allocation. Figure 2 gives an overview of
+
+the relationship between this three phases. As shown in Fig-
+
+ure 2b, an Epoch is the time period between classify/predict
+
+and allocate phases, while the sensing phase is executed at
+
+the same rate as the Linux scheduler, so each epoch cov-
+
+ers multiple Linux scheduling periods. Figure 2a provides
+
+and example of SPARTA’s runtime task allocation. In this
+
+example, we consider three distinct tasks executing on a
+
+4-core HMP containing one core for each heterogeneous type
+
+described by Table 3:
+
+1 During the sensing phase, hardware performance coun-
+
+ters and power sensors are periodically sampled on each core
+
+to monitor the characteristics of the executing workload. The
+
+following counters are sampled at the same rate as the Linux
+
+scheduler (typically 10-20ms) and individually summed up
+
+for each task at the beginning of each epoch: total amount of
+
+executed instructions (Itotal ), active cycles (cyactive), L1 and
+
+L2 cache misses per instruction (mrL1I , mrL1D and mrL2), and branch mispredictions per instruction (mrBr)1.
+
+With this information, we can deﬁne the throughput of
+
+a task t that executed in a core c in terms of instructions
+
+per second as t.ips =
+
+c.Itotal c.cyactive
+
+∗ c.f req.
+
+Note that t.ips
+
+denotes the average throughput of task t across all scheduling
+
+periods that t executed. The average eﬀective throughput of
+
+t across the entire epoch is deﬁned as t.ips ∗ t.load, where
+
+t.load =
+
+c.cyactive∗c.f req EpochLength
+
+is
+
+the
+
+share
+
+of
+
+processing
+
+time
+
+used
+
+by task t during an epoch of duration EpochLength.
+
+1contemporary heterogeneous architectures such as ARM’s big.LITTLE support simultaneous sampling of these counters [3, 22]
+
+(b)
+Figure 2: Allocating cores to task using 1 run-time sensing, 2 classiﬁcation/prediction and 3 throughput-aware allocation, during periodic epochs
+2 At the beginning of a new epoch, each task’s performance and power is predicted for all core types using the sensed information. This phase allows SPARTA to obtain task metrics (e.g. t.ips, t.load) for cores in which the task has not executed on. Section 5 describes SPARTA’s performance/power prediction in detail.
+3 The ﬁnal step is to determine the global task allocation for the next epoch. The ﬁrst order goal is to meet the target throughput of the task and then maximize energy eﬃciency2. A task’s target throughput is the maximum achievable throughput of the task on the fastest core type. We consider a task’s target throughput as being met if the task observes negligible eﬀective throughput improvements when mapped to a faster core (i.e. Little → Big). When multiple cores can achieve target throughput, the task is allocated to the most energy eﬃcient one. For instance, in Figure 2, t2 eﬀective IPS is saturated in the Big and Huge types, meaning that these cores achieve t2 target throughput. This saturation is the typical case for interactive task with computation—IO/sleep cycles. By providing a faster core to this task, it’s IPS increases only during the computation cycles, which in turn decreases the core load, thus limiting the task’s eﬀective throughput.For tasks that we do not observe IPS saturation (e.g. t1 in Figure 2), we assume that
+2in terms of throughput(IPS) per Watt, which can also be thought of as instructions-per-Joule
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+Figure 3: Correlation between various performance metrics and IPS. The rightmost bar is the correlation for workloads with similar mrL1D (less then < 10% diﬀerence).
+in the best case its target throughput can only be achieve by the fastest core (Huge). This is the typical case for noninteractive compute-intensive tasks with only computation cycles. Section 6 describes SPARTA’s allocator in detail.
+5. CLASSIFICATION AND PREDICTION
+This phase predicts the task performance on all core types by using the information collected for the core on which the task is currently executing (i.e., using the workload metrics from the sensing phase). Prediction is necessary in order to avoid the overheads of periodically switching tasks between the diﬀerent core types in order to obtain such information (also know as sampling [23]). In previous works, this type of prediction is most often performed using linear regression-based models [9, 18, 22, 24] due to their simplicity, while others employ a binning-based approach in which metrics sensed at runtime are used to classify workloads into categories whose performance/power are known for all core types [10].
+In this work we use a binning-based approach. Our choice is motivated by the fact that linear regression typically requires parameters that have independent eﬀects on the predicted value, which is not the case for performance prediction. Previous works have shown that workloads can be computationalor cache-capacity-bound [1, 2]. In this scenario, variations in computational-related parameters in a linear regression model have a diﬀerent impact in the predicted metric when a workload is cache-capacity-bound (e.g., the impact of the number of mispredicted branches may have a negligible impact on throughput if the cache miss rate is high). In order to illustrate this scenario, we executed MiBench [25] and PARSEC [26] benchmarks on our experimental platform (refer to Section 7, Table 3 for details), and collected performance counter information. Using this information, we obtained the Pearson’s correlation coeﬃcient for metrics calculated from performance counters and the workload throughput (IPS). Figure 3 plots the average correlation across all core types described in Table 3. We observe that the cache miss and branch misprediction counters have the highest correlation with IPS. The rightmost bar in Figure 3 shows that the correlation of branch mispredictions to IPS becomes near-linear when only workloads with similar cache behavior are considered. This observation motivates us to employ a binning approach in which workloads are classiﬁed according to their memory-boundness for performance and power prediction.
+Bin-based prediction: Figure 4 illustrates the basic idea of our predictor. For every core type, we deﬁne a predictor composed of diﬀerent layers. The ﬁrst layer classiﬁes
+
+Figure 4: Example of workload classiﬁcation for performance and power prediction from a Big core to a Little core (Table 3). mb = mrL1I + mrL1D + mrL2 is used to bin according to memory-boundness, while cb1 = mrBr and cb2 = ips are used for compute-boundness.
+the workload according to memory-boundness. For every memory-boundness bin, the workload is classiﬁed according to compute-boundness metrics. The bins in the last classiﬁcation layer store the predicted information for all other core types.
+We used the correlations shown in Figure 3 in order to ﬁnd the most relevant metrics for memory- and computeboundness. We selected cache miss and branch misprediction counters as metrics representative of memory-boundness and compute-boundness, respectively, for the purpose of binning. As shown in Figure 4, we use two layers for computeboundness: the branch misprediction is used as a ﬁrst order metric, while the overall workload IPS is directly used in a second compute-boundness layer to cover the remaining IPS driving factors (e.g. instruction mix, TLB misses, etc).
+Predictor training: Similarly to regression models, our predictor also requires oﬄine training to deﬁne the classiﬁcation bin boundaries. The ﬁrst part of the training process is obtaining training samples. One training sample consists of sensing information collected after running one speciﬁc workload on all core types and frequencies. In order to generate a diverse range of training samples, we used the microbenchmarking approach described in [18]. A microbenchmark is deﬁned as a simple function which exhibits a speciﬁc computational and/or memory behavior (e.g. high/low instruction-level parallelism, high/low cache missrates, etc). A total of 1536 unique workloads are obtained by combining diﬀerent microbenchmarks.
+Algorithm 1 describes the process for ﬁnding the classiﬁcation bin boundaries. samples refers to the set of all training samples described previously, while layer metric stands for the metric used to classify samples in a layer. When calculating the bins for the last layer, the ﬁnal predicted IPS and power is set as the average IPS and power for all samples in the last bin. In order to support DVFS, a diﬀerent set of bin layers is generated for all combinations of core types and frequencies.
+Prediction Error: Figure 5 shows the average error in predictions across all core types. The runtime prediction of IPS and power incurs an average error ranging from 1% to 6% across all core types in Table 3. We consider this error to be small when compared to previous works that propose performance/power prediction schemes [9, 10, 18]. Comparing to previous works, Annamalai et al [9] reports errors ranging from about 10% to about 16%. when using a linear regression model to predict IPC/Watt across two core types. Pricopi et al [22] employs a similar predictor for ARM’s big.LITTLE architecture. The authors report errors
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+Algorithm 1 Classiﬁcation bins generation
+
+1: for all dsrc ∈ D do
+
+2: 3:
+
+for all fsrc ∈ Fdsrc do for all dtgt ∈ D do
+
+4:
+
+for all ftgt ∈ Fdtgt do
+
+5:
+
+find bins(f irst layer metric,samples,dsrc,fsrc,dtgt,ftgt)
+
+6: function find bins(layer metric, samples, dsrc,fsrc,dtgt,ftgt)
+
+7: bins ← equally sized bins such that every bin has at least one sample
+
+8: for all bin ∈ bins do
+
+9: bin samples ← {s ∈ samples|layer metric(s, dsrc, fsrc) <= bin.max}
+
+10: if layer metric is the last layer then
+
+11:
+
+IP Sdtgt,ftgt ← average ips(dtgt, ftgt, bin samples)
+
+12:
+
+Pdtgt,ftgt ← average power(dtgt, ftgt, bin samples)
+
+13: else
+
+14: find bins(next layer metric,bin samples,dsrc,fsrc,dtgt,ftgt)
+
+gorithm 2 shows how we combine these models with a DVFS prediction to obtain each task’s load and eﬀective throughput: The predictCoreLoad and predictTaskLoad take as input each task’s IPS and TLC, as well as the set of all tasks mapped to the core, and implement the CFS models proposed by [18] to predict the load of each task and the total core load. The UpdateFreqAndLoad function then estimates the frequency that will be set by the governor in the next epoch assuming a DVFS epoch length equivalent to that of the Linux scheduler. The frequency prediction is performed based on the previous core load prediction. Since the updated frequency prediction might aﬀect the core load, this process is repeated until the predicted frequency becomes stable or a maximum number of predictions are made (deﬁned by EpochLength/DV F SP eriod). The frequency is considered stable when consecutive predictions yield the same frequency. If the maximum number of predictions are made without ﬁnding a stable frequency, the last predicted frequency is used.
+
+Figure 5: Average error and standard deviation of IPS and power prediction across multiple core type combinations.
+of 13.4% and 16.7% for big→LITTLE and LITTLE→big performance predictions, respectively. Liu et al [10] uses an approach similar to ours on an architecture with four core types, with a reported error of 14% and 7% for IPS and power, respectively. Liu et al bins according to PARSEC benchmarks, i.e., a task whose observed performance matches one of the proﬁled PARSEC benchmarks on one core type is assumed to match the performance of that benchmark on all core types. Section 7.3 provides an evaluation on how prediction errors aﬀect the outcome of task allocation.
+Prediction of scheduling and DVFS-dependent metrics: As described in the previous section, the eﬀective throughput is deﬁned in terms of the task IPS and load. However, the task load is not directly predicted using the binning method since it is a function of the temporal activity of the other tasks to be mapped to the same core and the scheduling policy adopted by the operating system. Furthermore, dynamic load variation might trigger the OS DVFS mechanism, whose decisions may lead to further load variation. In this paper, we assume that Linux’s CFS policy [27] is used to schedule tasks mapped to the same core and that Linux’s ondemand DVFS governor is active. For predicting load, we initially use the CFS performance estimation model proposed by [18]. This CFS model introduces an additional task load contribution (TLC) metric. TLC is deﬁned as the as maximum load a task can impose on a core, i.e., the task load when it has exclusive access to the core. The task TLC is deﬁned on a per-task basis and can be latter used to dynamically estimate the scheduling-dependent task load given a speciﬁc combination of tasks mapped to the same core. We leverage the models proposed by [18] to estimate ﬁnal task load given a ﬁxed core frequency, the tasks’ IPS when scheduled (obtained from the bin-based predictor descibed above), and the tasks’ TLC). The UpdateFreqAndLoad function in Al-
+
+Algorithm 2 DVFS-aware load prediction
+function UpdateFreqAndLoad(core c) iter ← 0 repeat e ← c’s DVFS cluster for all c ∈ e do Core and task load given the current frequency c.load ← predictCoreLoad(c, T, c.f req) for all t ∈ T, t.mapping = c do t.load ← predictT askLoad(t, c, c.f req) c.prev f req ← c.f req c.f req ← frequency for cluster e based on DVFS governor
+load threshold ∀c.load ∈ e iter ← iter + 1
+until iter > EpochLenght/DV F SP eriod
+6. ALLOCATION
+Given a set of executing tasks and available cores, an allocation is an assignment of all tasks to a core. As described earlier, the SPARTA allocator’s goal is to minimize the power consumption of a workload while maintaining its target throughput. This optimization problem is NPhard, and is therefore infeasible to complete at runtime every epoch, even for small conﬁgurations. Therefore, we developed a heuristic solution based on list scheduling. The SPARTA Allocator presented in Algorithm 3 uses task target throughput (TT) properties to signiﬁcantly reduce the complexity of ﬁnding an allocation. As described previously, a core type is considered to achieve target throughput for a task if the predicted eﬀective throughput on the core type matches the maximum observable eﬀective throughput for that task across all core types. Using this notion, the rationale behind the SPARTA allocator is to map each task to the most power-eﬃcient core (in terms of IPS/Watt) that achieves the target throughput.
+The ﬁrst steps of Algorithm 3 are to initialize the per-task performance and power metrics described in Section 3 (lines 5–11). The predictIPS and predictPower functions implement the prediction approach described in Section 5 across all core types and frequencies. The predictTLC function predicts the task load contribution metric (TLC) using the Linux CFS models [18] as described in Section 5.
+Next, we compute the task target throughput t.T T and the number of core types that meet it (line 14). Note that we cor-
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+rect t.T T by a constant 0 < α < 1. We currently use α = 0.95 to account for prediction errors. Based on the throughput constraint, tasks are then separated into three lists — tasks with achievable target throughput on all core types (full_TT_list), tasks with achievable target throughput on a subset of core types (partial_TT_list), and tasks with unachievable target throughput (no_TT_list) (lines 15–21). All task lists are ordered for allocation by descending maximum achievable IPS/Watt for TT-satisﬁable tasks, and by maximum achievable IPS for TT-unsatisﬁable tasks (lines 23–25). The lists are allocated in-order to assign the tasks constrained to fewest potential core types ﬁrst, i.e. ﬁrst the partial_TT_list, followed by the no_TT_list and full_TT_list (lines 27–29).
+The allocate function (line 31) progressively maps all of the tasks in task_list. For the tasks with achievable target throughput, each task is allocated in order to a core with maximum IPS/Watt that achieves target throughput (line 35). Tasks with unachievable target throughput are allocated to the core that maximizes throughput (line 38). Because each intermediate update to the mapping (line 35 and 38) can aﬀect a task’s eﬀective throughput, UpdateFreqAndLoad (Algorithm 2) is called to recalculate t.load and c.f req every time a new possible value for t.mapping is evaluated.
+
+Algorithm 3 SPARTA Allocator
+
+1: function SPARTA(tasks T , cores C, core types D)
+
+2: for all t ∈ T do
+
+3:
+
+Initialize predicted values
+
+4:
+
+t.T T ← 0
+
+5:
+
+for all d ∈ D do
+
+6:
+
+for all f ∈ Fd do
+
+7:
+
+t.ips[d][f ] ← predictIP S(t, d, f )
+
+8:
+
+t.power[d][f ] ← predictP ower(t, d, f )
+
+9:
+
+t.tlc[d][f ] ← predictT LC(t, T, C, f )
+
+10:
+
+if t.T T < t.ips[d][f ] ∗ t.tlc[d][f ] then
+
+11:
+
+t.T T ← t.ips[d][f ] ∗ t.tlc[d][f ]
+
+12:
+
+Obtain target throughput constraints
+
+13:
+
+t.T T ← t.T T ∗ α
+
+14: 15:
+
+t.constraint ← {d|(t.T T ≤ t.ips[d][f ] ∗ t.tlc[d][f ], ∀d ∈ D, f ∈ Fd} if |t.constraint|= |D| then
+
+16:
+
+f ull T T list.add(t)
+
+17:
+
+else
+
+18:
+
+if |t.constraint|> 1 then
+
+19:
+
+partial T T list.add(t)
+
+20:
+
+else
+
+21:
+
+no T T list.add(t)
+
+22:
+
+Sort respective task lists according to memory-boundness
+
+23: sort tasksconstraint/IP S/W att(partial T T list)
+
+24: sort tasksIP S (no T T list)
+
+25: sort tasksIP S/W att(f ull T T list)
+
+26:
+
+Allocate all tasks
+
+27: Allocate(partial T T list)
+
+28: Allocate(no T T list)
+
+29: Allocate(f ull T T list)
+
+30:
+
+31: function Allocate(task list)
+
+32: t.mapping ← ∅
+
+33: for all t ∈ task list do
+
+34:
+
+Maximize IPS/Watt given TT constraint
+
+35:
+
+t.mapping ← c |γ(c) ∈ t.constraint,
+
+t.ips[γ(c)][c.f req] ∗ t.load ≥ t.T T ,
+
+t.ips[γ(c)][c.f req] t.power[γ(c)][c.f req]
+
+is maximized
+
+36:
+
+Maximize IPS if cannot meet constraint
+
+37:
+
+if t.mapping = ∅ then
+
+38:
+
+t.mapping ← c |c ∈ C,
+
+t.ips[γ(c)][c.f req] ∗ t.load is maximized
+
+SPARTA’s complexity: Algorithm 3 has complexity of |T |∗|D|, |T |2, and |T |∗|C| for the classiﬁcation, sorting and allocations phase, respectively. If we assume |T |>> |D| and
+
+an average case performance of O(|T |∗log(|T |)) for sorting, then the SPARTA’s runtime is bound by O(|T |∗|C|).
+7. EXPERIMENTAL EVALUATION
+In this section we describe the implementation and evaluation of SPARTA. Our evaluation is done on two distinct platforms: 1) the ARM big.LITTLE based Exynos 5422 SoC deployed on the ODROID-XU platform[28], which contains a SoC with four big and four little cores (Table 2); and 2) a simulated platform for larger scale HMPs based on the gem5 simulator [29] integrated with McPAT [30] containing the four core types described in Table 3. The remainder of this sections is organized as follows: Section 7.1 describes our experimental framework and implementation, while Section 7.2 describes the evaluated application workloads; Section 7.3 evaluates the performance and energy eﬃciency of the SPARTA allocation approach with respect to state-ofthe-art alternatives, as well as the accuracy of the SPARTA predictor and the overhead incurred by the entire SPARTA runtime.
+7.1 Experimental framework and implementation
+Linux module implementation: SPARTA is implemented as a portable kernel module that can be loaded on top of current Linux kernels (Figure 6-1). SPARTA only requires kernel support for tracepoints [31]. Kernel tracepoints provide means to insert hooks to call functions during speciﬁc kernel events. This mechanism is used to implement SPARTA’s sensing phase.SPARTA collects performance counter information on a task-by-task basis which requires counter sampling at the granularity of tasks’ context switch. A periodic kernel thread implements SPARTA’s epochs and executes Algorithm 3 every 200ms. It is worth mentioning that in our current implementation, we do not replace or disable the Vanilla Linux scheduling/task migration mechanism. We currently control the task mapping and migration process by setting each task’s core aﬃnity mask. We assume that the aﬃnity masks are not changed by any other application (e.g. the taskset tool). Additionally, SPARTA only manages user-level tasks and tasks that are initially allowed to run on any core, and the SPARTA thread is always executed on a ﬁxed core.
+Trace Generation: We capture traces for all benchmarks on all core types of the target platform (Figure 6-2). These traces are captured by executing applications individually as a single thread on each core type at all possible operating frequencies. Traces contain periodic performance and power statistics sampled every epoch to use as input for both the predictor training (Figure 6-3) and the oﬄine simulation framework described below.
+Oﬄine simulation framework: In order to evaluate SPARTA’s scalability and adaptability to more cores and core types, we used gem5 in full system mode. However, running full system simulations in gem5 for prototyping allocation policies on platforms with 10s of cores or more proved to be impractical. Therefore, we developed an oﬄine simulator to evaluate large-scale HMPs eﬃciently for a variety of core types (Figure 6-4). The simulator executes the prediction and allocation routines at every epoch using ﬁne-grained traces. For this purpose, traces are captured using gem5 integrated with McPAT in full system mode at a granularity of 1ms epochs.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+Figure 6: SPARTA framework implementation overview. (1) SPARTA phases implemented as a portable kernel module. (2) The kernel module also allows the generation of application performance/power traces that (3) are used for oﬄine predictor training and (4) oﬄine simulations of the prediction and allocation phases.
+
+Table 2: Exynos 5422 core parameters
+
+Parameter (Core type)
+
+big (Cortex A15) LITTLE (Cortex A7)
+
+Issue width
+L1$I/$D size (KB) L2 size (KB)1
+Max VF
+Min VF
+
+4 (OoO) 32/32 2048
+2.0GHz/1.2V 1.2GHz/1.0V
+
+2 (Inorder) 32/32 512
+1.4GHz/1.2V 1.0GHz/1.1V
+
+28nm technology node.
+LQ/SQ,IQ,ROB, and reg. bank size information is not available. 1Per cluster shared L2 caches
+
+Table 3: Simulated heterogeneous core parameters
+
+Parameter (Core type)
+
+Huge
+
+Big
+
+Issue width LQ/SQ size
+IQ size ROB size Int/ﬂoat Regs L1$I/$D size (KB) L2 size (KB)1
+
+8 (OoO) 32/32 64 192 256 64/64 512
+
+4 (OoO) 16/16 32 128 128 32/32 256
+
+22nm technology node.
+Supported VF pairs:
+2GHz/1V, 1GHz/0.7V, 500MHz/0.6V. 1Per core private L2 caches
+
+Medium
+2 (OoO) 8/8 16 64 64
+16/16 128
+
+Little
+1 (Inorder) 8/8 16 64 64 8/8 64
+
+The trace-based simulator works at the granularity of DVFS epochs and emulates the execution of each core in four steps: 1) The trace information is used to obtain maximum amount of processing time a task would use during the DVFS epoch and it’s duty cycle; 2) this is provided to LinSched [32], which is used to obtain the exact runtime allotted by the OS scheduler to each task; 3) the execution of each task is emulated again for the allotted time; 4) The DVFS governor algorithm sets the frequency for the next epoch according to the emulated load.
+7.2 Workloads
+Our experimental workloads are constructed using two diﬀerent approaches. Workloads are made up of benchmarks from MiBench and PARSEC benchmark suites, as well as synthetic microbenchmarks (described in Section 5).
+The ﬁrst set of workloads (Mixes 1, 5, 10, and 15 in Table 4) are diverse: the benchmark mixes comprise a combination
+
+of the most compute- and memory-bound benchmarks from PARSEC, as well as synthetic microbenchmarks that exercise diﬀerent levels of compute and memory boundness. For each suite, we analyzed each benchmark’s performance gain in terms of IPS when increasing core size, and selected the subset that beneﬁted most for the respective resource types; Mix 1 consists of these PARSEC benchmarks. Mixes 5, 10, and 15 consist of synthetic workloads using microbenchmarks that can be either compute- or memory-bound (CB or MB) and impose a high, medium, or low average cpu utilization (HU, MU, or LU).
+The second set of workloads (all other Mixes in Table 4) represent realistic homogeneous use-cases. Mixes 7, 14, and 11 consist of network, automotive/industrial, and consumer benchmarks from MiBench respectively. Mixes 12 and 3 each consist of a single benchmark from PARSEC representative of computer vision and data mining respectively. Mixes 4, 6, and 2 are composed based on the analysis performed by [33], which characterizes mobile use cases in terms of core utilization. We use the our microbenchmarks to deﬁne four typical mobile workloads based on the resulting utilization of big and little cores: Mix 4 is a typical load; Mix 6 is a typical load with a heavy task; Mix 2 is a heavy load. Mixes 8, 9, and 13 consist of a combination of x264 with diﬀerent frame-rate inputs in order to invoke further target throughput variation.
+For all experiments, the total number of threads is half the number of cores in the conﬁguration, which we believe is a valid use-case for heterogeneous many-cores.
+7.3 Simulation results
+We ﬁrst evaluate all components of SPARTA on platforms composed of the core types deﬁned in Table 3 using the ofﬂine simulator. We compare SPARTA against the following allocators: MTS, GTS, and an algorithm that maximizes energy eﬃciency. MTS is an implementation of the allocation algorithm with no power budget that we consider the most comparable state-of-the-art solution. GTS is ARM’s big.LITTLE allocation technique that we adapted to work for more than two core types. Since GTS the only solution adopted in mainstream Linux, we will use it as a baseline. The goal of both MTS and GTS is to maximize throughput. Maximum Energy Eﬃciency (Max EE) is a optimal bruteforce allocation for maximizing IPS/Watt. For the following experiments we use an oracle predictor – predictor with no
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+Table 4: Benchmark Mix composition
+
+Mix 1 Mix 2 Mix 3 Mix 4 Mix 5 Mix 6 Mix 7 Mix 8 Mix 9 Mix 10 Mix 11 Mix 12 Mix 13 Mix 14 Mix 15
+
+bodytrack CB/HU streamcluster CB/LU CB/MU CB/LU CRC32 x264 5fps x264 2fps CB/HU jpeg bodytrack x264 15fps basicmath CB/HU
+
+streamcluster CB/MU
+
+CB/MU MB/MU MB/MU blowﬁsh x264 15fps x264 5fps CB/LU typeset
+
+x264 30fps bitcount CB/LU
+
+(heavy)
+
+(typical)
+
+(typical heavy) patricia
+
+qsort MB/HU
+
+dijkstra
+
+susan MB/LU
+
+Figure 7: IPS and IPS/Watt of allocators for diﬀerent benchmark mixes normalized to GTS on two diﬀerent 8-core HMP conﬁgurations: Platform A with two of each core type, and Platform B with four Big and four Little cores.
+
+error – in order to evaluate only the allocation techniques. Additionally, we use our SPARTA prediction scheme for all allocators, which means that although MTS is not DVFSaware by design, in our experiments it beneﬁts from our improved DVFS-aware predictor. GTS is unaﬀected as it is reactive and therefore does not use any prediction.
+Figure 7 shows the IPS and IPS/Watt of all allocators for all benchmark mixes on two 8-core conﬁgurations normalized to the GTS baseline. In Platform A, the eight cores are made up of two Huge, Big, Medium, and Little cores each. Platform B is made up of four Big and four Little cores similarly to the Odroid platform. For benchmark Mixes 8-15 on Platform A, SPARTA is able to match the performance of the state-of-the-art technique while increasing energy eﬃciency in most cases. We observed an average of 26% increase in energy eﬃciency over GTS for Mixes 8-15 while increasing throughput by 57%. Similarly, we observed an average 19% increase in energy eﬃciency over MTS with 8% performance improvement for these mixes. This can be attributed to the fact that while both MTS and GTS prioritize maximizing throughput, they do not consider the utilization of each thread on diﬀerent core types. By accounting for core utilization, SPARTA can ﬁnd the most energy eﬃcient thread-core mapping for threads whose performance is saturated. Mixes 8-15 mostly contain atleast one benchmark that does not completely utilize all core types. The results for these workload types show that SPARTA is able to eﬃciently identify opportunities to maximize energy
+
+eﬃciency without degradation of the target throughput. Mixes 1-7 in Figure 7 represent the alternative scenario:
+when a tradeoﬀ in performance is required to save energy. This is illustrated clearly by the Max EE allocator’s poor throughput and high energy eﬃciency for these mixes. The manner in which SPARTA prioritizes the most energy eﬃcient threads during allocation allows us to also beneﬁcially exploit this scenario. As before, by recognizing when multiple core types can achieve a task’s target throughput, SPARTA is able to improve energy eﬃciency for cases in which performance is saturated. For benchmark Mixes 1-7, SPARTA observed 27.5% and 6.5% average improvement in throughput compared to GTS and MTS respectively. SPARTA also increased energy eﬃciency by 33% and 27% on average over GTS and MTS respectively. These benchmark Mixes mostly consist of high performance tasks whose performance is unbound by resource allocation. For tradeoﬀ scenarios in which the target throughput is not commonly met, SPARTA is able to achieve signiﬁcant energy savings while maintaining performance.
+Platform B follows a similar trend to Platform A, but with less signiﬁcant deviation between SPARTA, MTS, and GTS. This is due to the platform only having two diﬀerent core types. SPARTA is still able to improve performance by 5.5% and energy eﬃciency by 11% over GTS on average over all mixes. Compared to MTS, 5% increased energy eﬃciency comes at the cost of negligible performance degradation (2%).
+Figure 8 compares scalability, showing the average per-
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+Figure 8: Scalability: average IPS and IPS/Watt for diﬀerent core conﬁgurations normalized to GTS.
+formance and energy eﬃciency of the heuristic allocators for conﬁgurations with up to 256 cores and 128 tasks. The values are averaged over all of the Mixes mentioned previously for each conﬁguration. Each conﬁguration also had two permutations: one with an equal distribution of the four core types (1:1:1:1 ratio), and another with a ratio of 1:3:3:1 cores of types Huge, Big, Medium, Little respectively. For conﬁgurations of 32 cores or more, SPARTA and MTS both improved throughput over GTS between 5-10%. SPARTA was able to save up to 17% and 10% energy over GTS and MTS respectively.
+Figure 8 also includes evaluation of allocators using the SPARTA predictor. The predictor had minimal impact on the allocators. In some cases, predictor error resulted in improved allocations. The predictor did not aﬀect the throughput or energy eﬃciency achieved by SPARTA or MTS by more than +/-5% relative to the oracle versions. The SPARTA and MTS relative relationship will always hold because they are equally a function of their predictor’s quality. A more accurate predictor could be incorporated into SPARTA in the future in order to yield increased beneﬁt over GTS.
+7.4 ODROID platform results
+We also evaluates SPARTA on the ODROID-XU3 platform[28]. In this platform we use Linux kernel version 3.10.9 which implements GTS. SPARTA is implemented as a separate kernel module loaded after bootup. Figure 9 shows the IPS and IPS/Watt of SPARTA for a subset of benchmark mixes normalized to the GTS baseline. Overall, SPARTA matches the throughput of GTS while improving energy eﬃciency by 16%. Similarly to Platform B in Figure 7, overall most mixes diﬀer minimally or not at all between SPARTA and GTS. In some cases, like Mixes 2 and 10, SPARTA or GTS make slight tradeoﬀs between performance and energy eﬃciency. For Mix 13, SPARTA sacriﬁces 13% throughput for a 40% energy eﬃciency gain. In the few outlier cases in which the diﬀerence is not negligible and no tradeoﬀ is made, SPARTA is able to identify opportunities to improve energy eﬃciency at no cost (Mixes 8 and 9) or improved performance (Mix 11). Based on these results, we can conclude that both the overhead of the SPARTA runtime as well as the predictor error is manageable on real systems.
+SPARTA’s overheads and scalability: We measure the run time of each SPARTA phase on the Odroid platform. The total latency of each phase is relatively low compared to the 200ms epoch length. The total time spent sensing during
+
+Figure 9: IPS and IPS/Watt of allocators for diﬀerent benchmark mixes normalized to GTS on the Odroid platform.
+Figure 10: Runtime scalability of SPARTA phases for diﬀerent number of cores using a 50ms epoch.
+an epoch on all cores averages to 28μs. Across the 8-core benchmark runs described previously, the measured latency of the classiﬁcation/prediction and allocation phases is 124μs and 190μs respectively (measured on big cores). Figure 10 plots how the latencies scale for larger systems and includes the thread migration overhead (assuming 25% of threads migrate every epoch and that each migration takes about 20μs1GHz[34] ). The total overhead imposed by SPARTA is negligible for up to 16 cores. The classify and predict phase is the most cumbersome of the SPARTA overhead sources, but it still bellow 5% of the epoch length for up to 64 core conﬁgurations. For platforms with 100s of cores the overhead is high, but it can be mitigated by the fact that the execution of prediction and allocation phase occurs in parallel with the execution of every other task in the system. Nevertheless, this is a limitation of our current implementation of SPARTA that we plan to address in future work.
+Overall, the experiments have illustrated SPARTA’s applicability across both contemporary HMPs as well as potential future HMPs with increased resources and resource types. The SPARTA predictor can predict behavior on a per-task basis for diverse workloads consisting of unknown tasks in conjunction with multitasking and DVFS. The allocator successfully identiﬁes opportunities to reduce workload energy consumption by considering target throughput.
+8. CONCLUSION AND FUTURE DIRECTIONS
+In this work we presented SPARTA, a throughput-aware runtime task allocation approach for aggressive HMPs that employs a sense-predict-allocate approach to achieve energy eﬃciency. We deﬁned a bin-based runtime prediction method
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+
+and an eﬃcient task allocation heuristic that are compatible with DVFS, and evaluated on a real platform. Our experimental results showed energy reductions up to 23% when compared to state-of-the-art alternatives while maintaining performance on simulated platforms, and 16% compared to Linux running on a real mobile system. This holds for large conﬁgurations, saving 10% energy with no throughput degradation for up to 256 cores. Although SPARTA is a runtime task allocator, there are some opportunities to extend the adaptivity of SPARTA. As future work, we plan to move from ﬁxed epoch lengths to adaptive epochs that adjust based on the workload variability. We also can extend the runtime predictor to update the classiﬁcation bins at runtime based on the workload to potentially improve predictor accuracy. The version of heterogeneity addressed in this initial work is simpliﬁed by only assuming variation in core parameters scale uniformly, and we plan to expand this to a more comprehensive decoupled model of heterogeneity in following extensions.
+9. REFERENCES
+[1] K. Van Craeynest et al., “Scheduling heterogeneous multi-cores through performance impact estimation (PIE),” in 39th Annual Int. Symposium on Computer Architecture, vol. 40, no. 3, jun 2012, pp. 213–224.
+[2] W. Heirman et al., “Undersubscribed threading on clustered cache architectures,” in Proc. - Int. Symposium on High-Performance Computer Architecture, 2014, pp. 678–689.
+[3] P. Greenhalgh, “big. LITTLE Processing with ARM Cortex-A15 & Cortex-A7,” ARM, Tech. Rep. September 2011, 2011.
+[4] R. Kumar et al., “Single-ISA Heterogeneous Multi-Core Architectures for Multithreaded Workload Performance,” ACM SIGARCH Computer Architecture News, vol. 32, p. 64, mar 2004.
+[5] ARM, “big. LITTLE Technology : The Future of Mobile,” ARM, Tech. Rep., 2013.
+[6] M. Poirier, “In Kernel Switcher: A solution to support ARM’s new big.LITTLE technology,” 2013. https://events.linuxfoundation.org
+[7] D. Koufaty et al., “Bias scheduling in heterogeneous multi-core architectures,” in Proc. of the 5th European Conf. on Computer systems, 2010, p. 125.
+[8] J. C. Saez et al., “A comprehensive scheduler for asymmetric multicore systems,” in Proc. of the 5th European Conf. on Computer systems, 2010, p. 139.
+[9] A. Annamalai et al., “An opportunistic prediction-based thread scheduling to maximize throughput/watt in AMPs,” in Proc. of the 22nd Int. Conf. on Parallel architectures and compilation techniques, sep 2013, pp. 63–72.
+[10] G. Liu et al., “Dynamic thread mapping for high-performance, power-eﬃcient heterogeneous many-core systems,” in IEEE 31st Int. Conf. on Computer Design, oct 2013, pp. 54–61.
+[11] G. Liu et al., “Procrustes: Power Constrained Performance Improvement Using Extended Maximize-then-Swap Algorithm,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems, vol. 0070, pp. 1–1, 2015.
+[12] M. K. Tavana et al., “ElasticCore: enabling dynamic heterogeneity with joint core and voltage/frequency scaling,” in Proc. of the 52nd Annual Design Automation Conf., 2015, pp. 1–6.
+[13] S. Sarma et al., “SmartBalance: A Sensing-Driven Linux Load Balancer for Energy Eﬃciency of Heterogeneous MPSoCs,” in Proc. of the 52nd Annual Design Automation Conf., 2015, pp. 1–6.
+[14] T. S. Muthukaruppan et al., “Price theory based power management for heterogeneous multi-cores,” in Proc. of the
+
+19th Int. Conf. on Architectural support for programming languages and operating systems, 2014, pp. 161–176.
+[15] H. Hoﬀmann et al., “Application heartbeats,” in Proc. of the 7th Int. Conf. on Autonomic computing, 2010, p. 79.
+[16] R. A. Shaﬁk et al., “Learning Transfer-Based Adaptive Energy Minimization in Embedded Systems,” IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems, vol. 35, pp. 877–890, jun 2016.
+[17] A. Das et al., “Hardware-software interaction for run-time power optimization: A case study of embedded Linux on multicore smartphones,” in IEEE/ACM Int. Symposium on Low Power Electronics and Design, vol. 2015-Septe, jul 2015, pp. 165–170.
+[18] T. Mu¨ck et al., “Run-DMC : Runtime Dynamic Heterogeneous Multicore Performance and Power Estimation for Energy Eﬃciency,” in Int. Conf. on Hardware/Software Codesign and System Synthesis, 2015.
+[19] J. R. Wernsing et al., “The RACECAR heuristic for automatic function specialization on multi-core heterogeneous systems,” in Proc. of the 2012 Int. Conf. on Compilers, architectures and synthesis for embedded systems, 2012, p. 81.
+[20] Sheng Yang et al., “Adaptive energy minimization of embedded heterogeneous systems using regression-based learning,” in 25th Int. Workshop on Power and Timing Modeling, Optimization and Simulation, sep 2015, pp. 103–110.
+[21] E. M. G. Trainiti et al., “A Self-Adaptive Approach to Eﬃciently Manage Energy and Performance in Tomorrow ’ s Heterogeneous Computing Systems,” in 2016 Design, Automation & Test in Europe Conf. & Exhibition, Dresden, 2016, pp. 906–911.
+[22] M. Pricopi et al., “Power-performance modeling on asymmetric multi-cores,” in Int. Conf. on Compilers, Architecture and Synthesis for Embedded Systems, sep 2013, pp. 1–10.
+[23] M. Becchi et al., “Dynamic thread assignment on heterogeneous multiprocessor architectures,” in Proc. of the 3rd Conf. on Computing frontiers, 2006, p. 29.
+[24] K. Singh et al., “Real time power estimation and thread scheduling via performance counters,” ACM SIGARCH Computer Architecture News, vol. 37, p. 46, jul 2009.
+[25] M. R. Guthaus et al., “MiBench : A free , commercially representative embedded benchmark suite,” in IEEE 4th Annual Workshop on Workload Characterization, 2001.
+[26] C. Bienia et al., “The PARSEC benchmark suite,” in Proc. of the 17th Int. Conf. on Parallel architectures and compilation techniques, 2008, p. 72.
+[27] R. Love, Linux Kernel Development, 3rd ed. Addison-Wesley Professional, 2010.
+[28] Hardkernel, “ODROID-XU,” Tech. Rep., 2016. http://www.hardkernel.com/main/main.php
+[29] N. Binkert et al., “The gem5 simulator,” ACM SIGARCH Computer Architecture News, vol. 39, p. 1, aug 2011.
+[30] S. Li et al., “The McPAT Framework for Multicore and Manycore Architectures,” ACM Transactions on Architecture and Code Optimization, vol. 10, pp. 1–29, apr 2013.
+[31] M. Desnoyers, “Using the Linux Kernel Tracepoints,” Tech. Rep., 2015. https://www.kernel.org/doc/Documentation/ trace/tracepoints.txt
+[32] J. Calandrino et al., “LinSched : The Linux Scheduler Simulator,” in Proc. of the ISCA 21st Int. Conf. on Parallel and Distributed Computing and Communications Systems, 2008, pp. 171–176.
+[33] C. Gao et al., “A study of mobile device utilization,” in 2015 IEEE Int. Symposium on Performance Analysis of Systems and Software (ISPASS), no. September 2014, mar 2015, pp. 225–234.
+[34] K. Yu, “big.LITTLE Switchers,” in 2012 Korea Linux Forum, 2012.
+
+Authorized licensed use limited to: KAUST. Downloaded on May 27,2022 at 14:05:58 UTC from IEEE Xplore. Restrictions apply.
+

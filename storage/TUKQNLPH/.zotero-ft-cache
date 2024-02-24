@@ -1,0 +1,715 @@
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+PEDRO VELHO, UFRGS, Institute of Informatics, Brazil LUCAS MELLO SCHNORR, UFRGS, Institute of Informatics, Brazil HENRI CASANOVA, Dept. of Computer and Information Sciences, University of Hawai‘i at Manoa ARNAUD LEGRAND, CNRS, Grenoble University, France
+
+Researchers in the area of grid/cloud computing perform many of their experiments using simulations that
+
+23
+
+must capture network behavior. In this context, packet-level simulations, which are widely used to study
+
+network protocols, are too costly given the typical large scales of simulated systems and applications. An
+
+alternative is to implement network simulations with less costly ﬂow-level models. Several ﬂow-level models
+
+have been proposed and implemented in grid/cloud simulators. Surprisingly, published validations of these
+
+models, if any, consist of veriﬁcations for only a few simple cases. Consequently, even when they have been
+
+used to obtain published results, the ability of these simulators to produce scientiﬁcally meaningful results
+
+is in doubt. This work evaluates these state-of-the-art ﬂow-level network models of TCP communication
+
+via comparison to packet-level simulation. While it is straightforward to show cases in which previously
+
+proposed models lead to good results, instead we follow the critical method, which places model refutation
+
+at the center of the scientiﬁc activity, and we systematically seek cases that lead to invalid results. Careful
+
+analysis of these cases reveals fundamental ﬂaws and also suggests improvements. One contribution of this
+
+work is that these improvements lead to a new model that, while far from being perfect, improves upon all
+
+previously proposed models in the context of simulation of grids or clouds. A more important contribution,
+
+perhaps, is provided by the pitfalls and unexpected behaviors encountered in this work, leading to a number
+
+of enlightening lessons. In particular, this work shows that model validation cannot be achieved solely by
+
+exhibiting (possibly many) “good cases.” Conﬁdence in the quality of a model can only be strengthened
+
+through an invalidation approach that attempts to prove the model wrong.
+
+Categories and Subject Descriptors: I.6.4 [Simulation and Modeling]: Model Validation and Analysis; I.6.5 [Simulation and Modeling]: Model Development; I.6.8 [Simulation and Modeling]: Simulation Support Systems
+
+General Terms: Experimentation
+
+Additional Key Words and Phrases: Grid and cloud computing simulation, validation, scalability, SimGrid
+
+This work has been supported by ANR (French National Agency for Research) through project references ANR 08 SEGI 022 (USS SimGrid) and ANR 07 JCJC 0049 (DOCCA), by CNRS (French National Center for Scientiﬁc Research). The authors would like to thank CNPq (Brazilian National Counsel of Technological and Scientiﬁc Development) for funding the PhD thesis of Pedro Velho. Experiments presented in this article were carried out using the Grid’5000 experimental testbed, being developed under the INRIA ALADDIN development action with support from CNRS, RENATER, and several universities as well as other funding bodies (see https://www.grid5000.fr). Authors’ addresses: A. Legrand, University of Grenoble, France; H. Casanova, Dept. of Computer and Information Sciences, University of Hawai‘i at Manoa, U.S.A; P. Velho and L. M. Schnorr, Instituto de Informa´ tica, Universidade Federal do Rio Grande do Sul, Porto Alegre, Brazil. Permission to make digital or hard copies of part or all of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for proﬁt or commercial advantage and that copies show this notice on the ﬁrst page or initial screen of a display along with the full citation. Copyrights for components of this work owned by others than ACM must be honored. Abstracting with credit is permitted. To copy otherwise, to republish, to post on servers, to redistribute to lists, or to use any component of this work in other works requires prior speciﬁc perimssion and/or a fee. Permissions may be requested from Publications Dept., ACM, Inc., 2 Penn Plaza, Suite 701, New York, NY 10121-0701, USA, fax: +1 (212) 869-0481, or permissions@acm.org. c 2013 ACM 1049-3301/2013/10-ART23 $15.00 DOI: http://dx.doi.org/10.1145/2517448
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:2
+
+P. Velho et al.
+
+ACM Reference Format: Velho, P., Schnorr, L. M., Casanova, H., and Legrand, A. 2013. On the validity of ﬂow-level TCP network models for grid and cloud simulations. ACM Trans. Model. Comput. Simul. 23, 4, Article 23 (October 2013), 26 pages. DOI: http://dx.doi.org/10.1145/2517448
+
+1. INTRODUCTION
+Large-scale distributed computing infrastructures such as grids or clouds have become commonplace. Production grids like EGEE span hundreds of sites with several tens of thousands of processing units interconnected by complex wide-area networks. Efﬁciently exploiting such platforms raises several challenges, for example, in the area of application scheduling and resource management. Scientiﬁc workﬂows such as the ones executed on EGEE comprise large numbers of computational tasks that require large input datasets and produce large output datasets. Optimizing the execution of such workﬂows on large-scale platforms is combinatorial in nature, leading to the development of many scheduling heuristics [Blythe et al. 2005; Braun et al. 2001; Topcuoglu et al. 1999]. Although it may be possible to compare scheduling heuristics analytically in some cases, such analyses rely on theoretical models that often ignore or oversimplify important characteristics of real-world deployments (e.g., the macrodataﬂow model [Ramaswamy and Banerjee 1993], which assumes that there is no network contention).
+Given this, it is not surprising that most research in grid/cloud computing is empirical in nature, that is, based on obtaining and analyzing experimental results. However, conducting experiments in large-scale distributed systems, if at all possible, is timeconsuming and labor-intensive. Such systems are subject to software and hardware heterogeneity, which complicates application deployment. Intermittent and noncontrollable load variations and failures typically preclude reproducible experiments. Systems may not be available for the purpose of research experiments that could disrupt production use. Even if a fully controllable system is available, the energy and monetary cost of conducting experiments on such platforms is prohibitive. Finally, researchers may want to study systems that are not necessarily available (e.g., because they are being deployed, to explore “what if ” scenarios, or to investigate future evolutions of the platform). For all these reasons, many published results in the area of grid/cloud computing are obtained in simulation.
+The simulators that are used in the grid/cloud computing domain rely on various simulation models for compute components (e.g., servers) and network components (e.g., routers, links, network cards). Models that capture the operation of these components in detail (e.g., cycle-level simulation of a processor, packet-level simulation of a router) prove intractable when simulating applications with large computation and communication workloads on large-scale systems with many components. As a result, simulation models must trade off a higher level of detail for a higher compute speed. For example, for simulating data transfers many simulators rely on ﬂow-level network models or on simplistic packet-level network models. Thus arises the question of model validity: to what extent do these trade-offs reduce the accuracy of obtained simulation results, and can these results be used to draw scientiﬁcally valid conclusions? In this work we study this question in the context of network models for grid/cloud simulations.
+Although using valid simulation models seems a prerequisite for developing a useful simulator, it turns out that many popular grid/cloud simulators use network models that have not been (sufﬁciently) validated. Table I illustrates a few simple experiments that invalidate four well-known simulators: OptorSim (2.1, 02/2010) [Bell et al. 2003], GridSim (5.2 beta, 11/2010) [Buyya and Murshed 2002], GroudSim (0.11, 06/2010) [Ostermann et al. 2010], and CloudSim (3.0.2, 11/2012) [Calheiros et al. 2011]. The
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:3
+
+Table I. Invalidating Experiments for Four Popular Grid/Cloud Simulators Network links are shown as boxes labeled with latencies (L ) and/or bandwidth capacities (B). Network ﬂows are dashed arrows that traverse one or more ﬂows. Bandwidth allocations are shown as gray ﬁlls when applicable, with a different shade for each ﬂow. The table shows both expected results and ﬂawed results produced by each
+simulator.
+
+versions we tested were the latest at the time of writing this article. These simulators have been used to obtain results published in hundreds of research articles, and also used as building blocks to develop other simulators [Chen and Deelman 2012; Teng et al. 2011; Shi et al. 2011; Jung and Kim 2012]. Each invalidating experiment in Table I can be devised through inspection of the simulator’s source code, and some are even sometimes documented by the developers themselves. Some model validation results have been published for other simulators, but they typically consider only a few cases in which simulation models are expected to work well [Zheng et al. 2004a, 2004b] (essentially merely verifying that model implementations are correct). However, it is accepted in most of the sciences that model invalidation is an important component
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:4
+
+P. Velho et al.
+
+of the research activity. Invalidation studies must be conducted that explore a wide range of scenarios for which a model’s behavior is either unknown or expected to be invalid. Through these invalidation studies, the model is improved or refuted, leading to increasingly precise knowledge of the range of situations in which the model’s results are meaningful.
+In this work, we focus on ﬂow-level network models of the Transmission Control Protocol (TCP) to be used when simulating large-scale grid/cloud distributed systems. For these systems, accounting for network proximity and network topology is paramount for ensuring that simulations are valid. The goal of ﬂow-level models is to capture complex network behavior using tractable mathematical derivations, that is, that can be computed quickly. Several ﬂow-level models of TCP have been proposed in the literature [Low 2003; Low et al. 2002; Low and Srikant 2004], and we ourselves have proposed such a model [Velho and Legrand 2009], which is used in the SimGrid simulation framework [Casanova et al. 2008]. Our contributions in this work are as follows:
+—We obtain new insight into ﬂow-level modeling using a systematic validation approach based on the critical method [Popper 1972].
+—This approach invalidates the use of models in Low [2003], Low et al. [2002], and Low and Srikant [2004] for simulation purposes in the context of grid/cloud computing.
+—Our approach also suggests several improvements to the model described in Velho and Legrand [2009], which serves as the basis for network simulation in SimGrid.
+—To the best of our knowledge, the improved model, while imperfect, is the most accurate ﬂow-level TCP simulation model available to date for grid/cloud simulations.
+—Our approach and the difﬁculties encountered provide important lessons for model development and validation.
+The rest of this article is organized as follows. Section 2 discusses and details directly relevant previous work. Section 3 presents our invalidation study and the improvements it suggests for ﬂow-level models. Section 4 discusses the limits of ﬂow-level modeling, as highlighted by our invalidation study. Finally, Section 5 summarizes our contributions and outlines future research directions.
+2. BACKGROUND AND RELATED WORK
+Network modeling and simulation can be undertaken in many contexts, thus mandating context-speciﬁc discussions of known methodologies and results. For instance, simulations for studying the ﬁne-grain properties of the TCP protocol may have little in common with simulations for studying the scalability of some large-scale parallel computing application. In what follows, we discuss works in the area of network modeling categorized by modeling approaches, highlighting the speciﬁc contexts in which each approach has been used.
+2.1. Packet-level Models
+Packet-level network simulations are discrete-event simulations with events for packet emission or reception as well as network protocol events. These simulations can reproduce the movements of all network packets and the behavior of the whole TCP stack down to the IP level. Packet-level simulations have been widely used for studying ﬁnegrained properties of network protocols. The most popular packet-level simulator is NS2 [Issariyakul and Hossain 2008], while more recent simulators include NS3 [NS3 2011], GTNetS [Riley 2003], and OMNet++ [Varga and Hornig 2008]. The TCP stack models found in simulators such as GTNets or NS2 are simpliﬁed versions of the TCP stack. More recent developments [Jansen and McGregor 2007] allow the use of real TCP stack implementations, which are slower but more realistic (i.e., real TCP stack
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:5
+
+implementations might have features/bugs that are absent from simpliﬁed versions used exclusively for simulation purposes).
+Except maybe for wireless networks, where the modeling of the physical layer is challenging, packet-level simulation is generally recognized by the network community as trustworthy, and it serves as a reference. Unfortunately, in the context of simulation of grids or clouds, it can lead to long simulation times [Fujiwara and Casanova 2007] because the life cycle of each packet is simulated through all protocol layers all the way to a simulated physical layer. Its use is thus often restricted to studying network protocols or applications that exchange small messages. An example of such application is a peer-to-peer Distributed Hash Table implementation, and peer-to-peer simulators have been developed that use standard packet-level simulators [Baumgart et al. 2009]. Nevertheless, some simulators provide the option of using realistic packet-level simulation in spite of its high overhead (e.g., the iCanCloud cloud simulator [Nu´ n˜ ez et al. 2011]). To mitigate such overhead, simulators in the area of grid computing (e.g., GridSim [Buyya and Murshed 2002], early versions of SimGrid [Casanova 2001]) have attempted widely simpliﬁed packet-level simulation (e.g., wormhole routing, no implementation of any network protocol). Unfortunately, these simulators are easily shown to produce simulated network delays that can be far from those achieved by TCP communications in real networks (see the last row of Table I). Furthermore, these simpliﬁed packet-level models face the same scalability issues, if not as severe, as more realistic packet-level simulators.
+For the purpose of simulation, ﬁne-grain network simulation models may be difﬁcult to instantiate with realistic parameter values when targeting large-scale networks as some of the parameter values may be unknown or difﬁcult to obtain (e.g., a full description of a large subset of the Internet). Fortunately, the level of detail provided by packet-level simulation is not necessary for studying large-scale applications that exchange large amounts of data.
+
+2.2. Delay-based Models
+In some contexts, it is sufﬁcient to simulate simple network delays between pairs of communicating hosts. For instance, a peer-to-peer simulator for studying overlay networks may model each communication delay as a constant delay or as a sample from a given statistical distribution [Montresor and Jelasity 2009]. These models do not account for network proximity. As a consequence, some peer-to-peer simulators [Gil et al. 2005; Montresor and Jelasity 2009; Baumgart et al. 2009] model network delays using coordinate systems. Each peer is provided with coordinates in a Euclidean metric space and the simulator simply computes the corresponding distance in this space to evaluate communication delay. Note that non-Euclidean spaces can lead to more accurate point-to-point communication delays in wide-area networks [Dabek et al. 2004]. Coordinate-based models provide a good trade-off between compute time and space as they account for network proximity with a (N) memory footprint and a O(1) computation time for a network delay. Since coordinates may change over time and suffer from measurement inaccuracies [Ledlie et al. 2007], some simulators generally add noise to these coordinates [Baumgart et al. 2009]. In the context of simulating high-performance computing systems (e.g., clusters of servers), similar models have also been proposed [Culler et al. 1993; Alexandrov et al. 1995; Kielmann et al. 2000; Ino et al. 2001; Hoeﬂer et al. 2010]. These models account for partial asynchrony for small messages. They also include speciﬁc parameters depending on message size, making it possible to account for protocol switching, which can have a large impact on overall performance. These models are extremely scalable because both description size and delay computation time are in O(1).
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:6
+
+P. Velho et al.
+
+All models above, whether for peer-to-peer application or for HPC systems, ignore network contention. In the case of peer-to-peer simulations, the rationale is that the amount of exchanged data is small and that network contention is thus not an important factor in the performance of the application. In fact, often the metric of interest is the number of exchanged messages, rather than the data transfer rates achieved. In the case of HPC simulations, the rationale is that the target platform is provisioned with a bisection bandwidth so large that network contention is unlikely to occur. While this assumption may be reasonable for high-end systems (e.g., systems built from highradix optical switches), it does not hold for all commodity clusters.
+
+2.3. Flow-level Modeling
+When modeling network contention is needed, one cannot use the scalable delay-based models discussed in the previous section. To achieve scalability higher than that afforded by full-ﬂedged packet-level models, one needs an abstraction of the network topology that focuses on the part of the topology in which contention may happen. For instance, when considering the simulation of a peer-to-peer data streaming application or of a volunteer computing infrastructure in which participants donate compute cycles, a detailed model of the core of the network may not be needed as most of the contention occurs at the edges of the network (e.g., when streaming content, when downloading input data for computation). Conversely, when studying collective communications in a cluster with limited bisection bandwidth, it is necessary to model the core of the network since it is where the contention will occur. Similarly, in platforms that span wide-area networks, applications may experience network contention on some wide-area network paths.
+An alternative to expensive packet-level modeling, which still makes it possible to account for network contention, is ﬂow-level modeling. In ﬂow-level models, which are used by simulators in various domains [Bell et al. 2003; Casanova et al. 2008; Ostermann et al. 2010; Giuli and Baker 2002; Zheng et al. 2004a], each communication, or ﬂow, is simulated as a single entity rather than as a set of individual packets. The time needed to transfer a message of size S between hosts i and j is then given by
+
+Ti, j (S) = Li, j + S/Bi, j ,
+
+(1)
+
+where Li, j (Bi, j, respectively) is the end-to-end network latency (bandwidth, respectively) on the route connecting i and j. Although determining Li, j may be straightforward, estimating the bandwidth Bi, j is more difﬁcult as it depends on interactions with every other ﬂow. This is generally done by assuming that the ﬂow has reached steady
+state, in which case the simulation amounts to solving a bandwidth sharing problem,
+that is, determining how much bandwidth is allocated to each ﬂow. More formally:
+
+Consider a connected network that consists of a set of links L, in which each link l has capacity Bl. Consider a set of ﬂows F, where each ﬂow is a communication between two network vertices along a given path. Determine a “realistic” bandwidth allocation f for ﬂow f so that:
+
+∀l ∈ L,
+
+f Bl .
+
+(2)
+
+f going through l
+
+Given the computed bandwidth allocation (which deﬁnes all data transfer rates) and the size of the data to be transmitted by each ﬂow, one can determine which ﬂow will complete ﬁrst. Upon completion of a ﬂow, or upon arrival of a new ﬂow, the bandwidth allocation can be re-evaluated. Usually, this re-evaluation is memoryless, meaning that it does not depend on past bandwidth allocations. This approach makes it possible to quickly step forward through (simulated) time, and thus is attractive for implementing scalable simulations of large-scale distributed systems with potentially large amounts
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:7
+
+of communicated data. However, it ignores phenomena such as protocol oscillations, slow start (even though slow start can sometimes be modeled via an additional communication latency that depends on message size [Clauss et al. 2011]), and more generally all transient phases between two steady-state operation points. Perhaps more crucially, the whole approach is preconditioned on computing a bandwidth sharing solution that corresponds to the bandwidth sharing behavior of real-world network protocols, and in particular of TCP.
+
+2.4. Flow-level Models of TCP
+Two approaches are used to build models of a computer system, and thus of the network: in the bottom-up approach the model is built based on analyzing low-level phenomena; in the top-down approach the model is built from observations of the full system. The bottom-up approach should intuitively lead to more accurate models but does not guarantee perfect validity because analyzing low-level phenomena typically requires that approximations be made. One advantage of the top-down approach is that deriving the model is easier since understanding the low-level details of the system is not needed, but the validity of the model is more questionable.
+The TCP network protocol is known for its additive increase multiplicative decrease window size policy, which causes the data transfer rates of ﬂow to oscillate. While such oscillation complicates the modeling of the behavior of TCP, in the last decade, following the seminal work in Kelly et al. [1998], several bottom-up ﬂow-level models and tools for network protocol analysis have been proposed [Mo et al. 1999; Mo and Walrand 2000; Ya¨ıche et al. 2010; Low et al. 2002; Low 2003]. The goal is to provide a quantitative understanding of the macroscopic behavior of TCP given its microscopic behavior, and in particular its window size policy. In these works, the steady-state behavior of the protocol is often characterized as the solution to an optimization problem. By making an analogy between the equations governing expected window size that follow from the speciﬁcation of TCP and a distributed gradient algorithm, Low et al. [Low 2003] have proved that the steady-state throughputs of network ﬂows are similar to those obtained by solving a global optimization problem under the constraints in Equation (2). We brieﬂy recall the main principle of this modeling approach by illustrating its use for the Reno protocol using RED [Floyd and Jacobson 1993] as a queue policy for routers.
+Let w f (t) be the window size of the emitter of ﬂow f at time t. w f (t) is thus the number of packets of f for which no ack has yet been received at time t. Let df be the equilibrium round-trip time (propagation plus equilibrium queuing delay) of f , which is assumed to be constant. The instantaneous data transfer rate f (t) is thus equal to w f (t)/df . Using the RED protocol, if we denote by pl the loss probability on link l, the probability of packet loss for ﬂow f is
+
+qf = 1 −
+
+(1 − pl) ≈
+
+pl when pl 1.
+
+l traversed by f
+
+l traversed by f
+
+At time t, f ’s emitter transmits f (t) packets per time unit and receives (positive and negative) acknowledgments at approximately the same rate, assuming that every
+packet is acknowledged. On average, f ’s emitter receives f (t)(1 − q f (t)) positive acknowledgments per time unit and each positive acknowledgment increases the window
+w f (t) by 1/w f (t) (additive increase). It also receives, on average, f (t)q f (t) negative acknowledgments (marks) per time unit, halving the window for each. The net change to
+the window between two packet emissions, which occurs roughly every δ f (t) = df / f (t) time units, is then obtained as
+
+w f (t
+
++
+
+δ f (t))
+
+−
+
+w f (t)
+
+=
+
+1 (1
+w f (t)
+
+−
+
+q f (t))
+
+−
+
+w f (t) 2
+
+.
+
+q f (t).
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:8
+
+P. Velho et al.
+
+Hence, f (t) follows the following ODE:
+
+df dt
+
+=
+
+1
+
+− q f (t) d2f
+
+−
+
+1 2 q f (t)
+
+f (t)2.
+
+The value q f (t) accounts for the contention along f ’s path and for the fact that the
+
+capacity of every link should not be exceeded (i.e., that the constraints in Equation (2)
+
+are enforced). Associating a Lyapunov function to this ODE makes it possible to prove
+
+that the trajectories converge to a point that maximizes
+
+√
+
+2 arctan
+
+d√f f
+
+under constraints in Equation (2).
+
+(3)
+
+f ∈F df
+
+2
+
+Similarly, it can be proven that TCP Vegas with DropTail achieves some form of weighted proportional fairness [Low 2003], that is, it maximizes the weighted sum of the logarithm of the throughput of each ﬂow:
+
+df log( f ) under constraints in Equation (2).
+
+(4)
+
+f ∈F
+
+These bottom-up models are attractive because they capture the speciﬁcs of the underlying network protocol. One drawback for using them as the basis for grid/cloud simulation, admittedly not their intended use, is that they involve parameters that may not be straightforward to instantiate by users, for example, the equilibrium round-trip time. The model may be of little use in this context if its instantiation requires in-depth knowledge of networking or a whole set of complex experimental measurements (either of which would compel users to use unsound “guesses” as parameter values).
+Top-down ﬂow-level models have also been proposed. These models are not derived from an analysis of the speciﬁcation of the TCP protocol, but from observations of the protocol’s macroscopic behavior over a range of relevant network topologies. An oftmentioned bandwidth sharing objective, which leads directly to a top-down model, is Max-min fairness. This objective is reached by recursively maximizing
+
+min w f f under constraints in Equation (2),
+
+(5)
+
+f ∈F
+
+where w f is generally chosen as the round-trip time of ﬂow f . There are two rationales for this objective. First, it corresponds to what one would na¨ıvely expect from a network (i.e., be “as fair as possible”) so that the least favored ﬂows receive as much bandwidth as possible while accounting through weights w f for the well-known RTTunfairness of TCP [Marﬁa et al. 2007]. Second, there is a simple algorithm for solving the optimization problem [Bertsekas and Gallager 1992], whereas solving nonlinear problems (with objectives such as the ones in Equations (3) or (4)) requires more elaborate techniques. Previous studies have shown that Max-min fairness does not exactly correspond to bandwidth sharing under TCP but that it is a reasonable approximation in many relevant cases [Chiu 1999; Casanova and Marchal 2002].
+
+2.5. Accuracy of Flow-level Simulation
+The overarching question that we study in this work is whether ﬂow-level simulation can provide accurate results, in particular when compared to packet-level simulation. Some simulators do implement ﬂawed Max-min ﬂow-level models that lead to reasonable results in some situations but also lead to unrealistic bandwidth sharing in other situations (see Table I). Besides such plainly invalid models, there is a striking dearth of validation studies in the literature. Those works that do propose ﬂow-level models [Low et al. 2002; Low 2003] are driven by protocol design goals [Low and Srikant 2004], and
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:9
+
+thus merely present a few test cases to illustrate the correctness of the models. More in-depth validation studies were conducted by Marchal et al. [Casanova and Marchal 2002; Casanova et al. 2003] and by Fujiwara and Casanova [Fujiwara and Casanova 2007]. These studies explore a moderate range of experimental scenarios but mostly end up exhibiting instances in which the evaluated models work reasonably well. None of these works questions the validity limits of the models.
+Evaluating the validity of ﬂow-level models in complex and diverse scenarios raises practical difﬁculties, such as requiring that real-world networks be conﬁgured for each scenario of interest. In the context of grid or cloud computing systems, setting up many network conﬁgurations for the purpose of model validation is simply not possible. One convenient solution is to compare results obtained with ﬂow-level models to results obtained using packet-level simulation. This approach raises the question of whether packet-level simulation is representative of real-world networks. Answering this question is out of the scope of this work. However, based on the conﬁdence placed by the network community in its packet-level simulators, it is reasonable in this work to declare packet-level simulation the ground truth. As a result, we talk of the error of a ﬂow-level model to denote the discrepancy between its results and the results obtained with packet-level simulators for the same simulated scenario. A precise error metric is deﬁned in Section 3.1.
+The work in Fujiwara and Casanova [2007] provides an evaluation of the ﬂow-level model implemented in the SimGrid simulation framework at that time. Conveniently, SimGrid provides an interface to the GTNetS packet-level simulator, which greatly eases the comparison of ﬂow-level and packet-level results. GTNetS is no longer ofﬁcially supported and the latest version of SimGrid also provides an interface to NS3. (Both GTNetS and NS3 implement the same TCP stack.) The current version of SimGrid implements ﬂow-level models based either on Max-min fairness or on the model by Low et al. [Low et al. 2002; Low 2003]. These capabilities of SimGrid make it a convenient framework for studying the validity of ﬂow-level models. Our recent work in Velho and Legrand [2009], on which this work builds, has taken advantage of these capabilities to evaluate and improve upon a top-down Max-min ﬂow-level model. In that work the following advances were made:
+
+—Linearity: The communication time of a message for ﬂow f is given by tf = S f / f + Lf where S f is the message size, f is the bandwidth allotted to f , and Lf is the sum of the latencies of the links traversed by f . However, Lf and Bl (used in the computation of f ) are physical characteristics that are not directly representative of what may be achieved by ﬂows in practice. The protocol overhead should be accounted for, which can be done by multiplying all latencies by a factor α > 1 and all bandwidths by a factor β < 1. α accounts for TCP slow-start and stabilization, which prevent ﬂows from instantaneously reaching steady state. β accounts for packetization and control overheads. This simple change leads to an excellent
+approximation for a single ﬂow on a single link when message size is larger than 100KB (with α = 10.2 and β = 0.92) [Velho and Legrand 2009]. —Flow Control Limitation: TCP’s ﬂow control mechanism is known to prevent full
+bandwidth usage as ﬂows may be limited by large latencies [Mathis et al. 1997; Floyd
+and Fall 1999; Jain et al. 2003]. This well-known phenomenon can be captured in a
+ﬂow-level model by adding, for each ﬂow, the constraint that
+
+f Wmax/(2L f ),
+
+(6)
+
+where Wmax is the conﬁgured maximum window size. The validity of this enhancement is demonstrated for a single ﬂow going through a single link [Velho and Legrand
+2009].
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:10
+
+P. Velho et al.
+
+—Bottleneck Sharing: TCP protocols are known to be RTT unfair; hence, when two ﬂows contend for bandwidth on a bottleneck link, they are assigned bandwidth
+
+inversely proportional to their round-trip times [Marﬁa et al. 2007]. On a simple dumbbell topology, but for a wide range of bandwidth and latency parameters, this round-trip time is well approximated by the following formula:
+
+γ
+
+RT T f
+
+=
+
+l traversed by
+
+f
+
+Ll
+
++
+
+, Bl
+
+(7)
+
+where γ is a ﬁxed value for all ﬂows. It turns out that γ = 8,775 provides a good approximation [Velho and Legrand 2009].
+
+Although they may look ad hoc, these model enhancements do have sound justiﬁcations and parameter values have natural interpretations [Velho and Legrand 2009]. Improvements over basic Max-min were demonstrated on dozens of randomly generated networks with 50 to 200 nodes and 150 ﬂows with randomly chosen sources and destinations. Yet, in spite of good average results, occasionally a ﬂow has a throughput that is more than a factor 20 away from that obtained using packet-level simulation.
+
+3. ON THE (IN)VALIDATION PATH
+The validity of the bandwidth sharing model itself is not questioned in Velho and Legrand [2009]. In fact, both Max-min sharing and arctan-based sharing (based on Low [2003]) are shown to lead to the exact same bandwidth allocation on simple cases like dumbbell topologies, which is formally provable. Interestingly, although not reported in Velho and Legrand [2009] because we did not know how to explain it at the time of writing, the use of arctan-based sharing instead of Max-min sharing does not provide any signiﬁcant improvement for more complex topologies. In other words, the main sources of error seem to be model instantiation errors rather than fundamental ﬂaws of the bandwidth sharing model. This is surprising given that in the literature there is an unstated, but very intuitive, assumption that the bandwidth sharing model itself is of critical importance.
+Our goal in this section is to understand, and hopefully resolve, the errors of the ﬂowlevel model developed in Velho and Legrand [2009], thereby obtaining an improved model. As in Velho and Legrand [2009], we compare the model’s results with those obtained with packet-level simulators, conﬁguring these simulators to implement TCP Vegas. We mostly report on packet-level simulation results obtained with GTNeTS, but when results seem counterintuitive we conﬁrm them using NS3 to ensure that our observations are not due to artifacts of the packet-level simulator.
+One of our contributions is the method we use for accomplishing our goal. Rather than showing that a model is valid by exhibiting a possibly large set of scenarios in which the model leads to good results, we instead strive to identify cases that “break” the model. This approach follows the critical method [Popper 1972], which places model refutation at the center of the scientiﬁc activity. The main implication is that inductive reasoning, by which one accumulates observations in which the model is valid, should be banned. Instead, the quality of a model should be established by searching for situations that invalidate the model. Invalidation is done via crucial experiments that invalidate the current model, thus motivating the need for a new model. This new model should stand the test of these crucial experiments and should also explain why the refuted model is invalid in these experiments. As a consequence, model parameters that do not have clear signiﬁcance but make it possible to “ﬁt” a model to a set of observations are to be avoided.
+Note that what follows is perhaps atypical in that we repeatedly show “poor” results, while the vast majority of published works strive to show “good” results instead.
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:11
+
+Fig. 1. Two typical 50-node topologies used in our study.
+Nevertheless, following our method, we are able to measure and understand the inherent limitations of an entire class of network modeling techniques.
+3.1. Phase Effects
+As described in Section 2.5, the work in Velho and Legrand [2009] has proposed and evaluated a (top-down) ﬂow-level model based on Max-min optimization. For completeness, we recall here the evaluation methodology therein, which we also use in this work, as well as the ﬁnal results of this evaluation. Four sets of 10 random topologies were generated with the Waxman model [Waxman 1988] and the BRITE generator [Medina et al. 2001] (Figure 1(a) illustrates a typical 50-node random topology). Although there has been a long-standing debate [Chen et al. 2002; Lakhina et al. 2003; Tangmunarunkit et al. 2002] on network topology characteristics and the existence of power laws [Faloutsos et al. 1999], we use these two generators because at small scale they are probably more meaningful than degree-based generators [Baraba´ si and Albert 1999]. Each of the four sets comprises either small (50 nodes) or large (200 nodes) and either mostly homogeneous (Bl follows a uniform distribution in [100, 128] MB/s) or heterogeneous (Bl follows a uniform distribution in [10, 128] MB/s) topologies. Network link latencies are computed by BRITE based on the Euclidean distance and are in the interval (0, 5]ms. Each platform has twice as many edges than nodes. One hundred ﬂows are generated between random pairs of end-points, using shortest path routing. Ten different sets of such random ﬂows are simulated for each topology conﬁguration. For the experiment described hereafter, all ﬂows transfer 100MB and the maximum TCP window size is set to 64KB. GTNetS is conﬁgured to simulate TCP Vegas with Droptail as in Low [2003], hence leading to a system theoretically governed by Equation (4). Overall, there are 160 experimental scenarios.1
+In the simulation, all ﬂows start at exactly the same time. The simulation ends as soon as one ﬂow completes, and the amount of data transferred by each ﬂow is determined. The rationale for stopping the simulation after the ﬁrst completion is to avoid computing data transfer rates over a time period in which a variable number of ﬂows are active. Based on the amounts of data transferred, the bandwidth allocated to each
+1All scenarios, simulation traces, and analysis scripts are available at http://simgrid.gforge.inria.fr/ network_validation/.
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:12
+
+P. Velho et al.
+
+Fig. 2. Mean logarithmic error (left) and max logarithmic error (right) for all experimental scenarios for the ﬂow-level model in Velho and Legrand [2009].
+
+ﬂow is then computed. This enables us to focus on instantaneous bandwidth sharing errors rather than on their accumulation and possible canceling. Such experiments are performed with the Max-min ﬂow-level model in Velho and Legrand [2009] as well as with the GTNetS packet-level simulator. The mean error and the max error of the ﬂow-level model for one experiment is computed as
+
+MeanLogErr
+
+=
+
+1 |F |
+
+log
+
+ﬂow f
+
+− log
+
+packet f
+
+f ∈F
+
+MaxLogErr = max log
+f ∈F
+
+ﬂow f
+
+− log
+
+packet f
+
+.
+
+, and
+
+We adopt the above logarithmic error measure because it is completely symmetrical.
+
+Consider a standard relative error measure deﬁned as (
+
+ﬂow f
+
+−
+
+packet f
+
+)/
+
+packet f
+
+.
+
+If
+
+ﬂow f
+
+=
+
+2
+
+packet f
+
+its
+
+value is
+
+1
+
+(i.e., 100%), whereas
+
+if
+
+ﬂow f
+
+=
+
+pfacket/2, its value is −1/2 (i.e.,
+
+−50%). Instead, the logarithmic error leads to symmetrical values of log 2 and −log 2.
+
+Therefore, additive aggregation operators like the maximum, the mean, or the variance
+
+can be applied to this metric more sensibly. The drawback of this metric is that to
+
+interpret the error as a percentage, one needs to revert from the log-space. For instance,
+
+a logarithmic error of 0.1 corresponds to a relative error of exp(0.1)−1 = 10.5% (close to
+
+10%), but a logarithmic error of 1.0 corresponds to a relative error of exp(1) − 1 = 170%
+
+(far from 100%).
+
+Figure 2 depicts obtained results for the mean error (left graph) and the max error
+
+(right graph). The vertical axis shows the error, and the horizontal axis corresponds to
+
+the different experimental scenarios, sorted by increasing error. The main observation
+
+is that while some scenarios have low mean and max error, some lead to egregious
+
+errors. In particular, the max error reaches a value close to 3. Consequently, over all
+
+experiments, there is at least one ﬂow whose bandwidth is a factor e3 ≈ 20 away from
+
+the bandwidth obtained using packet-level simulation. The negative conclusion is that
+
+simulation results obtained with ﬂow-level simulations are “mostly reasonable,” which
+
+casts doubts about how such simulations could be used meaningfully.
+
+In what follows, we investigate the source of the large observed error. A cursory
+
+exploration of the results does not reveal any pattern and over- or underestimation
+
+errors seem random. Instead of seeking a pattern in the existing results, we pick a
+
+scenario in which at least one of the ﬂows has large error, and iteratively remove ﬂows
+
+that do not lead to signiﬁcant error. We obtain a simpliﬁed experimental scenario (only
+
+two ﬂows and a few links) that still leads to large errors. Finding that the source of the
+
+error remains mysterious even in such a simple case, we attempt to round up platform
+
+parameters (latency and bandwidth) to integral values to allow a by-hand analytical
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:13
+
+Fig. 3. Mean logarithmic error (left) and max logarithmic error (right) for all experimental scenarios for the ﬂow-level model in Velho and Legrand [2009], after removing phase effects by conﬁguring GTNetS with the RED queue policy.
+evaluation of the ﬂow-level bandwidth sharing model. Surprisingly, the results from packet-level simulation after this rounding off change dramatically. In fact, in our experiments it can easily be shown that packet-level simulation is extremely sensitive to platform parameters. For instance, a slightly modiﬁed latency can lead to a radically different bandwidth sharing among two competing ﬂows, a phenomenon that cannot be captured by a (continuous) ﬂow-level model. This phenomenon, which is well known in the network community, is called phase effect [Floyd and Jacobson 1992] and is due to the default Droptail router queue policy algorithm. An artifact of deterministic packetlevel simulation is that it makes phase effects signiﬁcantly more likely. Fortunately, phase effects are unlikely in actual wide-area networks because of frequent small burst ﬂows that randomly break the Droptail queue pattern. That is why most recent routers now include implementations of RED or WRED policies that do not behave deterministically (phase effects were one of the motivations for developing RED-like policies). While “rediscovering” phase effect is not a new contribution of this work, it is important to point out that we were able to do so thanks to our critical method approach to model invalidation.
+Note that we do not claim the superiority of queue policy against another one but we simply notice that phase effects signiﬁcantly hinder the evaluation of scenarios using Droptail with packet-level simulation and make it inadequate for comparison with ﬂuid models. We can now revisit the results in Figure 2 after conﬁguring GTNetS so that the RED policy2 is used instead of Droptail. Since the work of Low [2003] provides ﬂuid approximations for Vegas/Droptail and Reno/RED, we additionally reconﬁgured GTNetS so that it uses Reno, hence leading to a system theoretically governed by Equation (3) as demonstrated in Low [2003]. The ﬂow-level model needs to be reinstantiated as well, meaning that the α, β, and γ parameters described in Section 2.5 must be re-estimated based on new packet-level simulation results obtained for elemental experimental settings. The resulting values are α = 13.01, β = 0.97, and γ = 20,537.14. Newly obtained results for the 160 experimental scenarios are shown in Figure 3. The mean error decreases marginally. More important, the max error is greatly improved from close to 3 (a factor e3 ≈ 20) to a value below 1.6 (a factor lower than e1.6 ≈ 5). We now know that the very large errors that remained unexplained in Velho and Legrand [2009] were caused by phase effects. While a factor 5 is better than a factor 20, there is still much room for improvement. Furthermore, comparing the
+2The RED parameters used were the default from GTNetS, which are the most commonly found in the literature [Floyd and Jacobson 1993; Pentikousis 2001; de Cnodder et al. 2000]: the weight of the queues was set to 0.002, max (min, respectively) threshold was set to MiB (max/3, respectively), maximum size queue was set to 400Mib, marking probability was set to 0.02, and average packet size was set to the same as TCP segment size (i.e., 1,000B).
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:14
+
+P. Velho et al.
+
+Fig. 4. Mean logarithmic error (left) and max logarithmic error (right) for all experimental scenarios in the critical workload described in Section 3.2 (reduced bandwidth values, hierarchical topologies).
+
+Fig. 5. Max error and the percentage of RTT-bound ﬂows for all experiments, sorted along the horizontal axis by increasing max error.
+graph on the right-hand side of Figure 2 to the graph on the right-hand side of Figure 3, we see that there are no longer clear “outliers” in terms of maximum error. Although outliers correspond to poor results, in our invalidation approach outliers are helpful as they make it easier to identify ﬂaws in the model. Without outliers, identifying the sources of error is thus potentially more difﬁcult. The critical method drives the search for more critical scenarios, that is, scenarios for which it is easier to devise crucial experiments.
+3.2. Picking a Critical Workload
+Following the critical method, one should evaluate a model on cases in which it performs poorly. While some of the experimental scenarios used in the previous section lead to substantial errors, many lead to low mean error, and to a lesser extent to low max error. Consequently, many of these scenarios fall into the “accumulating cases in which the model is effective” category instead of being “crucial experiments.” Inspecting the scenarios in detail, we notice that most ﬂows are throughput-limited by their RTTs. Such ﬂows are good cases for a ﬂow-level model because the constraints in Equation (6) essentially bypass the core of the bandwidth sharing formulation. This observation is conﬁrmed in Figure 5. The top part of the ﬁgure plots the max error over all experiments, sorted by increasing error. The bottom part, which uses the same experiment order, plots the percentage of ﬂows that are RTT-bound. We see a clear inverse correlation between the max error and the fraction of ﬂows that are RTT-bound.
+We address this shortcoming of our dataset in two ways. First, we regenerate our dataset so that bandwidths are sampled uniformly in the interval [10, 12.8]MB/s and
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:15
+
+Fig. 6. Comparison of ﬂow completion times with ﬂow-level simulation (top timeline) and packet-level simulation (bottom timeline); lines connecting timeline markers correspond to the same ﬂow in both simulations and are darker for larger completion time mismatches.
+latencies are sampled uniformly in the interval [1, 30]ms. While such low bandwidth values are likely uncommon and impractical in today’s (wired) networks, they should increase the number of ﬂows that are not RTT-bound. Second, we use an additional alternative topology model. The Waxman model used in our original dataset is likely to create several possible paths between two sets of end-points (Figure 3(a) shows an example of this type of topology). The number of ﬂows contending for bandwidth on the same link may be low, meaning that most ﬂows could be RTT-bound. Consequently, the Waxman model may not be ideal for generating crucial experiments when evaluating bandwidth sharing models. By contrast, Figure 1(b) shows an example topology created with the Tiers algorithm [Doar 1996], which uses a three-step space-based hierarchical approach. The resulting topologies are hierarchical with low bisection bandwidth, and have thus both global (in the core of the network) and local (on the edges of the network) bottleneck links. We use Tiers to generate an additional set of 80 experimental scenarios for further invalidating the ﬂow-level model. Figure 4 shows results for all 160 + 80 = 240 topologies in our new combined dataset. We see that the mean error is now larger than 1.25 (compared to below 0.5 for only the Waxman topologies), and the max error is now above 6 (compared to below 2 for only the Waxman topologies).
+Note that in Figure 4, results have been resorted. Hence, the ﬁrst 160 values of Figure 3 do not correspond to the ﬁrst 160 values of Figure 4. It turns out that the 80 Tiers scenarios are randomly interspersed with the 160 Waxman scenarios. Although hierarchical topologies tend to exhibit higher error, some nonhierarchical topologies also lead to high maximum and average error. Still, it can be seen that the 160 scenarios from Figure 3 have a much higher error in Figure 4, which is caused by bandwidth reduction. It is with this new set of experimental scenarios that we continue the (in)validation study of our ﬂow-level model in the next section.
+3.3. Reverse Trafﬁc Effects
+Our new experimental scenarios have larger errors, making “bad cases” easier to identify. To understand the root causes of the errors, we use a multiscale, interactive, and exploratory visualization tool called Triva [Schnorr et al. 2010, 2011; Triva 2011]. We select some of the scenarios that have large maximum error and run them until completion of all ﬂows so that we can compare ﬂow completion times and not only instantaneous bandwidth shares. Figure 6, which is created using Triva, shows two timelines, the top one corresponding to our ﬂow-level model and the bottom one corresponding to packet-level simulation. Each timeline marker represents the completion time of a ﬂow. Triva connects two markers on the two timelines by a line if they correspond to the completion of the same ﬂow. In a no-error situation, all these lines are vertical. For easier visualization, Triva uses gray shades for these lines: The darker the line, the larger the error (i.e., the less vertical the line). It is thus straightforward to identify which ﬂows have large errors without being “distracted” by low-error ﬂows.
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:16
+
+P. Velho et al.
+
+Fig. 7. Visualization of network link utilization when all communication ﬂows are active in the topology with a highlighted large-error ﬂow.
+Three observations can be made from Figure 6. First, the ﬂow-level timeline is shorter, indicating that the simulated time for the entire workload is shorter with ﬂow-level simulation than with packet-level simulation (about 35% in this example). Second, some ﬂows do have low errors but many of them have large errors. Third, except for one ﬂow that completes signiﬁcantly earlier in the packet-level simulation than in the ﬂow-level simulation, the ﬂow-level simulation almost always underestimates ﬂow completion time. Despite our best efforts, we were not able to explain the behavior seen for this particular ﬂow.
+We now use a graph-based visualization, another Triva feature, which shows the bandwidth utilization for all network links in the topology, paying close attention to those large-error ﬂows identiﬁed in Figure 6. This visualization is shown in Figure 7. Routers and hosts of the platform are represented by black squares, while network links are represented by diamonds. The size of a diamond is proportional to the link’s bandwidth capacity. A dark color ﬁll indicates link utilization (the more ﬁlled the diamond, the more utilized the link). Utilization is computed as an average over a given time frame.
+Figure 7 shows two visualizations, one for ﬂow-level simulation (left) and one for packet-level simulation (right). Routing is identical in both cases. Utilization values are averaged over the time from the onset of the simulation until the completion time of the ﬁrst ﬂow, thus ensuring that all ﬂows are present in our visualization. We select a ﬂow with large error and show part of its network path in a zoomed region of the full topology. In the case of ﬂow-level simulation, the network link that limits this ﬂow, shown in the region labeled A, is, as expected, fully saturated. A gray ﬁll in the ﬁgure shows the capacity allocated to our target ﬂow. Surprisingly, in packet-level simulation a much lower bandwidth share is allocated to this ﬂow, and this network link, now in the region labeled B, is not saturated at all. In fact, our target ﬂow receives an insigniﬁcant fraction of the bandwidth along the whole path, whereas none of the links on the path are saturated. We conclude that TCP underutilizes this network path and that a bandwidth sharing model based on a global optimization under the constraints in Equation (2) has no chance of ever capturing this behavior. The same observation can be made for other ﬂows in this experimental scenario, over other time frames, and in other experimental scenarios. Underutilization of network links by TCP is thus a key reason that contributes to the large errors seen in our experimental scenarios: our ﬂow-level model gives “too much” bandwidth to ﬂows.
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:17
+
+Fig. 8. Five reverse-trafﬁc interference scenarios: {B, (n1, n2)} denotes a scenario with one full-duplex link of capacity B, with n ﬂows in one direction (shown above the dashed lines) and p ﬂows in the reverse direction (shown below the dashed lines). The bandwidths allocated to the ﬂows are shown on the right-hand side of each scenario. The last scenario shows an asymmetric situation.
+To better understand the cause of the error we remove all the ﬂows that do not use the link that showed widely different utilization in ﬂow-level and packet-level simulations. The simpliﬁed experimental scenario still suffers from the same discrepancy between the two simulations. Our expectation is that on a single full-duplex link the bandwidth allocated to ﬂows going in one direction is independent from that allocated to ﬂows going in the reverse direction. However, the above simulation results seem to contradict this notion. To invalidate it, we conduct “crucial experiments” using packet-level simulation as follows. Let us denote by {B, (n1, n2)} a scenario with a single full-duplex bottleneck link of capacity B, n ﬂows going through the link in one direction, and p ﬂows going through the link in the reverse direction. We denote the outcome of the scenario by (B1, B2), where B1 is the bandwidth allocated to the n ﬂows and B2 is the bandwidth allocated to the p reverse ﬂows (in all cases all ﬂows in the same direction are allocated the same bandwidth).
+Figure 8 depicts ﬁve example scenarios, showing approximate results achieved in simulation. The bandwidth allocation for {B, (n, 0)} (respectively, {B, (0, p)}) is always approximately (B/n, 0) (respectively, (0, B/ p)). Since the network link is full-duplex, expectedly simulations also show that {B, (1, 1)} leads to the allocation (B, B). Likewise, {B, (2, 2)} leads to (B/2, B/2). Surprisingly though, {B, (2, 1)} does not lead to (B/2, B) as one would expect but instead to (B/2, B/2). More generally, our experiments show that {B, (n1, n2)} leads to allocation (B/ max(n1, n2), B/ max(n1, n2)). Given how surprising this result seems, one may wonder whether it is not a simulation artifact. We conducted dozens of experiments on real-world networks, with host pairs connected via a direct full-duplex link and host pairs connected via a sequence of full-duplex links. The phenomenon above was conﬁrmed in every tested conﬁguration. Using network monitoring tools, namely, tcpdump and wireshark, we were able to understand that link underutilization is due to the interference between acknowledgments for the trafﬁc in one direction and the trafﬁc in the other direction, which we term reverse trafﬁc. Acknowledgment packets are queued with data packets from the trafﬁc, thus slowing down the reverse trafﬁc. It turns out that this phenomenon is known in the network community as ACK compression [Zhang et al. 1991] and is very common for ADSL
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:18
+
+P. Velho et al.
+
+Fig. 9. Consequence of utility set deformation.
+
+connections. In perfectly symmetrical cases, although ACK compression may still occur, delayed ACKs should make it disappear. As recently noted in Heusse et al. [2011], the poor link utilization we observe is more likely to be explained by a data pendulum effect (also known as ACK clocking) where data and ACK segments alternatively ﬁll only one of the link buffers. At any rate, such a phenomenon, which is not modeled by any of the previously mentioned ﬂow-level models, results in seemingly overutilized bottleneck links in ﬂow-level simulations. Once again, through our use of the critical method, we have “rediscovered” a low-level network phenomenon.
+
+3.4. Accounting for Reverse Trafﬁc
+It turns out that, under the constraints in Equation (2), our ﬂow-level model is inherently incapable of capturing the reverse-trafﬁc effect identiﬁed in the previous section. To illustrate this, consider a scenario with two hosts M1 and M2 connected via one link of capacity B. If we have two ﬂows from M1 to M2 and one ﬂow from M2 to M1, the constraints in Equation (2) are rewritten as
+
+1+ 2 3B
+
+B
+
+and (by symmetry) 1 = 2.
+
+(8)
+
+Figure 9(a) depicts the corresponding utility set, in which there is a single Pareto
+
+optimal point ( 1 = 2, 3) = (B/2, B). This point is far from the actual bandwidth
+
+share achieved by TCP due to the reverse-trafﬁc effect. And yet, formulating band-
+
+width sharing as an optimization problem always produces a Pareto-optimal solution.
+
+Consequently, such ﬂow-level models cannot account for reverse-trafﬁc effects with the
+
+constraints in Equation (2). As a solution, we propose to change these constraints as
+
+follows:
+
+⎛
+
+⎞
+
+∀l ∈ L,
+
+f +ε·⎝
+
+f ⎠ Bl.
+
+(9)
+
+f going through l
+
+f ’s ack through l
+
+Figure 9(b) depicts the utility set deﬁned by these new constraints. The utility set is deformed so that the unique Pareto-optimal point has become a whole Pareto border. With such constraints, the solution of Max-min optimization is much closer to the outcome of packet-level simulation. We obtain a new Max-min model that we can compare to packet-level simulation and to our original model.
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:19
+
+Fig. 10. Comparison of ﬂow completion times with the original ﬂow-level simulation (top timeline); the packet-level simulation (middle timeline); and the improved ﬂow-level simulation with modiﬁed constraints to account for reverse-trafﬁc (bottom timeline).
+
+Fig. 11. Mean logarithmic error (left) and max logarithmic error (right) for all experimental scenarios for the
+ﬂow-level model SGmaxmin in Velho and Legrand [2009] and the improved reverse-trafﬁc model SGreverse-trafﬁc proposed in Section 3.3, evaluated with topologies generated by Tiers.
+
+Fig. 12. Mean logarithmic error (left) and max logarithmic error (right) for all experimental scenarios for the reverse-trafﬁc aware model based on Max-min, SGreverse-trafﬁc , and the arctan-based model in Low [2003], SGreno .
+Figure 10 is similar to Figure 6, but also displays the timeline for the improved model at the bottom. It can plainly be seen that there are fewer dark lines to the timeline at the bottom than to the timeline at the top. The modiﬁed constraints improve the quality of our ﬂow-level model.
+Figure 11 shows the beneﬁt of the modiﬁed model over the original model for the entire set of critical experimental scenarios, with scenarios sorted by increasing error of the original model. We see that the mean error is always improved by the modiﬁed model, while most max errors are also improved. Importantly, the largest max error with the modiﬁed model is below 4, while it was higher than 6 with the original model.
+3.5. Comparison with Bottom-Up Modeling Figure 12 shows results for our improved Max-min model and the model from Low [2003], which is attractive because it is built bottom-up from ﬁrst principles of the
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:20
+
+P. Velho et al.
+
+TCP algorithms. Experimental scenarios are sorted by increasing error of the Maxmin model. We see that the mean error is almost always slightly larger for the model in Low [2003] than that obtained with our improved top-down Max-min model. More importantly, perhaps, the Max-min model leads to signiﬁcantly lower max error, that is, better worst-case behavior. Note that the reverse-trafﬁc issue is not encountered and thus not identiﬁed in Low et al. [2002], Low [2003], and Low and Srikant [2004] because all ﬂows are along the same direction in their experiments.
+It is not surprising that the model in Low [2003] leads to high error with reverse trafﬁc since the absence of interference between acknowledgments and data trafﬁc is one of the main assumptions used to build bottom-up ﬂow-level models (i.e., making the analogy between the equations governing expected window size and a distributed gradient algorithm that optimizes a sum-based function). Low [2003] deﬁnes “df , the equilibrium round trip time (propagation plus equilibrium queuing delay) of ﬂow f , which is assumed to be constant.” However, df is only a constant for a given trafﬁc, meaning that it actually depends on the throughputs of the other ﬂows, which inﬂuence the queuing delay. Consequently, it is difﬁcult to use the models in Low [2003] as a basis for simulation since there is a circular dependency between the df parameter, which is needed to instantiate the model, and the throughput of the simulated ﬂows. For the results in Figure 12 we set df to the end-to-end latency of each ﬂow f , which is a constant. While it may be difﬁcult to make good choices of df values when instantiating the model for the purpose of simulation, one may wonder about the impact of these choices. It turns out that the shape of the isolines of sum-based objective functions is such that, unless the utility set is heavily distorted, the Pareto-optimal solution is always the rightmost and uppermost vertex (see Figure 9), which we have seen is far from the bandwidth share achieved by TCP. This is thus also the case with the model in Low [2003] because its objective function is a sum of arctan or log functions. Consequently, regardless of the chosen df values, there is little hope that the model could lead to good results in the presence of reverse trafﬁc. We conclude that although bottom-up modeling is attractive, a bottom-up model that does not account for reversetrafﬁc effects is inferior to a top-down model that does, such as our own modiﬁed Max-min model.
+The reverse-trafﬁc limitations of the model in Low [2003] have actually been identiﬁed and acknowledged by the authors in subsequent work. Reverse ﬂows cause smallscale burstiness in sub-RTT timescales that impact ﬂow-level stability and equilibria [Tang et al. 2008, 2010]. Tang et al. propose new Differential Algebraic Equation (DAE) models that link window size, instantaneous throughput, and congestion measures more ﬁnely than Low et al. [2002], Low [2003], and Low and Srikant [2004]. These improvements make it possible to capture burstiness and hence macroscopic phenomena. In particular, Jacobsson et al. [2008] model and study ACK-Clocking dynamics. More speciﬁcally, they study ﬁne interactions between different versions of TCP, deriving stability conditions of speciﬁc versions of TCP, and the interaction of paced and unpaced ﬂows. In simple situations, there is an almost perfect match between NS2 simulations and the DAE model, even in not-yet-stabilized phases.
+While these improved models are promising, it is unclear whether they can be used effectively in the context of simulation (this is admittedly not their intended use, since the aforementioned works focus on understanding TCP behavior rather than producing instantiable simulation models). First, all these models require solving complex differential equations, which would likely prove unscalable if used to drive simulations with hundreds of ﬂows. Second, although such work is motivated by burstiness caused by reverse trafﬁc, the reverse trafﬁc considered in the validation experiments of Tang et al. [2008], Jacobsson et al. [2008], and Tang et al. [2010] is always UDP-based and does not saturate links in the opposite directions, hence
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:21
+
+Fig. 13. Evolution of the throughput of the last ﬁnishing ﬂow, which has large error. Because of high contention, this ﬂow stalls 65% of the time. When there is no other remaining connection in the network, it does not transmit a single byte for 380 seconds, and ﬁnally completes the transfer in a few seconds.
+leaving room for acknowledgment packets. This situation does not correspond to all relevant simulation scenarios. Third, the experimental scenarios used to evaluate the models involve at most three nodes and three ﬂows, and one may wonder how the models would behave if used for simulating hundreds of ﬂows. Consequently, although in the future effective bottom-up simulation models could arise, for the time being our top-down model above appears to be the best available ﬂow-level network simulation model to date, at least in the context of large-scale grid/cloud computing simulations.
+4. LIMITS OF FLOW-LEVEL MODELING
+Accounting for reverse-trafﬁc effects has improved our ﬂow-level model substantially in terms of mean error over a range of crucial experimental scenarios. However, when considering ﬂow completion times rather than bandwidth shares when all ﬂows are active, many worst-case scenarios show no improvement at all. These ﬂows complete generally much later in packet-level simulation than in ﬂow-level simulation, and the cause of these errors is not the reverse-trafﬁc effect. Using our visualization tool we attempted to ﬁnd a topological pattern common to all these worst-case scenarios, but were not successful. We also considered particular ﬂows such as the ones that surprisingly complete earlier in GTNetS than within the ﬂow model, but again, we failed to identify any particular topological pattern that would explain these differences. We also tried the traditional approach of simplifying scenarios by iteratively removing ﬂows to isolate those with the worst errors. These simpliﬁcations were also unsuccessful as errors always disappeared early in the iterative process.
+Eventually, we isolated “unexpected” behavior in the packet-level simulations, for example, for the last ﬂow to complete in the packet-level simulation timeline in Figure 10. If this ﬂow were the only ﬂow, packet-level simulation shows that it would complete in less than 4 seconds. And yet, in the full simulation, the next-to-last ﬂow ﬁnishes 390 seconds before the completion of this last ﬂow! Analyzing the communication trace from the simulation shows a long period of inactivity for this ﬂow. Figure 13 shows the data transfer rate of the last ﬂow versus time. We see that this ﬂow receives some bandwidth in the beginning of the simulation, then stalls for 380 seconds, and then completes rapidly at the end of the simulation, receiving the full bandwidth of all the network links on its path. These results are with the GTNetS packet-level simulator, but we have observed the same behavior with NS3, thus indicating that this phenomenon is likely not a simulation artifact. In fact, the long inactivity period is due to TCP timeouts that occur for highly contended ﬂows. We surmise that such effects may be impossible to model using a (continuous) ﬂow-level model. A simulation of the state of the TCP stack would certainly be required, thus blurring the line between ﬂow-level and packet-level simulation.
+We conclude that the quality of our improved Max-min model is high for large messages in almost all the scenarios we have explored, the exceptions being extremely
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:22
+
+P. Velho et al.
+
+contended ones (i.e., with extremely small latencies and low bandwidth capacities). In these scenarios, the high error is due to the discrete nature of the TCP protocol, which, by design, is not captured by simple ﬂow-level models. While as part of our critical method approach we have purposely designed these extreme scenarios to invalidate our approach, it is comforting that such scenarios are bound to be unlikely, or so low-performance as to be irrelevant, in practical (simulation) settings.
+5. CONCLUSION
+When simulating large-scale grid/cloud computing systems and their applications, the use of packet-level simulation for network communications, albeit widely accepted to be accurate, typically proves unscalable. An alternative is to use simulation that relies on ﬂow-level models of network communications. Several ﬂow-level models of TCP have been proposed and used in the literature, but, perhaps surprisingly, few works have thoroughly investigated their validity. One such work is our previous study in Velho and Legrand [2009]. Although the core of a ﬂow-level model is the bandwidth sharing model, that study showed that bandwidth sharing was not the primary source of model errors: Errors were due primarily to poor instantiating of model parameters. The ﬁnal evaluation in Velho and Legrand [2009] showed that a model based on Maxmin fairness leads to good results on average even in complex scenarios. However, some ﬂows suffered from very large errors, which remained unexplained. Generally speaking, it is never possible to establish the validity of an empirical model entirely. Instead, one must seek to invalidate the model as a way to ascertain the amount of conﬁdence that can be placed in it and, perhaps, in the process propose improvements. In this article, we have followed such an invalidation path.
+Our ﬁrst source of error comes from the reference packet-level simulator, which was conﬁgured to use the Droptail router queue policy. This choice was motivated by the aim of ultimately comparing with the ﬂuid model of Vegas/Droptail proposed in Low [2003]. However the use of Droptail creates simulation artifacts known as phase effects, which compromise the results in Velho and Legrand [2009]. When removing these artifacts by using the RED queue policy, errors are decreased overall. It is interesting to note that we rediscovered this issue due to our implicit trust in our ﬂow-level model, but this trust was not fully justiﬁed since large errors remained. While looking for a second source of error, we determined that our benchmark workload, although seemingly standard, led to low-contention experimental scenarios. These scenarios are easy cases for ﬂowlevel models since with low contention the core of the bandwidth sharing algorithm is bypassed. We thus generated a new set of experimental scenarios and, expectedly, modeling errors were vastly increased. Actively seeking scenarios in which the error of the model proposed by the authors is as large as possible is perhaps atypical in the literature. Nevertheless, it is the course of action dictated by the critical method.
+Turning our attention to the sources of these enlarged errors, we eventually discovered that many were due to reverse-trafﬁc interference. The reason is that the data transfer rate of a TCP ﬂow is strongly dependent upon the rate at which acknowledgment packets arrive, which is easily demonstrated to be inﬂuenced by ﬂows going in the reverse direction both in packet-level simulation and in real-world experiments. Fortunately, it is straightforward to modify our Max-min-based ﬂow-level model to account for this reverse-trafﬁc effect. By contrast, such modiﬁcations seem out of reach for the ﬂow-level models proposed by others in the literature. In fact, these models were built in a bottom-up fashion, completely ignoring reverse-trafﬁc effects. Furthermore, their “validation” had been done by illustrating their accuracy on a few simple cases. It is likely that another model (like our Max-min-based model) would have produced the same results in these simple settings, showing the inherent problem with a methodology that only explores “good cases.”
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:23
+
+To the best of our knowledge, our Max-min–based model augmented with reversetrafﬁc support is the best ﬂow-level model of TCP available to date to drive simulations in the context of grid/cloud computing. Our results show that this model leads to highquality results in a wide range of settings, although it is far from being perfect. We have found situations in which the bandwidth allotted to a ﬂow according to the model is very different from the bandwidth allotted to it according to packet-level simulation. A detailed study of these results shows that ﬂow-level models have little hope to model such situations correctly. Yet, these situations are extreme (high contention on links with very low capacity) and thus unlikely in most practical settings.
+Our investigation of ﬂow-level models seems to have reached its end because the remaining erroneous behaviors can be imputed to violations of the steady-state assumption, which is the central tenet of ﬂow-level modeling. A future direction would consist of providing sufﬁcient conditions for the steady-state assumption to be invalid. This would allow us to better identify the validity domain of ﬂow-level models and allow further investigation of invalidation scenarios. Ultimately, building on such results, a simulator relying on ﬂow-level models should warn its users when it wanders outside the validity domain of its simulation models.
+
+ACKNOWLEDGMENTS
+We warmly thank the editor in chief, the associate editor, and all the reviewers for their thorough work and for all their comments that helped us improve our article.
+REFERENCES
+ALEXANDROV, A., IONESCU, M., SCHAUSER, K., AND SCHEIMAN, C. 1995. LogGP: Incorporating long messages into the LogP Model—One step closer towards a realistic model for parallel computation. In Proceedings of the ACM Symposium on Parallel Algorithms and Architectures (SPAA’95).
+BARABA´SI, A. AND ALBERT, R. 1999. Emergence of scaling in random networks. Science 59, 509–512. BAUMGART, I., HEEP, B., AND KRAUSE, S. 2009. OverSim: A scalable and ﬂexible overlay framework for simu-
+lation and real network applications. In Proceedings of the 9th International Conference on Peer-to-Peer Computing. BELL, W. H., CAMERON, D. G., MILLAR, A. P., CAPOZZA, L., STOCKINGER, K., AND ZINI, F. 2003. OptorSim: A grid simulator for studying dynamic data replication strategies. Int. J. High Perform. Comput. Appl. 17, 4. BERTSEKAS, D. P. AND GALLAGER, R. 1992. Data Networks. Prentice-Hall, Upper Saddle River, NJ. BLYTHE, J., JAIN, S., DEELMAN, E., GIL, Y., VAHI, K., ET AL. 2005. Task scheduling strategies for workﬂow-based applications in grids. In Proceedings of the IEEE/ACM International Symposium on Cluster, Cloud, and Grid Computing (IN CCGRID’05). IEEE, Los Alamitos, CA, 759–767. BRAUN, T. D., SIEGEL, H. J., BECK, N., BO¨ LO¨ NI, L. L., MAHESWARAN, M., REUTHER, A. I., ROBERTSON, J. P., THEYS, M. D., YAO, B., HENSGEN, D., AND FREUND, R. F. 2001. A comparison of eleven static heuristics for mapping a class of independent tasks onto heterogeneous distributed computing systems. J. Parallel Distrib. Comput. 61, 6, 810–837. BUYYA, R. AND MURSHED, M. 2002. GridSim: A toolkit for the modeling and simulation of distributed resource management and scheduling for grid computing. J. Concurrency Comput. Pract. Experience (CCPE) 14, 13, 1175–1120. CALHEIROS, R. N., RANJAN, R., BELOGLAZOV, A., DE ROSE, C. A. F., AND BUYYA, R. 2011. CloudSim: A toolkit for modeling and simulation of cloud computing environments and evaluation of resource provisioning algorithms. Software Pract. Experience 41, 1, 23–50. CASANOVA, H. 2001. SimGrid: A toolkit for the simulation of application scheduling. In 1st IEEE International Symposium on Cluster Computing and the Grid (CCGrid’01). CASANOVA, H., LEGRAND, A., AND MARCHAL, L. 2003. Scheduling distributed applications: The SimGrid simulation framework. In Proceedings of the 3rd IEEE International Symposium on Cluster Computing and the Grid (CCGrid’03). IEEE, Los Alamitos, CA. CASANOVA, H., LEGRAND, A., AND QUINSON, M. 2008. SimGrid: A generic framework for large-scale distributed experiments. In Proceedings of the 10th Conference on Computer Modeling and Simulation (EuroSim’08). CASANOVA, H. AND MARCHAL, L. 2002. A network model for simulation of grid application. Tech. Rep. 2002-40, LIP. Oct.
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:24
+
+P. Velho et al.
+
+CHEN, Q., CHANG, H., GOVINDAN, R., AND JAMIN, S. 2002. The origin of power laws in Internet topologies revisited. In Proceedings of the 21st Annual Joint Conference of the IEEE Computer and Communications Societies (INFOCOM’02). 608–617.
+CHEN, W. AND DEELMAN, E. 2012. Workﬂowsim: A toolkit for simulating scientiﬁc workﬂows in distributed environments. In Proceedings of the 8th IEEE International Conference on eScience. IEEE, Los Alamitos, CA.
+CHIU, D. N. 1999. Some observations on fairness of bandwidth sharing. Tech. Rep., Sun Microsystems.
+CLAUSS, P.-N., STILLWELL, M., GENAUD, S., SUTER, F., CASANOVA, H., AND QUINSON, M. 2011. Single node on-line simulation of MPI applications with SMPI. In Proceedings of the 25th IEEE International Parallel and Distributed Processing Symposium (IPDPS’11).
+CULLER, D., KARP, R., PATTERSON, D., SAHAY, A., SCHAUSER, K., SANTOS, E., SUBRAMONIAN, R., AND VON EICKEN, T. 1993. LogP: Towards a realistic model of parallel computation. In Proceedings of the ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming.
+DABEK, F., COX, R., KAASHOEK, F., AND MORRIS, R. 2004. Vivaldi: A decentralized network coordinate system. In Proceedings of the 2004 ACM Conference of the Special Interest Group on Data Communication (SIGCOMM’04).
+DE CNODDER, S., ELLOUMI, O., AND PAUWELS, K. 2000. Red behavior with different packet sizes. In Proceedings of the 5th IEEE Symposium on Computers and Communications (ISCC’00). IEEE Computer Society, Washington, DC.
+DOAR, M. B. 1996. A better model for generating test networks. In Proceedings of the IEEE Global Communications Conference (GLOBECOM’96). 86–93.
+FALOUTSOS, M., FALOUTSOS, P., AND FALOUTSOS, C. 1999. On power-law relationships of the internet topology. In Proceedings of the ACM Conference of the Special Interest Group on Data Communication (SIGCOMM’99). 251–262.
+FLOYD, S. AND FALL, K. 1999. Promoting the use of end-to-end congestion control in the Internet. IEEE/ACM Trans. Networking 7, 4, 458–472.
+FLOYD, S. AND JACOBSON, V. 1992. On trafﬁc phase effects in packet-switched gateways. Internetworking: Res. Experience 3, 115–156.
+FLOYD, S. AND JACOBSON, V. 1993. Random early detection gateways for congestion avoidance. IEEE/ACM Trans. Networking 1, 4.
+FUJIWARA, K. AND CASANOVA, H. 2007. Speed and accuracy of network simulation in the SimGrid framework. In Proceedings of the 2nd International Conference on Performance Evaluation Methodologies and Tools. 1–10.
+GIL, T. M., KAASHOEK, F., LI, J., MORRIS, R., AND STRIBLING, J. 2005. P2PSim: A simulator for peer-to-peer protocols. http://pdos.csail.mit.edu/p2psim/.
+GIULI, T. AND BAKER, M. 2002. Narses: A scalable ﬂow-based network simulator. Tech. Rep. cs.PF/0211024, Stanford University. Available at http://arxiv.org/abs/cs.PF/0211024.
+HEUSSE, M., MERRITT, S. A., BROWN, T. X., AND DUDA, A. 2011. Two-way TCP connections: Old problem, new insight. ACM SIGGCOMM Comput. Commun. Rev. 41, 2, 5–15.
+HOEFLER, T., SCHNEIDER, T., AND LUMSDAINE, A. 2010. LogGOPSim—Simulating large-scale applications in the LogGOPS Model. In Proceedings of the 2nd Workshop on Large-Scale System and Application Performance.
+INO, F., FUJIMOTO, N., AND HAGIHARA, K. 2001. LogGPS: A parallel computational model for synchronization analysis. In Proceedings of the 8th ACM SIGPLAN Symposium on Principles and Practices of Parallel Programming.
+ISSARIYAKUL, T. AND HOSSAIN, E. 2008. Introduction to Network Simulator NS2. Springe, New York.
+JACOBSSON, K., ANDREW, L., TANG, A., JOHANSSON, K., HJALMARSSON, H., AND LOW, S. 2008. Ack-clocking dynamics: Modelling the interaction between windows and the network. In Proceedings of the 27th Conference on Computer Communications (INFOCOM’08).
+JAIN, M., PRASAD, R. S., AND DOVROLIS, C. 2003. The TCP bandwidth-delay product revisited: Network buffering, cross trafﬁc, and socket buffer auto-sizing. Tech. Rep. GIT-CERCS-03-02, Georgia Institute of Technology.
+JANSEN, S. AND MCGREGOR, A. 2007. Validation of simulated real world TCP stacks. In Proceedings of the Winter Simulation Conference.
+JUNG, J. AND KIM, H. 2012. MR-CloudSim: Designing and implementing MapReduce computing model on CloudSim. In Proceedings of the International Conference on ICT Convergence (ICTC’12). 504 –509.
+KELLY, F., MAULLOO, A., AND TAN, D. 1998. Rate control for communication networks: Shadow prices, proportional fairness and stability. J. Oper. Res. Soc. 49, 3.
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+On the Validity of Flow-level TCP Network Models for Grid and Cloud Simulations
+
+23:25
+
+KIELMANN, T., BAL, H., AND VERSTOEP, K. 2000. Fast measurement of LogP parameters for message passing platforms. In Proceedings of the 4th Workshop on Run-Time Systems for Parallel Programming.
+LAKHINA, A., BYERS, J., CROVELLA, M., AND XIE, P. 2003. Sampling biases in ip topology measurements. In Proceedings of the 22nd Annual Joint conference of the IEEE Computer and Communications Societies (INFOCOM’03).
+LEDLIE, J., GARDNER, P., AND SELTZER, M. 2007. Network coordinates in the wild. In Proceedings of the 4th Symposium on Networked Systems Design and Implementation (NSDI’07).
+LOW, S. H. 2003. A duality model of TCP and queue management algorithms. IEEE/ACM Trans. Networking 11, 4.
+LOW, S. H., PETERSON, L. L., AND WANG, L. 2002. Understanding vegas: A duality model. J. ACM 49, 2.
+LOW, S. H. AND SRIKANT, R. 2004. A mathematical framework for designing a low-loss, low-delay internet. Network Spatial Econ. 4, 75–102.
+MARFIA, G., PALAZZI, C., PAU, G., GERLA, M., SANADIDI, M., AND ROCCETTI, M. 2007. Tcp libra: Exploring rttfairness for tcp. In NETWORKING 2007. Ad Hoc and Sensor Networks, Wireless Networks, Next Generation Internet, I. F. Akyildiz, R. Sivakumar, E. Ekici, J. C. d. Oliveira, and J. McNair, Eds. Lecture Notes in Computer Science Series, vol. 4479. Springer, Berlin, 1005–1013.
+MATHIS, M., SEMKE, J., AND MAHDAVI, J. 1997. The macroscopic behavior of the TCP congestion avoidance algorithm. Comput. Commun. Rev. 27, 3.
+MEDINA, A., LAKHINA, A., MATTA, I., AND BYERS, J. 2001. BRITE: An approach to universal topology generation. In Proceedings of the International Workshop on Modeling, Analysis and Simulation of Computer and Telecommunications Systems (MASCOTS’01).
+MO, J., LA, R., ANANTHARAM, V., AND WALRAND, J. 1999. Analysis and comparison of TCP Reno and TCP Vegas. In Proceedings of the 18th Annual Joint Conference of the IEEE Computer and Communication Societies (INFOCOM’99).
+MO, J. AND WALRAND, J. 2000. Fair end-to-end window-based congestion control. IEEE/ACM Trans. Networking 8, 5.
+MONTRESOR, A. AND JELASITY, M. 2009. PeerSim: A scalable P2P simulator. In Proceedings of the 9th International Conference on Peer-to-Peer Computing.
+NS3. 2011. The Network Simulator 3. http://www.nsnam.org/.
+NU´ N˜ EZ, A., VA´ZQUEZ-POLETTI, J., CAMINERO, A., CARRETERO, J., AND LLORENTE, I. M. 2011. Design of a new cloud computing simulation platform. In Proceedings of the 11th International Conference on Computational Science and Its Applications.
+OSTERMANN, S., PRODAN, R., AND FAHRINGER, T. 2010. Dynamic cloud provisioning for scientiﬁc grid workﬂows. In Proceedings of the 11th ACM/IEEE International Conference on Grid Computing (Grid’10).
+PENTIKOUSIS, K. 2001. Connector: Active queue management. Crossroads 7, 5, 2.
+POPPER, K. 1972. Objective Knowledge: An Evolutionary Approach. Oxford University Press, New York.
+RAMASWAMY, S. AND BANERJEE, P. 1993. Processor allocation and scheduling of macro dataﬂow graphs on distributed memory multicomputers by the paradigm compiler. In Proceedings of the 1993 International Conference on Parallel Processing, volume II-Software. CRC Press, Boca Raton, FL, 134–138.
+RILEY, G. F. 2003. The Georgia Tech network simulator. In Proceedings of the ACM SIGCOMM Workshop on Models, Methods and Tools for Reproducible Network Research. 5–12.
+SCHNORR, L., LEGRAND, A., AND VINCENT, J.-M. 2012. Detection and analysis of resource usage anomalies in large distributed systems through multi-scale visualization. Concurrency Comput. Pract. Experience. 24, 15, 1792–1816.
+SCHNORR, L. M., HUARD, G., AND NAVAUX, P. O. A. 2010. Triva: Interactive 3D visualization for performance analysis of parallel applications. Future Gener. Comput. Syst. 26, 3, 348–358.
+SHI, Y., JIANG, X., AND YE, K. 2011. An energy-efﬁcient scheme for cloud resource provisioning based on cloudsim. In Proceedings of the IEEE International Conference on Cluster Computing (CLUSTER’11). 595–599.
+TANG, A., ANDREW, L., JACOBSSON, K., JOHANSSON, K., HJALMARSSON, H., AND LOW, S. 2010. Queue dynamics with window ﬂow control. IEEE/ACM Trans. Networking 18, 5.
+TANG, A., ANDREW, L., JACOBSSON, K., JOHANSSON, K., LOW, S., AND HJALMARSSON, H. 2008. Window ﬂow control: Macroscopic properties from microscopic factors. In Proceedins of the 27th Conference on Computer Communications (INFOCOM’08).
+TANGMUNARUNKIT, H., GOVINDAN, R., JAMIN, S., SHENKER, S., AND WILLINGER, W. 2002. Network topology generators: Degree-based vs structural. In Proceedings of the ACM 2002 Annual Conferenc of the Special Interest Group on Data Communication (SIGCOMM’02).
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+
+23:26
+
+P. Velho et al.
+
+TENG, F., YU, L., AND MAGOULE`S, F. 2011. SimMapReduce: A simulator for modeling MapReduce framework. In Proceedings of the 5th FTRA International Conference on Multimedia and Ubiquitous Engineering (MUE’11). 277–282.
+TOPCUOGLU, H., HARIRI, S., AND WU, M.-Y. 1999. Task scheduling algorithms for heterogeneous processors. In Proceedings of the 8th Heterogeneous Computing Workshop. IEEE Computer Society Press, Washington, DC.
+TRIVA. 2011. Triva Visualization Tool. http://triva.gforge.inria.fr.
+VARGA, A. AND HORNIG, R. 2008. An overview of the OMNeT++ simulation environment. In Proceedings of the 1st International Conference on Simulation Tools and Techniques for Communications, Networks and Systems.
+VELHO, P. AND LEGRAND, A. 2009. Accuracy study and improvement of network simulation in the SimGrid framework. In Proceedings of the 2nd International Conference on Simulation Tools and Techniques.
+WAXMAN, B. M. 1988. Routing of multipoint connections. IEEE J. Selected Areas Commun. 6, 9, 1617–1622.
+YA¨ICHE, H., MAZUMDAR, R. R., AND ROSENBERG, C. 2010. A game theoretic framework for bandwidth allocation and pricing in broadband networks. IEEE/ACM Trans. Networking 8, 5.
+ZHANG, L., SHENKER, S., AND CLARK, D. D. 1991. Observations on the dynamics of a congestion control algorithm: The effects of two-way trafﬁc. ACM Comput. Commun. Rev. 21, 4, 133–147.
+ZHENG, G., KAKULAPATI, G., AND KALE´, L. V. 2004a. BigSim: A parallel simulator for performance prediction of extremely large parallel machines. In Proceedings of the 18th International Parallel and Distributed Processing Symposium (IPDPS’04).
+ZHENG, G., WILMARTH, T., LAWLOR, O. S., KALE´, L. V., ADVE, S., AND PADUA, D. 2004b. Performance modeling and programming environments for petaﬂops computers and the Blue Gene machine. In Proceedings of the 18th International on Parallel and Distributed Processing Symposium. IEEE, Los Alamitos, CA.
+
+Received September 2012; revised April 2013; accepted July 2013
+
+ACM Transactions on Modeling and Computer Simulation, Vol. 23, No. 4, Article 23, Publication date: October 2013.
+

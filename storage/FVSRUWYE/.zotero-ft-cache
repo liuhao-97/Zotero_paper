@@ -1,0 +1,1160 @@
+1
+EdgeTran: Co-designing Transformers for Efﬁcient Inference on Mobile Edge Platforms
+Shikhar Tuli , Student Member, IEEE, and Niraj K. Jha, Fellow, IEEE
+
+arXiv:2303.13745v1 [cs.LG] 24 Mar 2023
+
+Abstract—Automated design of efﬁcient transformer models has recently attracted signiﬁcant attention from industry and academia. However, most works only focus on certain metrics while searching for the best-performing transformer architecture. Furthermore, running traditional, complex, and large transformer models on low-compute edge platforms is a challenging problem. In this work, we propose a framework, called ProTran, to proﬁle the hardware performance measures for a design space of transformer architectures and a diverse set of edge devices. We use this proﬁler in conjunction with the proposed codesign technique to obtain the best-performing models that have high accuracy on the given task and minimize latency, energy consumption, and peak power draw to enable edge deployment. We refer to our framework for co-optimizing accuracy and hardware performance measures as EdgeTran. It searches for the best transformer model and edge device pair. Finally, we propose GPTran, a multi-stage block-level grow-and-prune postprocessing step that further improves accuracy in a hardwareaware manner. The obtained transformer model is 2.8× smaller and has a 0.8% higher GLUE score than the baseline (BERTBase). Inference with it on the selected edge device enables 15.0% lower latency, 10.0× lower energy, and 10.8× lower peak power draw compared to an off-the-shelf GPU.
+Index Terms—Embedded platforms; hardware-software codesign; machine learning; transformer design space.
+I. INTRODUCTION
+I N recent years, self-attention-based transformer models [1, 2] have achieved state-of-the-art results on tasks that span natural language processing (NLP) and, recently, even computer vision [3]. Increasing computational power and largescale pre-training datasets have resulted in an explosion in transformer architecture size [4], much beyond state-of-the-art convolutional neural networks (CNNs). For instance, Megatron Turing-NLG [4] has 530B trainable model parameters compared to only 928M trainable parameters in BiT (which uses ResNet-152 with every hidden layer widened by a factor of four, i.e., ResNet-152x4) [5, 6]. However, such massive transformer architectures are not amenable to operation on mobile edge devices due to a much lower compute budget and memory size.
+Another challenge of running large models on mobile devices is the extremely high latency incurred [7]. Smaller models may have reasonable latencies, however, they may still not meet the edge-level energy or peak power budgets. This could be due to a limited battery size or an intermittent power
+This work was supported by NSF Grant No. CNS-2216746. S. Tuli and N. K. Jha are with the Department of Electrical and Computer Engineering, Princeton University, Princeton, NJ, 08544, USA (e-mail: {stuli, jha}@princeton.edu).
+Manuscript received —; revised —.
+
+supply. Thus, there is a need for proﬁling and benchmarking latency, energy, and peak power consumption of a diverse set of mobile-friendly transformer architectures. This would enable leveraging of hardware-aware neural architecture search (NAS) [7, 8] techniques to ﬁnd the optimal architecture that maximizes model accuracy while meeting latency, energy, and peak power budgets.
+Several works aim to prune transformer models to reduce the number of trainable model parameters [9, 10]. Some propose novel attention mechanisms to reduce the number of trainable parameters [11, 12, 13]. Others run NAS in a design space of transformer architectural hyperparameters to obtain efﬁcient architectures [7, 14, 15]. However, most of these works only show gains in the number of model parameters or ﬂoating-point operations per second. Moreover, such works do not consider latency, energy, and power consumption in their architecture optimization loop. For instance, Wang et al. [7] only consider latency for running around 2000 transformer architectures on speciﬁc edge devices; Li et al. [16] only target a single FPGA. Furthermore, the models obtained by such methods often have unacceptably high latencies, making them unusable for real-time NLP applications like machine translation. Works that do consider hardware performance factors do not implement automated co-design with latency or energy consumption as feedback [17]. Thus, there is a need to proﬁle not only the accuracy but also the latency, energy consumption, and peak power draw of transformer models on various mobile devices for inclusive design in edge-AI deployments under user-deﬁned constraints. However, proﬁling all models in a vast design space is a challenging endeavor. Hence, in this work, we make the following contributions.
+• We extend a previously proposed state-of-the-art benchmarking framework [8], called FlexiBERT, to FlexiBERT 2.0. It uses an expanded design space of diverse transformer architectures for multiple edge-AI devices, targeting both training and inference. FlexiBERT 2.0 supports a ﬁner-grained transfer of weights and increased heterogeneity compared to the original FlexiBERT framework, thus speeding up architecture search. It also supports a much more massive design space (1079× larger) for mobile-friendly architectures, enabling a thorough search of the optimal architecture for the given edge platform.
+• We measure the latency, energy consumption, and peak power draw of the transformer models in our proposed design space. We call this proﬁling framework ProTran. It can obtain these hardware performance measures for a design space of transformer architectures on a given
+
+2
+
+edge platform. It leverages an active-learning pipeline to efﬁciently train surrogate models, minimizing the sample complexity of evaluation queries. It also supports various regression frameworks, including Gaussian process regression (GPR), decision tree (DT), boosted decision tree (BDT), and a state-of-the-art method, called BOSHNAS [8] that exploits gradient-based optimization using backpropagation to inputs and heteroscedastic modeling [18] to minimize overall uncertainty in the estimation of each measure. Using the proposed ProTran and FlexiBERT 2.0 frameworks, any new edge device can be proﬁled within hours for subsequent quick transformer architecture search under user-deﬁned constraints. • We then use ProTran’s surrogate models and the proposed accuracy predictors as a foundation for our fast and efﬁcient co-design method for edge devices: EdgeTran. This co-design approach yields models with high accuracy but low latency, energy consumption, and peak power draw. Our co-design framework leverages Bayesian optimization using second-order gradients and heteroscedastic surrogate modeling for co-design (BOSHCODE) [19]. It searches for optimal model-device pairs with the given constraints, wherein it simultaneously chooses the edge device that performs best in terms of latency, energy consumption, and peak power draw while evaluating the searched transformer model architecture with high accuracy. It can be used by academia and industry for scalable and streamlined deployments in a range of NLP tasks, targeting edge/cloud platforms. • Finally, we propose a block-level multi-stage grow-andprune post-processing step, GPTran, that further optimizes accuracy and hardware performance by adapting the structure of the converged transformer model.
+We organize the rest of the article as follows. Section II presents background on hardware-aware transformer design and deployment for efﬁcient inference on edge platforms. Section III illustrates the EdgeTran framework that includes FlexiBERT 2.0, ProTran, and GPTran. Section IV describes the experimental setup and the targeted baselines. Section V presents the results. Section VI discusses the implications of the proposed work along with future work directions. Finally, Section VII concludes the article.
+II. BACKGROUND AND RELATED WORK
+This section introduces the relevant background and related works on hardware-aware NAS, pruning methods, and transformer architecture proﬁling.
+A. Transformer Architectures
+Previous works have proposed various transformer architectures. BERT is one of the most popular architectures that is widely used for language modeling [2]. Its variants leverage mechanisms other than vanilla self-attention [20] to optimize performance or reduce model size and complexity. They include RoBERTa [21] that implements robust pre-training techniques, ConvBERT [22] that uses onedimensional convolutional operations, MobileBERT [23] that
+
+uses bottleneck structures and multiple feed-forward stacks, SqueezeBERT [13] that uses grouped convolution operations to approximate the feed-forward stack, among others. Further, architectures like FNet [11] and LinFormer [12] use Fourier transform and low-rank approximation, respectively, of the self-attention operation to aid efﬁciency and reduce the number of model parameters.
+To obviate the need for hand-designed optimizations of the transformer model, many works devise design spaces to search for optimal architectural design decisions in a uniﬁed manner. For instance, SchuBERT [24] uses a design space of transformer architectures but does not consider different types of attention operations and only includes homogeneous models (i.e., with the same encoder layer for every model) in the design space. DynaBERT [25] adapts the width of the network by varying the number of attention heads and not the dimensionality of representation for each head. This only represents a simple extension to traditional architectures and does not target heterogeneity, much like other works that formulate design spaces for transformer architectures [14, 15, 26, 27].
+On the other hand, FlexiBERT [8], a state-of-the-art benchmarking framework for diverse transformer architectures, incorporates the most popularly used attention operations in a design space of heterogeneous and ﬂexible transformer architectures. Each encoder layer in its design space can have a different attention mechanism (heterogeneity) and a different hidden dimension (ﬂexibility). This leads to a vast design space consisting of 3.32 × 109 models, resulting in high gains in model performance for the same number of parameters. The FlexiBERT surrogate model can also be used to predict the accuracy of any queried transformer in its design space (within reasonable uncertainty bounds). We provide more details on the validation performance of our surrogate model in Section IV-A3. However, FlexiBERT’s design space is not diverse enough to incorporate mobile-friendly architectures, has high training overhead while transferring weights to new models, and only supports the PyTorch platform, making it impractical for many edge devices. Nevertheless, taking inspiration from the advantages offered by ﬂexible and heterogeneous models and the beneﬁts of expanding the search space to obtain better-performing models [19, 28], we extend this framework to FlexiBERT 2.0 by targeting a more granular design space (more details in Section III-A1). The FlexiBERT 2.0 framework enables us to model the latency, energy, and peak power draw of transformer architectures on a diverse set of embedded platforms.
+B. Hardware-Aware Neural Architecture Search
+NAS techniques search for the architecture with the best accuracy in a speciﬁed dataset. However, NAS alone is hardly practical if we cannot run the best-performing transformer on the hardware at hand (or it does not meet hardware performance constraints). Recent state-of-the-art models, with billions of model parameters, exacerbate this problem [4]. Hence, recent works have focused on hardware-aware NAS, directed at architecture search for a target platform. For example, ChamNet proposed accuracy and resource (latency
+
+3
+
+ProTran
+PyTorch/TF/ONNX/OpenVINO Model
+
+Apple M1 CPU GPU
+
+Nvidia Jetson Nano CPU GPU
+
+Raspberry Pi 4-B CPU
+
+Intel NCS v2 NPU
+
+Latency Measurement
+
+INA219 Power Sensor
+
+FlexiBERT 2.0
+
+Inverse Transformer2vec
+
+Neighboring Trained Model
+
+Computational Graph Transformer Model
+
+Block-level Knowledge Transfer
+
+Model Trainer
+
+Autotune
+
+BOSHCODE
+FlexiBERT 2.0 Surrogate Model
+ProTran Surrogate Model
+
+User-defined Constraints
+EdgeTran
+ProTran + FlexiBERT 2.0 + BOSHCODE
+Model-Device Pair
+GPTran
+
+Co-design Surrogate Model
+
+Energy Consumption
+
+Peak Power Draw
+
+Latency
+
+Energy Consumption
+
+Peak Power Draw
+
+Accuracy
+
+Latency
+
+Accuracy
+
+(a)
+
+(b)
+
+Fig. 1: Overview of the EdgeTran framework: (a) ProTran used in conjunction with FlexiBERT 2.0 for modeling accuracy along with latency, energy consumption, and peak power draw (hardware measures) for different embedded platforms, using BOSHCODE [19] for co-design. (b) EdgeTran employs surrogate models obtained from ProTran and FlexiBERT 2.0 to obtain a best-performing model-device pair. We forward this model to GPTran for post-processing and further optimization.
+
+and energy) predictors and leveraged GPR-based Bayesian optimization (GPR-BO) to ﬁnd the optimal CNN architecture for a given platform [29]. Some works have proposed codesign of hardware and software design decisions [19, 30, 31]. However, they are limited to CNN design spaces.
+HAT [7], a recent framework for hardware-aware NAS for transformers, trains a large transformer model ﬁrst and then uses latency feedback to obtain a sub-model for the given hardware platform. However, all sub-models are homogeneous (in terms of attention type) and have constant dimensionality in each encoder layer, limiting their representation capacity [8]. Further, this work uses a static training recipe, which may not be optimal for every sub-model. Lastly, as recent works have shown [8], its design space is highly restricted. Instead, one can leverage other NAS techniques for superior and efﬁcient search of the optimal model in a diverse set of transformer architectures [8, 29, 32].
+Fig. 1(a) shows how ProTran leverages the proposed FlexiBERT 2.0 framework to obtain various hardware performance measures for diverse architectures. First, we convert each queried model in the FlexiBERT 2.0 design space to a computational graph that we train (while also autotuning the training recipe to improve accuracy further). FlexiBERT 2.0 supports a range of deep learning frameworks, including PyTorch [33], TensorFlow [34], ONNX [35], and OpenVINO [36] (see Section III-A3). Thus, one can proﬁle any new hardware supported by any of these frameworks. We then pass this model to the ProTran framework that runs inference for different NLP tasks on diverse mobile platforms. These platforms include Apple M1 with both a central processing unit (CPU) and an embedded graphics processing unit (GPU), Raspberry Pi embedded CPU, Intel Neural Compute Stick (NCS) v2 that has an embedded neural processing unit (NPU), and the Nvidia Jetson Nano (that has a CPU and an embedded GPU). We provide more details on the selected set of mobile platforms along with server-side baselines in Section IV-B1. ProTran then outputs the latency, energy consumption, and peak power draw of the given transformer model that EdgeTran can use
+
+for hardware-aware NAS and co-design. Next, BOSHCODE queries the FlexiBERT 2.0 and ProTran frameworks to create surrogate models for model accuracy and hardware performance (latency, energy consumption, and peak power draw) for the selected set of hardware platforms. We train these surrogate models as a pre-processing step so that one does not have to train or run inference on the target hardware multiple times. This enables faster search using lightweight surrogate models.
+Fig. 1(b) presents EdgeTran, which exploits surrogate models obtained from ProTran and FlexiBERT 2.0. It runs codesign using the BOSHCODE framework to output an optimal model-device pair for the set of user-deﬁned constraints. Finally, we input this pair to the GPTran post-processing step to optimize the transformer model further and improve performance.
+C. Latency and Energy Proﬁling of Transformer Models
+Model latency is evaluated when running a batch of input with a given transformer model architecture. Wang et al. [17] measure the latency of transformer inference on the Pixel 4 smartphone. However, the inference latency on certain edge devices can go up to hundreds of seconds. Thus, there is a need for a lightweight surrogate model that can quickly predict model inference latency (in a few milliseconds). We train this surrogate model for latency, energy, and peak power estimation of diverse models in the FlexiBERT 2.0 design space using the proposed ProTran framework.
+Energy consumption proﬁling of a machine learning (ML) model is challenging. This is because extracting the energy consumed only by training or running inference processes for an ML model is nontrivial. Further, when the design space is enormous, running training or inference for each model may incur drastically long runtimes. Nevertheless, previous works have proﬁled the energy consumption of ML architectures. For example, ChamNet [29] trains energy predictors for various CNNs in its design space on different hardware platforms under various latency constraints. FTRANS [16] obtains energy
+
+4
+
+TABLE I: Design space description. Super-script (j) depicts the value for layer j.
+
+Design Element
+Number of encoder layers (l) Type of attention operation used (oj ) Number of operation heads (nj ) Hidden size (hj ) Feed-forward dimension (f j )
+Number of feed-forward stacks Operation parameters (pj ):
+if oj = SA else if oj = LT else if oj = DSC
+
+Allowed Values
+{2, 4, 6, 8, 10, 12} {SA, LT, DSC} {2, 4, 8, 12} {128, 256, 512, 768} {256, 512, 1024, 2048, 3072, 4096} {1, 2, 3}
+Self-attention type: {SDP, WMA} Linear transform type: {DFT, DCT} Convolution kernel size: {5, 9}
+
+and power consumption for different transformer architectures on an FPGA. Some works have attempted to co-optimize hardware and transformer, however, under a very limited scope [37, 38]. These works prune the weights of a given model to reduce model complexity. However, the total model size remains signiﬁcant. This calls for a rigorous search of inherently dense but smaller architectures that one could run on the device with a minimal memory footprint. This search falls under the domain of hardware-aware NAS. However, to the best of our knowledge, no transformer NAS approach has simultaneously accounted for accuracy, latency, energy consumption, and peak power draw [7, 8, 16, 17, 29, 37]. Thus, there is a need for lightweight surrogate models for the estimation of these measures on a diverse set of transformer architectures for various edge-AI platforms. This would enable energy-aware NAS of transformer models and efﬁcient codesign for optimal edge deployments. Finally, we could extend it to search for optimal transformer-accelerator pairs [30, 39].
+III. METHODOLOGY
+In this section, we ﬁrst present FlexiBERT 2.0 extensions relative to its predecessor. We also describe the ProTran pipeline for measuring hardware performance on diverse edgeAI platforms. We then present the BOSHCODE co-design method. Finally, we give details on the proposed GPTran framework for optimizing transformer architectures.
+A. FlexiBERT 2.0 Framework
+We discuss the FlexiBERT 2.0 design space next. 1) Design Space: The traditional BERT model [2] consists of multiple layers, each containing a bidirectional multiheaded self-attention (SA) module followed by a feed-forward module (that implements a fully-connected neural network with a single hidden layer). Searching over a space of BERTlike homogeneous models results in marginal gains [24]. However, as proposed by Tuli et al. [8], the design space of heterogeneous transformer architectures is immense because one can add a diverse set of operations to them. Such scale and diversity enable a rigorous search for the best-performing model resulting in signiﬁcant gains over traditional search spaces [8, 19]. Due to these advantages, we leverage the expansive, heterogeneous, yet modular FlexiBERT architectures in our design space. We propose several modiﬁcations
+
+Output Probabilities Fine-tuning Head Encoder Layer
+
+Output Projection Add & Norm
+f1 - 512
+
+Add & Norm
+
+Encoder Layer
+
+Postion Embeddings
+
++
+
+Input Token Embeddings
+
+o1 - SA / h1 128 / p1 - SDP
+
+o1 - SA / h1 128 / p1 - SDP
+
+Input
+
+Fig. 2: BERT-Tiny in the FlexiBERT 2.0 representation.
+
+to the original BERT encoder layer, primarily to the attention module.
+We consider weighted multiplicative attention (WMA)based self-attention [40] in addition to scaled dot-product (SDP)-based self-attention. We also incorporate linear transform (LT)-based attention in FNet [11] and dynamic-spanbased convolution (DSC) in ConvBERT [22], in place of the vanilla self-attention mechanism. Whereas the original FNet implementation uses discrete Fourier transform (DFT), we also consider discrete cosine transform (DCT) in our design space. We further allow variable kernel sizes for convolution-based attention. Consolidating different attention module types (also called operations) that vary in their computational costs into a single design space enables the models to have inter-layer variance in expression capacity. Inspired by MobileBERT [23], we consider architectures with multiple fully-connected layers (we call this a feed-forward stack). We summarize the entire design space with the range for each operation type in Table I. Considering all the possible hyperparameter values given in Table I, we generate a design space with 1.69 × 1088 architectures, much larger than those in any previous work. Fig. 2 shows how we represent the BERT-Tiny model [41] in our proposed design space.
+Unlike the original FlexiBERT design space, FlexiBERT 2.0 uses a broader range of values for each hyperparameter to target even more diverse architectures. This results in models that are substantially different from traditional BERTlike ones [2, 11, 22]. Further, we make the architectures in the FlexiBERT 2.0 pipeline even more heterogeneous, i.e., instead of all attention operations in an encoder layer being the same [8], it allows an encoder layer to have different types of operations. For instance, where the original FlexiBERT only allows SA heads in an encoder layer, our design space also allows other attention types (from WMA, DCT, DFT, DSC) in the same layer. Each attention head is also allowed a different hidden dimension.
+2) Weight Transfer: To obtain the accuracy of a new model (queried by the active learning framework to train the surrogate model), training it from scratch would be computationally expensive. FlexiBERT [8] implements weight transfer at the
+
+5
+
+Output Projection Add & Norm
+f i - 512
+
+OT/RP
+
+Output Projection Add & Norm
+f i - 256
+
+Add & Norm
+
+OT/RP
+
+Add & Norm
+
+o i - SA / h i 128 / p i - SDP
+
+o i - DSC / h i 128 / p i - 9
+
+o i - SA / h i 128 / p i - SDP
+
+o i - DSC / h i 64 / p i - 5
+
+Direct Transfer
+Input (a)
+
+Input (b)
+
+Fig. 3: Weight transfer between two neighboring models in FlexiBERT 2.0.
+
+‘encoder-level’ so that queried models are not trained from scratch. It transfers weights from a neighboring pre-trained model. This speeds up the training of queried models. In the proposed framework, we not only leverage weight transfer to train the surrogate model quickly but also for training new models while implementing the GPTran pipeline (details in Section III-D).
+We update the original FlexiBERT’s weight transfer to an ‘attention-head level,’ i.e., we do not require the entire encoder layer hyperparameters to be the same for transferring the weights. If some of the attention heads are alike in two neighboring models, the weights for those attention heads can be directly transferred. When attention heads have different dimensions but the rest of the parameters are the same, we implement weight transfer by cloning an ordered part of the weight matrix [we call this ordered transfer (OT)] or by random projection (RP) of the original weight matrix to the new dimension. RP takes inspiration from dimensionality reduction techniques based on the Johnson-Lindenstrauss lemma [42]. To implement RP, we project the original input space on a randomly generated matrix. We draw its components from a Gaussian distribution N (0, 1/nc), where nc is the number of components or the dimensionality of the target space. This method decreases the loss of information when transferring weights to a lower dimension, reducing the number of iterations to train the new neighbor. This, in turn, lowers the net training time of all queries, reducing the overall search time. Fig. 3 summarizes the weight transfer process in FlexiBERT 2.0 for two neighboring models.
+3) Support for Model Formats: To enable proﬁling on diverse edge-AI platforms, FlexiBERT 2.0 supports various ML frameworks. All models in the FlexiBERT 2.0 design space can be saved in PyTorch, Tensorﬂow, ONNX, and OpenVINO formats. This broadens the scope of our proposed models to a wide range of platforms, enabling uniﬁed benchmarking and wider deployments.
+4) Transformer Embeddings: The original FlexiBERT pipeline leverages a Transformer2vec embedding scheme to form dense embeddings for the transformer architectures in the design space. However, training these embeddings is
+
+computationally expensive. We thus propose an embedding scheme that does not require training. We illustrate this scheme next.
+For the selected ranges of hyperparameters in our design space (see Table I), we generate 37-dimensional embeddings as follows:
+• The ﬁrst entry in the embedding is the number of encoder layers (l) in the current transformer model. In other words, for the embedding of a transformer architecture e, e1 represents the number of encoder layers in the architecture.
+• For an encoder layer j, e2+3(j−1) represents the hidden dimension (hj). This is the sum of the hidden dimension for each attention head in that encoder layer. Other embedding indices determine how much hj we allocate to each attention head.
+• For an encoder layer j, e3+3(j−1) represents the index of the feed-forward operation formed by the range of feedforward layers possible in the given design space. For the six possible hidden dimensions in the feed-forward layers (see Table I), there can be a stack of up to three layers, thus giving rise to 258 feed-forward operation types for every encoder layer.
+• For an encoder layer j, e4+3(j−1) represents the index of the attention head operation in the list of multi-head operations types. We obtain this list based on the number of attention heads selected for that encoder layer, the type of each attention head, the hidden dimension for each attention head, and their respective combinations with replacement (more details in Section IV-A).
+• For models less than 12 layers deep, we set the respective entries in their embeddings to zero.
+Although these embeddings are sparse, they are much faster to obtain than training with the Transformer2vec embeddings [8]. This is especially important due to the much larger design space of the proposed framework.
+B. The ProTran Framework
+We now describe the ProTran framework that leverages the FlexiBERT 2.0 design space to train surrogate models for latency, energy consumption, and peak power draw on diverse platforms. We train the surrogate models in an active-learning fashion [43]. We ﬁrst obtain an initial set of diverse samples to initialize our surrogate model. Then, we use the uncertainty estimates from that model to query new architectures until the maximum uncertainty falls below a threshold.
+1) Initial Sampling: Any regressor used for an activelearning pipeline requires an initial seed dataset to predict further queries it needs to explore. Intuitively, this dataset should be as representative of the design space as possible. For this, we test various low-discrepancy sequence sampling strategies [44]. Fig. 4 shows a boxplot of pairwise distances between embeddings using various sampling methods, namely, Sobol sampling, Latin hypercube sampling (LHS), Halton sampling, Hammersly sampling, and Random sampling. We use the LHS method in our experiments since it results in the highest ﬁrst quartile of pairwise distances between the
+
+6
+
+Pair-wise distances
+
+50000
+
+40000
+
+30000
+
+20000
+
+10000
+
+0 Sobol
+
+LHS
+
+Halton Hammersly Random
+
+Sampler
+
+Fig. 4: Box plot for pairwise distances of 256 sampled embeddings from different sampling schemes.
+
+Initial Samples
+
+Surrogate Model
+
+Validation MSE <
+
+Evaluate high uncertainty samples
+
+Output Surrogate Model
+Fig. 6: The active-learning pipeline of ProTran.
+
+6
+
+Deep-Wide
+
+Deep-Narrow
+
+5
+
+Shallow-Wide Shallow-Narrow
+
+4
+
+Number of Models
+
+3
+
+2
+
+1
+
+0 Sobol
+
+LHS SHaamltpolner Hammersly Random
+
+Fig. 5: Model diversity using various sampling schemes.
+
+Fig. 7: Validation MSE on the normalized latency values for different sample sizes while using various regressors for the A100 GPU.
+
+embeddings of the sampled architectures. In other words, it maximizes the probability of having divergent points in the sampled set.
+We obtain 16 samples using the chosen method to initialize the seed dataset. To further test for sample diversity, we segregate the sampled models into four categories: deep-wide, deep-narrow, shallow-wide, and shallow-narrow. The model is shallow if the number of encoder layers is strictly less than eight and deep otherwise. The model is narrow if the median number of attention heads is strictly less than eight and wide otherwise. Fig. 5 shows the number of each model type obtained using each sampling scheme with 16 initial samples. Sobol and LHS methods have equidistribution of model types, demonstrating high diversity [45] relative to other schemes.
+2) Learning the Performance Predictor: Once we have evaluated the initial samples for all the hardware performance measures on a given edge-AI platform (see Section IV-B2), we need to learn a performance predictor that takes the transformer embedding as input and predicts each measure under an error constraint. We can eventually leverage this predictor, also called a surrogate model, along with a corresponding uncertainty estimation, to query novel models in the design space. This further increases conﬁdence in estimation (i.e., lowers the uncertainty or validation error). We employ this
+
+strategy in an active-learning fashion to minimize the number of queried models for evaluation. Here, by validation error, we mean the error of the predictor on untrained samples. Fig. 6 shows a ﬂowchart of this pipeline. We use the initial 16 LHS-sampled transformer architectures to initialize the surrogate model. We then evaluate high-uncertainty samples to train the surrogate model iteratively on the expanding dataset until the validation mean-squared error (MSE) falls below a predetermined threshold.
+For the active-learning loop, we experiment with several regression schemes, i.e., surrogate models, namely linear regression (LR), GPR, support-vector regression (SVR), DT, BDT, gradient-boosted decision trees (GBDT), and BOSHNAS [8] that exploits gradient-based optimization using backpropagation to the input and heteroscedastic modeling [18]. We employ these models to minimize the overall uncertainty in estimating the prediction measures. GPR and BOSHNAS directly indicate the epistemic uncertainty in predictions; thus, they select the following query in the active-learning loop as the model with the highest uncertainty. We compute the uncertainty in estimation for BDT and GBDT as the standard deviation in the predictions of each decision tree for every output hardware performance measure. However, LR, DT, and
+
+7
+
+TABLE II: Selected batch size and the number of samples for convergence for different platforms.
+
+Platform
+Nvidia A100 GPU Apple M1 CPU Apple M1 GPU Raspberry Pi CPU Intel NCS NPU Nvidia Jetson Nano CPU Nvidia Jetson Nano GPU
+
+Batch size
+128 32 32 1 1 1 1
+
+Number of samples
+239 104 92 81 21 223 22
+
+Transformer Embedding
+Device Embedding
+
+GOBI Performance
+GOBI
+
+14
+
+Fig. 9: Teacher network in the BOSHCODE surrogate model.
+
+Dropout layers have been omitted for simplicity [19].
+
+Predicted latency (ms/seq)
+
+12
+10
+8
+6
+4 4 Real la6tency on 8Nvidia A11000 GPU (1m2s/seq) 14
+Fig. 8: Predicted and real latencies on the Nvidia A100 GPU. Latencies are reported per sequence in the SST-2 task for transformer model evaluation.
+SVR cannot model uncertainty in performance prediction. In such cases, we evaluate random samples to expand the dataset.
+We test these regressors to model the inference latency on the Nvidia A100 GPU for the SST-2 task in the GLUE benchmarking suite [46]. For a pool of high-uncertainty samples evaluated at each iteration, we take smaller subsets of train/validation (80-20%) splits to check the prediction MSE on the validation set after training the regressor on the training set. From Fig. 7, we see that GBDT reaches the lowest prediction error on the validation set as we increase the sample size. BOSHNAS does not perform well due to the high sample sizes required to train neural network surrogates optimally [47]. Thus, we choose GBDT as our surrogate model in the activelearning loop while training performance predictors for all platforms. Table II shows the sample sizes required for GBDT to converge for different platforms. We reach convergence when the validation MSE falls below 0.5% for latency, energy, and peak power draw, individually, when normalized (e.g., we divide the latency values by the maximum latency encountered in the dataset in order to obtain normalized values between 0 and 1).
+Fig. 8 shows the predicted latency of 32 sampled transformer models obtained using the GBDT regressor against the real latency on the Nvidia A100 GPU. The plot shows that the predicted latency is very close to the real latency.
+
+C. BOSHCODE
+BOSHNAS [8] is a NAS technique that runs gradient-based optimization using backpropagation to the input (GOBI) [18] on a single and lightweight neural network (NN) model that predicts not only model performance, but also the epistemic and aleatoric uncertainties. It leverages an active-learning framework to optimize the upper conﬁdence bound (UCB) estimate of model performance in the embedding space. Estimates of aleatoric uncertainty enable further optimization of the training recipe for every model in the design space. GOBI freezes the model weights and backpropagates the gradients towards the input values to minimize the output optimization measure [18]. We extend the application of BOSHNAS to BOSHCODE [19], a co-design framework for transformer models and edge-AI devices. We describe this framework next.
+1) Uncertainty Types: Prediction uncertainty can arise from not only the approximations in the surrogate modeling process but also parameter initializations and variations in model performance due to different training recipes. They are referred to as epistemic and aleatoric uncertainty, respectively.
+2) Surrogate Model: Following the surrogate modeling approach used in CODEBench [19], a co-design method for CNNs and accelerators, we model the performance and the aleatoric uncertainty using a natural parameter network (NPN) [48] f (xTXF, xED; θ). We model the epistemic uncertainty using g(xTXF, xED; θ ) and h(xTXF, xED; θ ). We leverage GOBI on h, a student network for the teacher g, to avoid numerical gradients due to their poor performance [19]. Here, xTXF refers to the transformer embedding and xED refers to the embedding for the edge device (θ, θ , and θ refer to the training parameters of the models). (µ, σ) ← f (xTXF, xED; θ), where µ is the predicted mean performance and σ is the aleatoric uncertainty. Moreover, h predicts a surrogate (ξˆ) of the epistemic uncertainty (ξ) [19].
+Fig. 9 shows a simpliﬁed schematic of the teacher network g in BOSHCODE [19]. It realizes the model-device embeddings, a combination of the 37-dimensional transformer embeddings (see Section III-A4) and 7-dimensional one-hot device encodings. We run GOBI on the combined and separate representations (of the student network h [19]) to ﬁnd the optimal model-device pair that maximizes the UCB estimate of the performance (P ). Here, performance refers to a convex
+
+8
+
+Algorithm 1: BOSHCODE
+
+Result: trained surrogate model
+
+1 Initialize: convergence criterion, uncertainty sampling prob. (αP ), diversity sampling prob. (βP ), surrogate model (f , g, and h) on initial sample set δ, design
+
+space [xTXF, xED] ∈ ∆;
+
+2 while convergence criterion not met do
+
+3 if prob ∼ U (0, 1) < 1 − αP − βP then
+
+4
+
+ﬁt(surrogate, δ);
+
+5
+
+xTXF, xED ← GOBI(f , h) ; /* Optim. */
+
+6
+
+EVALUATE(xTXF, xED);
+
+7 else
+
+8
+
+if 1 − αP − βP ≤ prob. < 1 − βP then
+
+9
+
+xTXF, xED ← argmax(k1 · σ + k2 · ξˆ) ;
+
+xTXF ,xED
+
+/* Uncertainty sampling */
+
+10
+
+EVALUATE(xTXF, xED);
+
+11
+
+else
+
+12
+
+EVALUATE(random xTXF, xED) ;
+
+/* Diversity sampling */
+
+13 δ ← δ ∪ {new performance point (xTXF, xED, P )};
+
+combination of model accuracy and hardware performance measures (latency, energy, and peak power consumption). Mathematically,
+
+Performance (P ) = α × Accuracy
+
++ β × (1 − Energy Consumption)
+
+(1)
+
++ γ × (1 − Peak Power Draw) + × (1 − Latency)
+
+where α + β + γ + = 1 are hyperparameters. We normalize the values of the individual performance measures with respect to their maximum values (thus these values reside in the [0, 1] interval). For different applications, the user can deﬁne constraints based on the values of these hyperparameters. For instance, if accuracy is of utmost importance, α can be set high. On the other hand, in real-time machine translation applications that require low latency, can be set high.
+3) Active Learning and Optimization: In a design space of model-device pairs ∆, we search for the predicted bestperforming pairs in an active-learning fashion. Assuming we have the three networks f, g, and h initialized based on a randomly sampled set of model-device pairs (δ), we run second-order optimization on UCB = µ + k1 · σ + k2 · ξˆ [19], where xTXF, xED ∈ ∆, k1, and k2 are hyperparameters.
+Algorithm 1 summarizes the above process. Starting from an initial sample set δ, we run until convergence the following steps. To trade off between exploration and exploitation, we consider two probabilities: uncertainty-based exploration (αP ) and diversity-based exploration (βP ). With probability 1 − αP − βP , we run second-order GOBI using the surrogate model to optimize UCB. Adding the converged point (x, o) in δ, we train the surrogate models (line 4 in Algorithm 1). We then generate a new query point (using GOBI), transfer weights from neighboring models, and train it (or use a pretrained surrogate) through the EVALUATE function (lines 56). With αP probability, we sample the search space using the
+
+combination of aleatoric and epistemic uncertainties to ﬁnd a point where the performance estimate is uncertain (line 10). To avoid getting stuck in a localized search subset, we also choose a random point with probability βP (line 12). The EVALUATE function gives the performance measure P for the given pair (xTXF, xED) using the ProTran and FlexiBERT 2.0 frameworks or their corresponding surrogates.
+D. The GPTran Framework
+Once EdgeTran obtains the best pair of transformer model and edge device, GPTran nudges the architectural parameters of the converged transformer architecture to improve performance further. Unlike BOSHCODE, which globally searches for the best-performing architecture, GPTran is a local search post-processing technique. Its operation takes inspiration from the lottery ticket hypothesis [49], where a part of the network is usually sufﬁcient to obtain the same performance as the parent network. In our case, GPTran also helps overcome inaccuracies in surrogate modeling that may lead the co-design framework to a model that is close to but not precisely optimal. However, unlike previous works on structural adaptation at the level of individual neurons or convolutional ﬁlters (for CNNs) [32], we run our grow-and-prune framework at the compute-block level due to the modularity of the FlexiBERT 2.0 design space (details in Section III-A).
+GPTran runs gradient-based (along with random) growth and magnitude-based pruning at the block level for transformer architectures. It involves multiple iterations of interleaved grow-and-prune steps. We describe these steps next.
+• The grow step: For a given parent model, nG child models are instantiated with the net number of parameters slightly higher than that of the parent. Here, we employ either of two types of growth strategies:
+– Grow attention head (GA): We add an attention head (chosen from a set ATXF) to a particular encoder based on two scenarios with equal probability. We either add an attention head next to the one with the highest (or the next highest) gradient or at random. Here, we add nGA operation blocks. As expected, we also increase the hidden dimension hj for the selected layer by the hidden dimension of the added attention head since the net hidden dimension of an encoder layer is a sum of those for each attention head.
+– Grow feed-forward stack (GFF): We add a fullyconnected layer to the stack, in the feed-forward module, with min(hF, hGF ) neurons, where hF is the number of neurons in the last hidden layer in the selected feed-forward module and hGF is a predetermined hyperparameter. Again, we select the feedforward module based on the gradient or randomly, each with equal probability.
+We generate all the nG children based on the current growth mode (either GA or GFF). • The prune step: For a given parent model, we instantiate a child model (number of children nP = 1) with the net number of parameters slightly lower than that of the
+
+9
+
+parent. For this, we employ either of the following two pruning strategies:
+– Prune attention head (PA): We remove nPA attention heads based on their average magnitude of weights. For instance, for a WMA head, we obtain an average of all weight matrices (i.e., key, query, value, output, and the WMA matrices). If the average of the weights for this head is the lowest among all heads in the current model, we prune it out from the child model (which was initially a replica of the parent). Again, we also reduce the hidden dimension hj of the selected layers by the hidden dimensions of the attention heads removed.
+– Prune feed-forward layer (PFF): We prune a fullyconnected layer based on the average weights of the fully-connected layers in all feed-forward modules. We prune the selected layer to min(hPF, hF − hPF) number of neurons, where hF is the number of neurons in the selected hidden layer and hPF is a predetermined hyperparameter.
+We prune the selected model based on the current pruning mode (either PA or PFF) employing either of the above strategies.
+To search for compact models from the current converged model obtained using BOSHCODE, we set nPA to be higher than nGA (more details in Section IV-D). To minimize the number of training steps for every child node and leverage the neighboring (and already trained) parent node, we transfer the weights via the RP or OT method described in Section III-A2. Due to the high overlap ratio (between the parent and the child) and highly granular weight transfer in FlexiBERT 2.0, we can train individual child models rapidly. This signiﬁcantly reduces search time.
+For GPTran, the optimization metric is the pre-training loss. Unlike some previous works [50, 51], we employ block-level growth and pruning during pre-training rather than during ﬁne-tuning [9]. Thus, the optimization metric is the pretraining loss (or the model’s perplexity on language data) while executing local search. We implement GPTran in a cycle of four modes (MGP) in the following order: GA, GFF, PA, PFF. We cycle through the grow/prune modes at every tree depth until we reach the best-performing architecture (i.e., one whose children perform worse than that node).
+Algorithm 2 summarizes the GPTran algorithm. It stops at the best-performing model. It starts with the converged transformer model obtained using BOSHCODE. Then, it cycles through the four modes presented above. For GA, it creates nGA child models based on the attention head with the maximum gradient during training (line 8) or a randomly selected attention head (line 11). For GFF, it grows a feedforward stack based on the one with the highest gradient during training (line 16) or a randomly selected layer (line 19). Here, function fI() refers to the instantiation of a new fullyconnected layer with the hidden dimension as input. For PA, it removes the attention heads with the nPA smallest average weight magnitudes. For PFF, it prunes feed-forward layers with nPA smallest average weight magnitudes by a given
+
+Algorithm 2: GPTran
+
+Result: optimal transformer model
+
+1 Initialize: root-node model, best-node ← root-node,
+
+modes MGP, i ← 1;
+
+2 while children(best-node) < best-node do
+
+3 i ← (i + 1) mod len(MGP) + 1;
+
+4 if MGP[i] = GA then
+
+5
+
+for j ← 1 to nGA do
+
+6
+
+child ← best-node;
+
+7
+
+if prob ∼ U (0, 1) < αAG then
+
+8
+
+aGRAD ← argmax(∇a, ∀a ∈ child);
+
+9
+
+child ← child + aGRAD ∈ ATXF;
+
+10
+
+else
+
+11
+
+child ← child + random aTXF ∈ ATXF;
+
+12 else if MGP[i] = GFF then
+
+13
+
+for j ← 1 to nGA do
+
+14
+
+child ← best-node;
+
+15
+
+if prob ∼ U (0, 1) < αAG then
+
+16
+
+fGRAD ← argmax(∇f, ∀f ∈ child);
+
+17
+
+fGRAD ← fGRAD + fI(min(hfGRAD , hGF ));
+
+18
+
+else
+
+19
+
+select random f ∈ child;
+
+20
+
+f ← f + fI(min(hf , hGF ));
+
+21 else if MGP[i] = PA then
+
+22
+
+child ← best-node;
+
+23
+
+aS ← sort(a, ∀a ∈ child);
+
+24
+
+for j ← 1 to nPA do
+
+25
+
+child ← child − aS[j];
+
+26 else if MGP[i] = PFF then
+
+27
+
+child ← best-node;
+
+28
+
+fS ← sort(f, ∀f ∈ child);
+
+29
+
+for j ← 1 to nPA do
+
+30
+
+fS[j] ← fI(min(hPF, hF − hPF));
+
+31 for child in children(best-node) do
+
+32
+
+Wchild ← Wbest-node;
+
+33
+
+train child;
+
+34 best-node ← child with minimum loss;
+
+factor. Finally, we transfer weights from the parent node to the instantiated children before training them (line 32). Here, we implement weight transfer through OT or RP (see Section III-A). Note that we randomly instantiate the weights of all newly added attention heads or layers.
+GPTran also implements backtracking [52] (not shown in Algorithm 2) when a current best-performing leaf node does not give the overall best pre-training loss. In the hierarchical tree data structure formed during search, if the currently reached leaf does not have the best performance (or the lowest pre-training loss), GPTran backtracks to the node with the next-best performance that has unexplored children. It then populates the tree from there.
+IV. EXPERIMENTAL SETUP
+This section presents the setup for various experiments we perform, along with the baselines for comparison.
+
+10
+
+A. FlexiBERT 2.0 Design Space
+
+Table I shows the range of hyperparameter values in the proposed FlexiBERT 2.0 design space. This expanded range for each hyperparameter increases the number of possible transformer models from 3.3 × 109 in the original FlexiBERT framework to 1.7 × 1088. A large design space leads to betterperforming models, which motivates this expansion [8, 19].
+1) Hyperparameter Combinations: Next, we illustrate the process of obtaining the many architectures in our design space.
+
+• Different feed-forward hidden dimensions are possible (6
+
+values as per Table I). We can stack these feed-forward
+
+operations with 1, 2, or 3 hidden layers. Thus, the number
+
+of feed-forward operation types = 6 + 62 + 63 = 258.
+
+• There are 7 possible attention operations in ATXF,
+
+namely: SA-SDP, SA-WMA, LT-DFT, LT-DCT, DSC-
+
+5, DSC-9, and DSC-13. Thus, the number of multi-
+
+head attention operation types possible for each en-
+
+coder layer (without considering the hidden dimension)
+
+=
+
+i∈nA
+
+7+i−1 i
+
+(for nA = {2, 4, 6, 8, 10, 12} attention
+
+heads each) = 21805. Note that we have used combina-
+
+tions with replacement, i.e.,
+
+n+i−1 i
+
+,
+
+and
+
+not
+
+product,
+
+i.e., ni, since that would add isomorphic redundancy to
+
+every encoder layer.
+
+• Now, for every encoder layer, we need to determine the
+
+feed-forward operations, hidden dimension, and multi-
+
+head attention operation, leading 21805i = 1.7 × 1088 transformer
+
+to i∈nA models.
+
+258i
+
+×
+
+4i
+
+×
+
+2) Model Training: We pre-train our models with a combination of publicly available text corpora, viz. BookCorpus (BookC) [53], Wikipedia English (Wiki), OpenWebText (OWT) [54], and CC-News (CCN) [55]. We borrow most training hyperparameters from RoBERTa [21] for robust training of diverse architectures in our design space. We set the batch size to 256 and warm up the learning rate over the ﬁrst 10, 000 steps to its peak value at 1 × 10−4 that then decays linearly. We set the weight decay to 0.01, Adam scheduler’s parameters β1 = 0.9, β2 = 0.98 (shown to improve stability; [21]), = 1 × 10−6, and run pre-training for 1, 000, 000 steps.
+We ﬁne-tune our models on the nine GLUE tasks [46]. We also run automatic hyperparameter tuning in the ﬁnetuning process (i.e., search the training recipe) using the tree-structured Parzen estimator algorithm [56]. We randomly select the learning rate logarithmically in the [2 × 10−5, 5 × 10−4] range and batch size in {16, 32, 64} uniformly. Table III shows the best training recipe for ﬁne-tuning ET (edge device and transformer co-design model we obtain from BOSHCODE) on each GLUE task selected using this autotuning technique. This hyperparameter optimization uses random initialization each time. This results in variation in performance each time we query the model (otherwise called the aleatoric uncertainty). For tasks MRPC, RTE, and STS-B, we use the ﬁne-tuned checkpoint from MNLI training instead of the pre-trained model [21]
+We train all models on NVIDIA A100 GPUs and 2.6 GHz AMD EPYC Rome processors. The entire process of training
+
+TABLE III: Hyperparameters used for ﬁne-tuning ET on the GLUE tasks.
+
+Task
+CoLA MNLI MRPC QNLI QQP RTE SST-2 STS-B WNLI
+
+Learning rate
+2.0 × 10−4 9.4 × 10−5 2.23 × 10−5 5.03 × 10−5 3.7 × 10−4 1.9 × 10−4 1.2 × 10−4 7.0 × 10−5 4.0 × 10−5
+
+Batch size
+64 64 32 128 64 128 128 32 128
+
+Fig. 10: Surrogate modeling performance in terms of (a) ranking performance of the ‘best’ (blue) and nDCG (orange) ranking tests on the left, and (b) test MSE on the GLUE score predictions on the right. Absolute test MSE for L-MART is not shown since it is only a relative ranking model.
+
+the 16 LHS samples in the FlexiBERT 2.0 design space took
+
+around 100 GPU-days.
+
+3) Surrogate Modeling: To obtain a surrogate model for all
+
+transformer architectures in the FlexiBERT 2.0 design space,
+
+we employ a similar approach to ProTran. For the initial
+
+16 LHS samples, we test different regressors, as described
+
+in Section III-B2. However, while co-designing without hard
+
+constraints on model accuracy, a user may be interested in the
+
+best model from a sampled set instead of the one that barely
+
+meets the accuracy constraint. For this, we also test a ranking
+
+regressor, LambdaMART, which represents a state-of-the-art
+
+in the learning-to-rank problem [57].
+
+Fig. 10 compares different regressors based on ranking
+
+performance and MSE on the test set for the prediction of
+
+GLUE scores. We take the ﬁrst 11 models in the initial set of
+
+LHS samples as the training set and measure performance on
+
+the rest, i.e., the test set. We compare ranking performance
+
+based on two tests. First, we assemble all models in the
+
+training set into groups of three (resulting in
+
+5 3
+
+combinations
+
+in the test set). Then, we compare the best model by taking the
+
+actual best model among the set of ﬁve and the predicted best
+
+model by sorting the models based on their predicted GLUE
+
+scores. We also compare a commonly used ranking metric,
+
+the normalized discounted cumulative gain (nDCG) [58]. For
+
+11
+
+TABLE IV: Hyperparameters used in GPTran.
+
+TABLE V: Training choices for different modes in GPTran.
+
+Hyperparameter
+ATXF
+nG nGA hGF nP nPA hPF
+
+Value(s)
+SA-SDP, SA-WMA, LT-DFT, LT-DCT DSC-5, DSC-9, DSC-13 10 1 1024 1 2 128
+
+this, we discount subsequent ranks logarithmically. Finally, we compare the absolute MSE for the predicted GLUE scores on the test set. Although LambdaMART (L-MART) has a high ranking performance, GBDT shows reasonably high ranking performance and low test MSE (0.3%). Hence, we use the GBDT surrogate model for performance prediction in our design space.
+B. Hardware Performance Measurements
+1) Hardware Platforms: We now present details of the hardware platforms that form the test bed for our experiments. The baseline server platform we consider is the Nvidia A100 GPU with 40 GB video random-access memory (VRAM). The mobile platforms include the Apple M1 ARM SoC [59] with an 8-core CPU, 8-core GPU, and 16 GB uniﬁed memory on an iPad (for ease of experimentation, we instead perform experiments on a MacBook Pro that has the same SoC), Raspberry Pi 4 Model-B [60] that has the Broadcom BCM2711 ARM SoC, Intel Neural Compute Stick v2 with its NPU [61], and, ﬁnally, an Nvidia Jetson Nano [62] with an Nvidia Tegra X1 ARM SoC that has a CPU, an embedded GPU, and 2 GB uniﬁed memory.
+2) Power Measurements: We use an INA219 sensor, connected via the I2C interface to Raspberry Pi, for energy and power measurements of the Raspberry Pi, Nvidia Jetson Nano, and the Intel Neural Compute Stick. The sensor measures real-time power drawn by the device power supply. Thus, the measurement corresponds to the net energy consumed by the hardware platform. For the Nvidia A100 GPU, we use the nvidia-smi command to measure GPU power draw. For the Apple M1 processor, we measure the CPU/GPU power via the powermetrics command. These commands measure the power drawn by the power supply of the respective hardware modules.
+We perform all measurements of hardware performance while running inference on the GLUE tasks (multiple times). We then take the geometric mean of the evaluated performance measures and train the surrogate models with these mean proﬁles.
+
+Mode
+GA GFF PA PFF
+
+Max. Learning Rate
+1 × 10−5 1 × 10−5 5 × 10−5 1 × 10−5
+
+Pre-training Steps
+20,000 20,000 20,000 10,000
+
+k1 and k2 to 0.5 each. For all three surrogate models f , g, and h, we pass the input embeddings of the transformer model and edge device (xTXF and xED, respectively) to networks with two distinct hidden layers with 32 hidden neurons each. We then concatenate the outputs of these two separate sub-networks and pass them through a fully-connected layer with 64 and then 32 neurons. Finally, the network ends with one output neuron to predict the performance measure.
+All input embeddings obtained using GOBI for the surrogate models may not be valid. For instance, xED should be one-hot encoded. To add constraints to the optimization process, along with forcing the model to learn the performance only for valid input embeddings, we add a datapoint (xTXF, xED, PMIN) to the dataset δ if either of the input embeddings is invalid or does not adhere to input constraints. Another example of input constraint could be that transformers with only up to six layers are allowed. PMIN has a very low value, set to −100 for our experiments.
+D. Grow-and-Prune Process Applied to ET
+We apply GPTran to the optimal transformer model, i.e., ET, produced by BOSHCODE. Table IV summarizes the hyperparameters chosen for GPTran. Table V shows the training choices for each of the four modes (MGP described in Section III-D). We found all hyperparameter values through grid search.
+E. Baselines
+Our baseline models include BERT-Base, a hand-designed transformer model. We also include a model obtained through a throughput-guided NAS technique (AutoTinyBERT [15]). However, it only relies on throughput measurements on a CPU. HAT [7], another baseline for comparison, uses latency feedback from selected devices for a guided search. It runs hardware-aware NAS (HW-NAS), which searches for transformer models with latency feedback from a given hardware platform. This, however, loses the beneﬁts of co-design in a context where multiple edge devices may be employed. For fair comparisons, we present an HW-NAS version of EdgeTran in which we run BOSHCODE but force gradients to the edge device to zero, i.e., we only search for transformer models run on a given edge platform (here, a Raspberry Pi).
+
+C. Co-design Pipeline
+To run BOSHCODE, we use the following parameter values to obtain the net performance measure: α = 0.5, β = 0.2, γ = 0.2, = 0.1 (Eq. 1). We set αP and βP to 0.1 each, and
+
+V. RESULTS
+This section presents experimental results and comparisons of the EdgeTran framework with relevant baselines.
+
+12
+
+(a)
+
+(b)
+
+(c)
+
+(d)
+
+(e)
+
+(f )
+
+Fig. 11: Power consumption from different sources (CPU, GPU, or DRAM) for different platforms: (a) Apple M1 CPU, (b) Apple M1 GPU, (c) Raspberry Pi CPU, (d) Nvidia Jetson Nano CPU, (e) Nvidia Jetson Nano GPU, and (f) Intel Neural Compute Stick NPU. One run corresponds to a full pass of running inference of the BERT-Tiny [41] model on the SST-2 [46] task for the entire dataset.
+
+A. Hardware Performance Comparisons
+We now compare the hardware performance measures, namely latency, energy consumption, and peak power draw, on different platforms, for a given transformer model. This demonstrates the capabilities of each hardware platform with like-for-like comparisons.
+Fig. 11 shows power consumption while running model inference with BERT-Tiny [41] on the SST-2 task [46] for different hardware platforms. Figs. 11(a) and (b) show the CPU, GPU, and dynamic random access memory (DRAM) power consumption for the Apple M1 SoC [59]. Fig. 11(c) shows power consumption for the Raspberry Pi CPU. Figs. 11(d) and (e) show power consumption for Nvidia Jetson Nano when we run the model on the CPU and GPU, respectively. Finally, Fig. 11(f) shows power consumption for Intel NCS v2. These ﬁgures show that the mobile platforms have much lower power consumption throughout their operation when compared to the A100 GPU, which has a peak power draw of around 42W. These proﬁles also highlight the diverse power draw characteristics and peak power consumption of different platforms. ProTran automatically proﬁles these curves while running a search in its active-learning pipeline.
+As can be seen from Fig. 12, the Apple M1 SoC with its integrated GPU outperforms the traditional A100 GPU in terms of energy and peak power consumption while being close in terms of latency. Its total energy consumption is the minimum among all platforms under consideration. We see a
+
+17.6× reduction in energy consumption and 6.6× reduction in peak power draw with only a 10.6% higher latency per run for the Apple M1 SoC running on its integrated GPU when compared to the Nvidia A100 GPU. On the other hand, Intel NCS has the minimum peak power consumption, i.e., with a 21.0× reduction, but with a 22.3× higher latency compared to the Nvidia A100 GPU. This demonstrates a diverse set of latency, energy, and peak power draw proﬁles for the different platforms that might ﬁt various requirements or constraints on hardware performance for assorted edge-AI deployments. This diversity motivates the need for proﬁling the latency, energy, and peak power consumption of various transformer architectures on a diverse set of embedded platforms. This would lead to efﬁcient transformer architectural decisions under different scenarios.
+B. Effect of Model size on Hardware Performance
+Fig. 13 shows contour plots for latency, energy consumption, and peak power draw when running inference on the Nvidia A100 GPU. The plots show the dependence of these hardware performance measures on model depth and width speciﬁed in terms of the number of encoder layers and the median hidden dimension of all encoder layers, respectively. The color of the point plots depicts the performance value. We obtain the contour plots from a trained surrogate for each performance measure. As can be seen from Fig. 13(a), latency is highly dependent on model depth and does not have a high
+
+13
+
+Fig. 12: Gains in different hardware performance measures for diverse embedded platforms. Results have been normalized against those for the baseline, i.e., the Nvidia A100 GPU.
+
+Latency increases with depth
+only
+
+Latency increases with depth and width
+
+Energy increases with depth and width
+
+(a)
+
+(b)
+
+(c)
+
+Fig. 13: Proﬁles of hardware performance measures on the Nvidia A100 GPU for transformer model depth and width: (a) latency, (b) energy, and (c) peak power.
+
+correlation with model width (based on the horizontal contour lines). The sequential operation of the encoder layers in a transformer model is the reason behind this result. Thus, as long as the target device runs an entire layer in parallel, the latency should increase linearly with the number of encoder layers. However, for deeper models (i.e., with the number of encoder layers more than 2), latency increases slightly with model width as well (as the contour lines are not horizontal anymore). For instance, the typical latency of a model with 10 encoder layers and a median hidden dimension of 512 is less than 1 × 10−2 s/seq. while that of a model with the same number of layers but a hidden dimension of 640 is higher than 1 × 10−2 s/seq. Fig. 13(b) shows the energy consumption proﬁles with model depth and width. The net energy consumption increases with the depth and width of the transformer model. We explain this as follows. As the model depth and width increase, the number of computations increases, thus raising the hardware energy consumption for these computations. Peak power proﬁles in Fig. 13(c) behave in a much more convoluted fashion when model depth and width are varied. We observe trenches in peak power proﬁles for certain hidden dimensions. This could be attributable to how well the model ﬁts in GPU memory for different hidden dimensions. Nevertheless, there is still a general trend of increasing peak power consumption with model depth.
+
+Table VI presents the best models for minimizing latency, energy, and peak power draw for each hardware platform. We observe that relative to the best-latency model running on Nvidia A100 GPU, the best-latency model running on Apple M1 GPU incurs 22.0% lower latency, 3.8× lower energy consumption, and 7.4× lower peak power draw. The bestenergy model running on Apple M1 GPU also has the lowest energy among all such models, achieving 3.7× lower energy with only 10.2% higher latency but 7.3× lower peak power draw relative to the A100 GPU. Other platforms have higher energy consumption due to drastically higher latencies. The Intel NCS NPU has the lowest peak power draw, 48.8× lower than that of the A100 GPU, however, with 11,021.3× higher latency and 337.7× higher energy consumption. Nevertheless, in edge applications with a restriction on the input power supply to 2W, the Intel NCS might be the designer’s best bet.
+C. Pareto Frontiers
+The above comparisons do not consider the effect of transformer model size (and corresponding design decisions) on accuracy when differentiating one platform from another. Hence, we plot the Pareto frontiers of GLUE scores against hardware performance measures for each platform in Fig. 14. We obtain these frontiers by optimizing each hardware performance measure for every device using its surrogate model
+
+14
+
+TABLE VI: Hardware performance measures of optimal models in terms of latency, energy, and peak power on different platforms.
+
+Device
+Nvidia A100 GPU Apple M1 CPU Apple M1 GPU Raspberry Pi CPU Intel NCS NPU Jetson Nano CPU Jetson Nano GPU
+
+Min. Latency Model
+
+Latency (ms/seq)
+5.69 159.6 4.35 2113.2 5263.8 6562.6 41425.7
+
+Energy (J/seq)
+0.25 3.14 0.065 28.09 6.73 15.03 92.19
+
+Peak Power (W)
+133.94 23.24 18.18 4.48 2.12 4.08 4.14
+
+Min. Energy Model
+
+Latency (ms/seq)
+5.95 159.6 6.56 6417.4 5741.2 8726.6 42365.2
+
+Energy (J/seq)
+0.24 3.13 0.064 28.09 6.21 15.01 81.27
+
+Peak Power (W)
+133.94 22.21 18.40 4.48 2.08 4.08 4.10
+
+Min. Peak Power Model
+
+Latency (ms/seq)
+5.95 652.3 6.54 16843.4 65576.5 7787.1 128793.4
+
+Energy (J/seq)
+0.24 12.06 0.065 52.27 81.05 20.06 309.4
+
+Peak Power (W)
+98.04 21.76 18.18 4.44 2.01 4.06 4.02
+
+(a)
+
+(b)
+
+(c)
+
+Fig. 14: Pareto frontiers of GLUE scores for models in the FlexiBERT 2.0 design space with (a) latency, (b) energy, and (c) peak power for different platforms.
+
+obtained using ProTran (with GLUE scores predicted by the surrogate model obtained using FlexiBERT 2.0). Fig. 14(a) shows the Pareto frontiers for GLUE scores plotted against inference latency. A100, due to its high batch size of 128 (see Table II), has much lower latency than embedded platforms. The Apple M1 GPU has around 2× higher average latency (along the frontier). Other devices have much higher latencies, running into hundreds of seconds averaged per sequence. Hence, if latency is a hard constraint, e.g., in a real-time language translation application, a designer can switch to other devices if a particular device does not meet the constraint. These proﬁled curves thus obviate the need for HW-NAS on every platform in future edge deployments. Fig. 14(b) plots the Pareto frontiers for GLUE scores against energy consumption. The Apple M1 GPU has the lowest energy consumption, slightly lower than that of the A100 GPU. Fig. 14(c) shows the Pareto frontiers of the GLUE scores plotted against peak power draw. Intel NCS has the lowest power consumption. The nearly-vertical frontier indicates similar power consumption characteristics for diverse transformer models. On the other hand, the A100 GPU has drastically higher peak power curves,
+
+running into hundreds of Watts. A common trend in all three plots is that the GLUE score generally increases with increasing hardware performance measures. This correlates with results presented for deeper and wider architectures in Figs. 13(a) and 13(b).
+D. Co-design of the Transformer and Edge Platform
+Now that we have characterized the performance of each hardware platform, we experiment with co-design of the transformer model and edge-AI device. This entails running our proposed BOSHCODE pipeline along with several black-box optimization methods. Fig. 15 shows how performance (see Eq. 1) converges for different co-design schemes. These schemes include random search, gradientboosted regression trees (GBRT), GPR-BO that approximates performance through Gaussian process regression and optimizes it through the L-BFGS method [63], and random forest that ﬁts various randomized decision trees over sub-samples of the dataset. We employ a UCB estimate for optimization in all methods (except Random). As can be seen from Fig. 15,
+
+15 -
+
+ET*
+
+Fig. 16: Loss curves for various children of ET while employFig. 15: Convergence plots for co-design experiments using ing block-level growth and pruning. BOSHCODE and various baselines.
+
+TABLE VII: Design choices of the converged ET model obtained using BOSHCODE.
+
+Hyperparameter Encoder Layer 1
+Encoder Layer 2
+
+h1 #SA-SDP #SA-WMA #LT-DFT #LT-DCT #DSC-5 #DSC-9 FF h2 #SA-WMA #LT-DFT #DSC-5 #DSC-9 FF
+
+Value
+256 2 2 2 1 1 4 4096, 3072, 4096
+256 2 3 2 5 256, 256, 2048
+
+BOSHCODE achieves the highest performance. It yields the optimal transformer-device pair, namely ET-Apple M1 GPU.
+Table VII shows the architectural design choices made in ET. To optimize latency, ET uses only two encoder layers. However, to avoid losing performance, ET uses 12 attention heads in each encoder layer. Thus, BOSHCODE searches for a shallow but wide model to improve throughput while not incurring a performance penalty. The converged architecture is also highly heterogeneous, with diverse attention types in each layer, leveraging the modeling capabilities of each operation type.
+E. GPTran Loss Curves
+GPTran optimizes the pre-training masked language modeling (MLM) loss while employing block-level growth and pruning on the given transformer model. Fig. 16 presents the MLM loss [2] under different modes in the GPTran pipeline. ET∗, the model obtained after running GPTran on ET, has the lowest loss, 1.4% lower than that of ET, while requiring
+
+5.9% fewer parameters than ET. Note how GPTran backtracks twice, after pruning two models (red and orange colors), while ﬁnally converging to ET∗ (olive color).
+F. Ablation Analysis and Baseline Comparison
+We now present an ablation analysis and baseline comparisons for our proposed framework. Table VIII compares EdgeTran and GPTran with the baselines mentioned in Section IV-E. The HW-NAS method employed in EdgeTran achieves a 2.4× smaller model, with 0.8% higher GLUE score, 11.2% lower latency, 25.1% lower energy consumption, and 6.1% lower peak power draw on the same platform, relative to HAT. The table then presents the results from the ablation experiments. First, we test vanilla-NAS, where we block all gradients to the edge device and only search for a transformer model that maximizes the GLUE score. We evaluate the obtained model on the M1 GPU. The obtained model attains the highest GLUE score of 81.8, which is only 0.4 less than that of BERT-Large. However, this model is much smaller (139M against 345M parameters of BERT-Large). Then, we test EdgeTran with co-optimization of the model and the edge device, however, without leveraging aleatoric uncertainty (i.e., without the NPN model in BOSHCODE). We then show the performance of the model-device pair from simultaneous co-design by EdgeTran (ET on M1 GPU). This leverages BOSHCODE, the surrogate models for the FlexiBERT 2.0 design space, and those from ProTran for every edge device. Finally, we present the results after running blocklevel growth and pruning on the output transformer model obtained using BOSHCODE in EdgeTran (resulting in ET∗). GPTran reduces the model size and improves its performance on the GLUE benchmark. Reducing the model size also helps improve the hardware performance measures. As seen from the table, hardware-software co-design results in substantial gains in accuracy, energy efﬁciency, and peak power consumption, compared to hand-designed models (e.g., BERT-Base) or vanilla NAS (without considering factors related to hardware). The resultant model-device pair yields a 2.8× smaller model with 0.8% higher GLUE score, 15.0% lower latency, 10.0×
+
+16
+
+TABLE VIII: Ablation analysis and baseline comparisons for our proposed EdgeTran + GPTran framework.
+
+Method BERT-Base [2]
+AutoTinyBERT [15] HAT [7] EdgeTran (HW-NAS; Ours)
+EdgeTran (vanilla-NAS; Ours) EdgeTran (w/o al. unc.; Ours) EdgeTran (ET; Ours) EdgeTran + GPTran (ET∗; Ours)
+
+HardwareAware 
+  
+   
+
+Flex. Layers
+
+  
+   
+
+Fine-grained Search
+
+Platform
+
+
+
+A100
+
+Baseline Comparison
+
+
+
+Raspberry Pi
+
+
+
+Raspberry Pi
+
+
+
+Raspberry Pi
+
+Ablation Analysis
+
+
+
+M1 GPU
+
+
+
+M1 GPU
+
+
+
+M1 GPU
+
+
+
+M1 GPU
+
+#Params. 110M
+60.7M 96.0M 41.4M
+139.0M 43.8M 42.1M 39.6M
+
+GLUE Score (%) 79.6
+78.3 77.1 77.9
+81.8 77.6 79.2 80.4
+
+Latency (ms/seq)
+10.57
+10,427.73 12,351.61 10,371.90
+31.45 14.56 9.21 8.98
+
+Energy (J/seq)
+0.61
+20.69 38.21 18.62
+0.583 0.118 0.063 0.061
+
+Peak Power (W)
+199.86
+5.02 4.95 4.65
+23.13 21.44 18.83 18.47
+
+lower energy, and 10.8× lower peak power than the baseline model (BERT-Base) on the A100 GPU.
+VI. DISCUSSION In this section we discuss the implications of the proposed work along with future work directions.
+
+EdgeTran only implements a static model on the edge device. Taking inspiration from recent works that run dynamic inference [65] on the given edge platform, we could perform inference with only a part of the transformer at runtime. We could also dynamically scale the model itself based on available resources.
+
+A. Model Scheduling
+The latency and hardware utilization, which also affect net energy consumption and peak power draw, depend on how one schedules the ML model. Different scheduling strategies can leverage data reuse in distinct ways. In this work, we leverage the scheduling strategy of the supported deep learning framework that evaluates a given transformer model on the target hardware platform. This limits the scope of optimizing data reuse and resultant gains in latency and energy consumption. Extending the application of the FlexiBERT 2.0 design space to custom-designed accelerators [64] could provide the ﬂexibility of choosing among different scheduling decisions and dataﬂows. We leave these extensions to future work.
+B. Memory Utilization
+We ﬁx the batch size when evaluating models (based on the largest transformer in the design space). Smaller models could see much lower memory utilization with a ﬁxed batch size. However, adding ﬂexibility for dynamic batch sizes would change latency, energy, and peak power draw proﬁles. This would require separate surrogate models for each set of batch sizes while evaluating a given hardware platform. Memory usage optimization can be incorporated into the ProTran framework, and we leave this extension to future work.
+C. Dynamic Workloads
+In this work, we assume that the target hardware platforms are dedicated to model inference alone. However, mobile edge devices are responsible for multiple functions and their workloads change dynamically. In such scenarios, the surrogate model can be dynamically updated based on the latest workload characteristics (such effects can also be tested a priori). One could use such heuristics and dynamic surrogate models in these settings.
+
+D. Pre-proﬁled Surrogate Models
+FlexiBERT 2.0 took 100 GPU-days to obtain the surrogate model. ProTran can proﬁle a hardware platform within a few hours. BOSHCODE, on the other hand, uses the surrogate models (FlexiBERT 2.0 and ProTran, as shown in Fig. 1). ProTran took the maximum time to proﬁle Raspberry Pi (7 hours). Owing to the lightweight surrogate models, running the co-design pipeline is very fast. With these pre-proﬁled surrogate models, implementing co-design takes a few minutes. One only needs to proﬁle a new hardware platform with ProTran and then use the FlexiBERT 2.0 surrogate model to implement co-design in minutes. Thus, the FlexiBERT 2.0 surrogate model is very powerful in searching for new modeldevice pairs for a given set of design parameters (α, β, γ, and ). This highlights the advantages of the proposed strategy in terms of search efﬁciency for future designs.
+VII. CONCLUSION
+This work presented multiple frameworks for efﬁcient codesign of the transformer architecture and the edge-AI platform. First, we proposed ProTran, a framework to proﬁle various hardware performance measures, including latency, energy, and peak power draw for a diverse set of transformer architectures on an inclusive set of mobile platforms for edge-AI. We also presented an expanded design space of transformer architectures, FlexiBERT 2.0, for a thorough evaluation of diverse mobile-friendly models. We leveraged BOSHCODE [19], which employs training of surrogate models through active learning for efﬁcient co-design of the transformer model and edge device. Finally, we optimized the output model with a hardware-aware post-processing step, GPTran, that employs fast block-level grow-and-prune. Based on the trained surrogate models, the optimal architectures while running on mobile platforms achieve up to 22.0% lower latency, 3.7× lower energy, and 48.8× lower peak power
+
+17
+
+draw when compared with an off-the-shelf server-side GPU. Our method achieves a 2.8× smaller model with 0.8% higher GLUE score, 15.0% lower latency, 10.0× lower energy, and 10.8× lower peak power than the baseline model run on a
+server-side GPU.
+ACKNOWLEDGMENTS
+We performed the simulations presented in this article on
+computational resources managed and supported by Princeton
+Research Computing at Princeton University. We obtained the
+edge platforms with support from the Department of Electrical
+and Computer Engineering at Princeton University.
+REFERENCES
+[1] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” in Proc. Int. Conf. Neural Information Processing Systems, vol. 30, 2017, pp. 5998– 6008.
+[2] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “BERT: Pre-training of deep bidirectional transformers for language understanding,” in Proc. Conf. North American Chapter of the Association for Computational Linguistics: Human Language Technologies, vol. 1, 2019, pp. 4171– 4186.
+[3] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly, J. Uszkoreit, and N. Houlsby, “An image is worth 16x16 words: Transformers for image recognition at scale,” in Proc. Int. Conf. Learning Representations, 2021.
+[4] S. Smith, M. Patwary, B. Norick, P. LeGresley, S. Rajbhandari, J. Casper, Z. Liu, S. Prabhumoye, G. Zerveas, V. Korthikanti, E. Zheng, R. Child, R. Y. Aminabadi, J. Bernauer, X. Song, M. Shoeybi, Y. He, M. Houston, S. Tiwary, and B. Catanzaro, “Using DeepSpeed and Megatron to train Megatron-Turing NLG 530B, A large-scale generative language model,” CoRR, vol. abs/2201.11990, 2022.
+[5] A. Kolesnikov, L. Beyer, X. Zhai, J. Puigcerver, J. Yung, S. Gelly, and N. Houlsby, “Big Transfer (BiT): General visual representation learning,” in Proc. European Conference on Computer Vision, 2020, pp. 491–507.
+[6] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proc. IEEE Conf. Computer Vision and Pattern Recognition, 2016, pp. 770–778.
+[7] H. Wang, Z. Wu, Z. Liu, H. Cai, L. Zhu, C. Gan, and S. Han, “HAT: Hardware-aware transformers for efﬁcient natural language processing,” in Proc. 58th Annual Meeting of the Association for Computational Linguistics, 2020, pp. 7675–7688.
+[8] S. Tuli, B. Dedhia, S. Tuli, and N. K. Jha, “FlexiBERT: Are current transformer architectures too homogeneous and rigid?” CoRR, vol. abs/2205.11656, 2022.
+[9] M. Gordon, K. Duh, and N. Andrews, “Compressing BERT: Studying the effects of weight pruning on transfer learning,” in Proc. 5th Workshop on Representation Learning for NLP, 2020, pp. 143–155.
+[10] Z. Yan, H. Wang, D. Guo, and S. Han, “MicroNet for efﬁcient language modeling,” in Proc. Int. Conf. Neural Information Processing Systems, vol. 123, 2020, pp. 215–231.
+[11] J. Lee-Thorp, J. Ainslie, I. Eckstein, and S. Ontanon, “FNet: Mixing tokens with Fourier transforms,” in Proc. Int. Conf. North American Chapter of the Association for Computational Linguistics: Human Language Technologies, 2022, pp. 4296–4313.
+[12] S. Wang, B. Z. Li, M. Khabsa, H. Fang, and H. Ma, “Linformer: Selfattention with linear complexity,” CoRR, vol. abs/2006.04768, 2020.
+[13] F. Iandola, A. Shaw, R. Krishna, and K. Keutzer, “SqueezeBERT: What can computer vision teach NLP about efﬁcient neural networks?” in Proc. SustaiNLP: Workshop on Simple and Efﬁcient Natural Language Processing, 2020, pp. 124–135.
+[14] J. Xu, X. Tan, R. Luo, K. Song, J. Li, T. Qin, and T.-Y. Liu, “NAS-BERT: Task-agnostic and adaptive-size BERT compression with neural architecture search,” in Proc. 27th ACM SIGKDD Conference on Knowledge Discovery & Data Mining, 2021, pp. 1933–1943.
+[15] Y. Yin, C. Chen, L. Shang, X. Jiang, X. Chen, and Q. Liu, “AutoTinyBERT: Automatic hyper-parameter optimization for efﬁcient pre-trained language models,” in Proc. 59th Annual Meeting of the Association for Computational Linguistics, 2021, pp. 5146–5157.
+
+[16] B. Li, S. Pandey, H. Fang, Y. Lyv, J. Li, J. Chen, M. Xie, L. Wan, H. Liu, and C. Ding, “FTRANS: Energy-efﬁcient acceleration of transformers using FPGA,” in Proc. ACM/IEEE Int. Symp. Low Power Electronics and Design, 2020, pp. 175–180.
+[17] X. Wang, L. L. Zhang, Y. Wang, and M. Yang, “Towards efﬁcient vision transformer inference: A ﬁrst study of transformers on mobile devices,” in Proc. Int. Workshop on Mobile Computing Systems and Applications, 2022, pp. 1–7.
+[18] S. Tuli, S. R. Poojara, S. N. Srirama, G. Casale, and N. R. Jennings, “COSCO: Container orchestration using co-simulation and gradient based optimization for fog computing environments,” IEEE Trans. Parallel and Distributed Systems, vol. 33, no. 1, pp. 101–116, 2021.
+[19] S. Tuli, C. H. Li, R. Sharma, and N. K. Jha, “CODEBench: A neural architecture and hardware accelerator co-design framework,” ACM Trans. Embedded Computing Systems, Dec 2022. [Online]. Available: https://doi.org/10.1145/3575798
+[20] P. Shaw, J. Uszkoreit, and A. Vaswani, “Self-attention with relative position representations,” in Proc. Int. Conf. North American Chapter of the Association for Computational Linguistics: Human Language Technologies, vol. 2, 2018, pp. 464–468.
+[21] L. Zhuang, L. Wayne, S. Ya, and Z. Jun, “A robustly optimized BERT pre-training approach with post-training,” in Proc. Chinese National Conference on Computational Linguistics, 2021, pp. 1218–1227.
+[22] Z.-H. Jiang, W. Yu, D. Zhou, Y. Chen, J. Feng, and S. Yan, “ConvBERT: Improving BERT with span-based dynamic convolution,” in Proc. Int. Conf. Neural Information Processing Systems, vol. 33, 2020, pp. 12 837– 12 848.
+[23] Z. Sun, H. Yu, X. Song, R. Liu, Y. Yang, and D. Zhou, “MobileBERT: A compact task-agnostic BERT for resource-limited devices,” in Proc. 58th Annual Meeting of the Association for Computational Linguistics, 2020, pp. 2158–2170.
+[24] A. Khetan and Z. Karnin, “schuBERT: Optimizing elements of BERT,” in Proc. 58th Annual Meeting of the Association for Computational Linguistics, 2020, pp. 2807–2818.
+[25] L. Hou, Z. Huang, L. Shang, X. Jiang, X. Chen, and Q. Liu, “DynaBERT: Dynamic BERT with adaptive width and depth,” in Proc. Int. Conf. Neural Information Processing Systems, vol. 33, 2020, pp. 9782– 9793.
+[26] D. Chen, Y. Li, M. Qiu, Z. Wang, B. Li, B. Ding, H. Deng, J. Huang, W. Lin, and J. Zhou, “AdaBERT: Task-adaptive BERT compression with differentiable neural architecture search,” in Proc. Int. Joint Conference on Artiﬁcial Intelligence, 2021, pp. 2463–2469.
+[27] J. Gao, H. Xu, H. Shi, X. Ren, P. L. H. Yu, X. Liang, X. Jiang, and Z. Li, “AutoBERT-Zero: Evolving BERT backbone from scratch,” in Proc. AAAI Conf. Artiﬁcial Intelligence, vol. 36, no. 10, 2022, pp. 10 663– 10 671.
+[28] H. Pham, M. Guan, B. Zoph, Q. Le, and J. Dean, “Efﬁcient neural architecture search via parameters sharing,” in Proc. Int, Conf. Machine Learning, 2018, pp. 4095–4104.
+[29] X. Dai, P. Zhang, B. Wu, H. Yin, F. Sun, Y. Wang, M. Dukhan, Y. Hu, Y. Wu, Y. Jia, P. Vajda, M. Uyttendaele, and N. K. Jha, “ChamNet: Towards efﬁcient network design through platform-aware model adaptation,” in Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2019, pp. 11 390–11 399.
+[30] Y. Lin, M. Yang, and S. Han, “NAAS: Neural accelerator architecture search,” in Proc. ACM/IEEE Design Automation Conference, 2021, pp. 1051–1056.
+[31] J. Lin, W.-M. Chen, Y. Lin, J. Cohn, C. Gan, and S. Han, “MCUNet: Tiny deep learning on IoT devices,” in Proc. Int. Conf. Neural Information Processing Systems, vol. 33, 2020, pp. 11 711–11 722.
+[32] X. Dai, H. Yin, and N. K. Jha, “NeST: A neural network synthesis tool based on a grow-and-prune paradigm,” IEEE Trans. Computers, vol. 68, no. 10, pp. 1487–1497, 2019.
+[33] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N. Gimelshein, L. Antiga, A. Desmaison, A. Kopf, E. Yang, Z. DeVito, M. Raison, A. Tejani, S. Chilamkurthy, B. Steiner, L. Fang, J. Bai, and S. Chintala, “PyTorch: An imperative style, high-performance deep learning library,” in Proc. Int. Conf. Neural Information Processing Systems, 2019, pp. 8024–8035.
+[34] M. Abadi, P. Barham, J. Chen, Z. Chen, A. Davis, J. Dean, M. Devin, S. Ghemawat, G. Irving, M. Isard et al., “Tensorﬂow: A system for large-scale machine learning,” in Proc. 12th USENIX Symp. Operating Systems Design and Implementation, 2016, pp. 265–283.
+[35] ONNX. Open Neural Network Exchange (2022). [Online]. Available: https://github.com/onnx/onnx
+[36] OpenVINO: An open-source toolkit for optimizing and deploying AI inference (2022). [Online]. Available: https://docs.openvino.ai/latest/
+
+18
+
+index.html
+
+[37] P. Qi, E. H.-M. Sha, Q. Zhuge, H. Peng, S. Huang, Z. Kong, Y. Song,
+
+and B. Li, “Accelerating framework of transformer by hardware design
+
+and model compression co-optimization,” in Proc. IEEE/ACM Int. Conf.
+
+Computer Aided Design, 2021, pp. 1–9.
+
+[38] H. Wang, Z. Zhang, and S. Han, “SpAtten: Efﬁcient sparse attention
+
+architecture with cascade token and head pruning,” in Proc. Int. Symp.
+
+High-Performance Computer Architecture, 2021, pp. 97–110.
+
+[39] Z. Zhou, J. Liu, Z. Gu, and G. Sun, “Energon: Towards efﬁcient
+
+acceleration of transformers using dynamic sparse attention,” IEEE
+
+Trans. Computer-Aided Design of Integrated Circuits and Systems, pp.
+
+1–14, 2022.
+
+[40] T. Luong, H. Pham, and C. D. Manning, “Effective approaches to
+
+attention-based neural machine translation,” in Proc. Conf. Empirical
+
+Methods in Natural Language Processing, 2015, pp. 1412–1421.
+
+[41] I. Turc, M. Chang, K. Lee, and K. Toutanova, “Well-read students learn
+
+better: The impact of student initialization on knowledge distillation,”
+
+CoRR, vol. abs/1908.08962, 2019.
+
+[42] S. Dasgupta and A. Gupta, “An elementary proof of a theorem of
+
+Johnson and Lindenstrauss,” Random Struct. Algorithms, vol. 22, no. 1,
+
+pp. 60–65, 2003.
+
+[43] P. Ren, Y. Xiao, X. Chang, P.-Y. Huang, Z. Li, B. B. Gupta, X. Chen,
+
+and X. Wang, “A survey of deep active learning,” ACM Comput. Surv.,
+
+vol. 54, no. 9, 2021.
+
+[44] H. Niederreiter, Random Number Generation and Quasi-Monte Carlo
+
+Methods. Society for Industrial and Applied Mathematics (SIAM),
+
+1992.
+
+[45] E. K. Tang, P. N. Suganthan, and X. Yao, “An analysis of diversity
+
+measures,” Machine Learning, vol. 65, no. 1, pp. 247–271, 2006.
+
+[46] A. Wang, A. Singh, J. Michael, F. Hill, O. Levy, and S. Bowman,
+
+“GLUE: A multi-task benchmark and analysis platform for natural
+
+language understanding,” in Proc. EMNLP Workshop BlackboxNLP:
+
+Analyzing and Interpreting Neural Networks for NLP, 2018, pp. 353–
+
+355.
+
+[47] J. Siems, L. Zimmer, A. Zela, J. Lukasik, M. Keuper, and F. Hutter,
+
+“Surrogate NAS benchmarks: Going beyond the limited search spaces of
+
+tabular NAS benchmarks,” in Proc. Int. Conf. Learning Representations,
+
+2022.
+
+[48] H. Wang, X. Shi, and D.-Y. Yeung, “Natural-parameter networks: A class
+
+of probabilistic neural networks,” in Proc. Int. Conf. Neural Information
+
+Processing Systems, 2016, pp. 118–126.
+
+[49] J. Frankle and M. Carbin, “The lottery ticket hypothesis: Finding sparse,
+
+trainable neural networks,” in Proc. Int. Conf. Learning Representations,
+
+2019.
+
+[50] V. Sanh, T. Wolf, and A. Rush, “Movement pruning: Adaptive sparsity
+
+by ﬁne-tuning,” in Proc. Int. Conf. Neural Information Processing
+
+Systems, vol. 33, 2020, pp. 20 378–20 389.
+
+[51] D. Xu, I. E.-H. Yen, J. Zhao, and Z. Xiao, “Rethinking network pruning
+
+– under the pre-train and ﬁne-tune paradigm,” in Proc. Conf. North
+
+American Chapter of the Association for Computational Linguistics:
+
+Human Language Technologies, 2021, pp. 2376–2382.
+
+[52] P. Van Beek, “Backtracking search algorithms,” Foundations of Artiﬁcial
+
+Intelligence, vol. 2, pp. 85–134, 2006.
+
+[53] Y. Zhu, R. Kiros, R. Zemel, R. Salakhutdinov, R. Urtasun, A. Torralba,
+
+and S. Fidler, “Aligning books and movies: Towards story-like visual
+
+explanations by watching movies and reading books,” in Proc. IEEE
+
+Int. Conf. Computer Vision, 2015, pp. 19–27.
+
+[54] A. Gokaslan and V. Cohen. OpenWebText Corpus. [Online]. Available:
+
+http://Skylion007.github.io/OpenWebTextCorpus
+
+[55] J. Mackenzie, R. Benham, M. Petri, J. R. Trippas, J. S. Culpepper, and
+
+A. Moffat, “CC-News-En: A large english news corpus,” in Proc. ACM
+
+Int. Conf. Information & Knowledge Management, 2020, pp. 3077–3084.
+
+[56] T. Akiba, S. Sano, T. Yanase, T. Ohta, and M. Koyama, “Optuna: A
+
+next-generation hyperparameter optimization framework,” in Proc. ACM
+
+SIGKDD Int. Conf. Knowledge Discovery and Data Mining, 2019, pp.
+
+2623–2631.
+
+[57] C. J. C. Burges, “From RankNet to LambdaRank to LambdaMART:
+
+An overview,” 2010. [Online]. Available: https://citeseerx.ist.psu.edu/
+
+viewdoc/download?doi=10.1.1.180.634&rep=rep1&type=pdf
+
+[58] K. Ja¨rvelin and J. Keka¨la¨inen, “Cumulated gain-based evaluation of IR
+
+techniques,” ACM Trans. Inf. Syst., vol. 20, no. 4, pp. 422–446, 2002.
+
+[59] Apple. (2020) Apple unleashes M1. [Online]. Available: https:
+
+//www.apple.com/newsroom/2020/11/apple-unleashes-m1/
+
+[60] Raspberry Pi 4 Model-B. [Online]. Available: https://www.raspberrypi.
+
+com/products/raspberry-pi-4-model-b/
+
+[61] Intel
+
+Neural
+
+Compute
+
+Stick
+
+2.
+
+[Online].
+
+Available: https://www.intel.com/content/www/us/en/developer/tools/
+
+neural-compute-stick/overview.html [62] NVIDIA Jetson Nano Developer Kit. [Online]. Available: https:
+//developer.nvidia.com/embedded/jetson-nano-developer-kit [63] D. C. Liu and J. Nocedal, “On the limited memory BFGS method for
+large scale optimization,” Mathematical Programming, vol. 45, no. 1, pp. 503–528, Aug. 1989. [64] S. Tuli and N. K. Jha, “AccelTran: A sparsity-aware accelerator for dynamic inference with transformers,” CoRR, vol. abs/2302.14705, 2023. [65] H. Parry, L. Xun, A. Sabet, J. Bi, J. Hare, and G. V. Merrett, “Dynamic transformer for efﬁcient machine translation on embedded devices,” in Proc. ACM/IEEE Workshop on Machine Learning for CAD, 2021, pp. 1–6.
+Shikhar Tuli received the B. Tech. degree in electrical and electronics engineering from the Indian Institute of Technology (IIT) Delhi, India, with a department specialization in very large-scale integration (VLSI) and embedded systems. He is currently pursuing a Ph.D. degree at Princeton University in the department of electrical and computer engineering. His research interests include deep learning, edge artiﬁcial intelligence (AI), hardware-software codesign, brain-inspired computing, and smart healthcare.
+Niraj K. Jha (Fellow, IEEE) received the B.Tech. degree in electronics and electrical communication engineering from IIT, Kharagpur, India, in 1981, and the Ph.D. degree in electrical engineering from the University of Illinois at Urbana–Champaign, Champaign, IL, USA, in 1985. He is a professor of electrical and computer engineering, Princeton University. He has co-authored ﬁve widely used books. He has published more than 470 papers (hindex: 83). He has received the Princeton Graduate Mentoring Award. His research has won 15 best paper awards, six award nominations, and 25 patents. He was given the Distinguished Alumnus Award by IIT, Kharagpur, in 2014. He has served as the Editor-in-Chief of TVLSI and an associate editor of several IEEE Transactions and other journals. He has given several keynote speeches in the areas of nanoelectronic design/test, smart healthcare, and cybersecurity. He is a fellow of ACM. His research interests include machine learning algorithms/architectures and smart healthcare.
+

@@ -1,0 +1,947 @@
+DistrEdge: Speeding up Convolutional Neural Network Inference on Distributed Edge Devices
+Xueyu Hou∗, Yongjie Guan∗, Tao Han∗, Ning Zhang† ∗ New Jersey Institute of Technology, USA, † Windsor University, Canada
+{xh29, yg274, tao.han}@njit.edu, {ning.zhang}@uwindsor.ca
+
+arXiv:2202.01699v2 [cs.DC] 8 Feb 2022
+
+Abstract—As the number of edge devices with computing resources (e.g., embedded GPUs, mobile phones, and laptops) increases, recent studies demonstrate that it can be beneﬁcial to collaboratively run convolutional neural network (CNN) inference on more than one edge device. However, these studies make strong assumptions on the devices’ conditions, and their application is far from practical. In this work, we propose a general method, called DistrEdge, to provide CNN inference distribution strategies in environments with multiple IoT edge devices. By addressing heterogeneity in devices, network conditions, and nonlinear characters of CNN computation, DistrEdge is adaptive to a wide range of cases (e.g., with different network conditions, various device types) using deep reinforcement learning technology. We utilize the latest embedded AI computing devices (e.g., NVIDIA Jetson products) to construct cases of heterogeneous devices’ types in the experiment. Based on our evaluations, DistrEdge can properly adjust the distribution strategy according to the devices’ computing characters and the network conditions. It achieves 1.1 to 3× speedup compared to state-of-the-art methods.
+Index Terms—distributed computing, convolutional neural network, edge computing, deep reinforcement learning
+I. INTRODUCTION
+With the development of deep learning, various applications are utilizing deep neural networks (DNNs). Convolutional neural networks (CNNs) are one of the most popular types of DNNs, and are applied to a wide range of computer vision tasks like image classiﬁcation [51, 23, 54], object detection [47, 46], and pose detection [8]. As CNN models have high computational complexity, it is challenging to run CNN model inference for edge devices [60] like mobile phones, surveillance cameras, drones. Studies on CNN compression [67, 21, 24] reduce the computational complexity of a CNN model by sacriﬁcing accuracy. Another popular solution is to ofﬂoad the whole or partial CNN model to a server [30, 25, 55, 59, 65]. However, their dependency on servers and remote network transmission leads to problems like trustworthiness, security, and privacy [58, 11, 40].
+Distributing CNN inference on multiple edge devices in a paralleling manner has been studied in [63, 36, 37, 68, 53, 69, 17, 16, 20, 34, 35, 6] and demonstrate its beneﬁts in reducing inference latency, avoiding overﬂow of memory/power on devices, and utilizing idle computing resources. Different from distributed CNN training on servers, CNN inference distribution on edge devices shows the following characters (detailed discussion in Section II): (1) much lower throughput between devices; (2) heterogeneous computing devices; (3) heterogeneous network throughput conditions. However, as
+
+will be discussed in Section II, state-of-the-art studies on CNN inference distribution [63, 36, 37, 68, 53, 69, 17, 16, 20, 34, 35, 6] address these characters with strong assumptions and signiﬁcantly limit their applicable cases in practice. Our method (DistrEdge) addresses these characters with Deep Reinforcement Learning (DRL) and reaches 1.1 to 3× speedup compared to state-of-the-art methods.
+The CNN inference distribution method we propose is called DistrEdge. Given a group of edge devices and a CNN model for inference, DistrEdge can provide a distribution solution to run inference on these devices by comprehensively analyzing the CNN layer conﬁgurations, network conditions, and devices’ computing characters. Compared to state-of-theart studies, we address two practical facts. First, the edge devices available for CNN inference distribution can be heterogeneous in devices’ types and network conditions. Second, the relationship between computing latency and CNN layer conﬁgurations can be highly nonlinear on edge devices [61], referred to as nonlinear character in this paper. One note is that the memory constraint is not considered in this paper because the latest embedded AI computing devices (e.g., NVIDIA Jetson) has adequate memory [41, 5] and the memory consumption by CNN inference does not cause severe issues on them. Overall, the contributions of this paper are as follows:
+• As far as we know, DistrEdge is the ﬁrst CNN inference distribution method that can apply to distribution on heterogeneous edge devices with nonlinear characters.
+• As far as we know, DistrEdge is the ﬁrst CNN inference distribution method that models the split process as a Markov Decision Process (MDP) and utilizes Deep Reinforcement Learning (DRL) to make optimal split decisions.
+• We evaluate the performance of CNN inference on edge devices, including the latest AI computing devices of NVIDIA Jetson products [41]. In comparison, the experiments in state-of-the-art studies limit their test cases with low-speed edge devices like Raspberry Pi3/4 (e.g., [68, 16, 69]) or Nexus 5 (e.g., [36, 37]).
+• In the experiment, DistrEdge can achieve 1.1× to 3× speedup over state-of-the-art CNN inference distribution methods.
+II. RELATED WORK
+A. Model Parallelism in DNN Training
+State-of-the-art model parallelism studies mainly focus on accelerating the training of DNNs on distributed server de-
+
+vices. In general, there are two types of model parallelism in training DNNs. The ﬁrst type is graph partitioning [2, 13, 14, 12, 15, 22, 9, 39, 45, 56]. Due to the sequential dependency between the computation tasks in a deep neural network, most graph partitioning works use pipeline parallelism [13, 14, 56]. By splitting training batch into micro-batches, the sequential computation of each micro-batch can be pipelined with those of the other micro-batches [56]. The second type is tensor splitting [49, 50, 29, 28, 57]. The tensor splitting adjusts the input/output data placement on the devices and splits corresponding computation.
+Though the model parallelism has been a popular way in implementing DNN training on multiple devices in a distributed manner [12, 15, 22, 9, 39, 45, 56], it is important to note that the devices on which the training is distributed usually refer to computing units like GPUs connected to one server cluster through high-bandwidth connections like NVLinks and InﬁniBand [39, 45, 56]. These computing units are controlled by a single operating system on the cluster. The communication throughput between these computing units is >10Gbps [39, 45, 56]. In contrast, distributed edge devices refer to embedded computing boards like NVIDIA Jetson and Raspberry Pi connected through a wireless network. Each computing board has its own operating system, and the data transmission between these boards is through network protocols like TCP/IP. The communication throughput between these boards is usually 1M bps to 1Gbps, which is much lower than that between computing units on a cluster. Moreover, there is additional I/O reading and writing delay when transmitting data from one edge device to another. In addition, edge devices are usually responsible for DNN inference instead of training. One feature of DNN inference is that the input data usually with a batch size of 1, and inference requests arrive randomly or periodically. Therefore, pipeline parallelism of training batches is not applicable in the distribution of DNN inference on edge devices.
+B. CNN Inference on Distributed Edge Devices
+Distributed CNN inference studies adopt tensor splitting in model parallelism. By splitting the input/output data (and corresponding computation) of layers in a model, these works demonstrate its beneﬁts in reducing inference latency, avoiding overﬂow of memory/power on devices, and utilizing idle computing resources. However, state-of-the-art studies limit their applicable cases. [34, 35, 6] limit their implementation on a tiny CNN model like LeNet as they make distribution decisions for each neuron (most popular CNN models consist of a vast amount of neurons). [17, 16, 20] aim at splitting a speciﬁc layer in a CNN model equally and allocating the split parts on homogeneous edge devices to avoid memory overﬂow. For works that can be applied to the distribution of popular CNN models: [63, 36, 37] distribute CNN inference in a layer-by-layer way and split each layer in a CNN model based on the edge devices’ computing capability [63, 36, 37] and the network throughput [63]; [68, 53, 69] fuse multiple layers together and split the fused layers to reduce the frequency of
+
+data transmission between distributed edge devices. Though fusing layers reduces transmission latency through a wireless network and I/O reading/wring latency, [68, 53, 69] limit their applicable cases as homogeneous edge devices [68, 53] or devices with linear characters [69].
+Overall, state-of-the-art studies implement CNN inference distribution with strong assumptions: (1) DeepThings [68] and DeeperThings [53] assume that the edge devices for distribution are homogeneous and the layer(s) are split equally; (2) CoEdge [63], MoDNN [36], MeDNN [37], and AOFL [69] assume that the relationship between the computing latency and the layer conﬁguration is linear and their ratio can be represented by a value (i.e., computing capability); (3) DeepThings [68], DeeperThings [53], MoDNN [36], and MeDNN [37] do not consider the network conditions of edge devices when making distribution decisions; (4) CoEdge [63] and AOFL [69] assume the transmission latency to be proportional to the value of network throughput and the layer conﬁguration, and calculate the split ratio based on the linear models of the computing and network transmission latency. However, as demonstrated in [61], the relationship between computing latency and layer conﬁgurations can be highly nonlinear. In addition, the delay caused by I/O reading/writing should also be accounted for in the transmission latency, and calculating the transmission latency purely by the network throughput can be inaccurate.
+This paper develops a novel distribution method, DistrEdge, to break the above limitations of state-of-the-art works. Overall, DistrEdge reaches 1.1 to 3× speedup compared to state-of-the-art distribution solutions in heterogeneous edge devices and network conditions without assuming a linear relationship between the computing/transmission latency and the layer conﬁguration. One note is that, for CNN inference on distributed edge devices, we refer to the study that is distributing existing CNN models without any modiﬁcation of the models’ architecture. The beneﬁt of it is that it does not require additional training to recover the accuracy because the accuracy performance is not affected in the distribution process.
+C. Resource Allocation for CNN Inference
+Another related topic for CNN inference on distributed edge devices is to study the resource allocation for CNN inference tasks [38, 10, 48], they either regard one inference process as a black-box [10, 48] or split a CNN layer in the same way [38] as in [36]. RL-PDNN [3] targets improving the overall performance of DNN requests from multiple users, and it does not study model parallelism. As they focus on resource allocation for multiple DNN inference tasks, they are out of the scope of this paper’s focus.
+D. Architecture Search/Modiﬁcation for Distributed CNN
+Different from the studies of CNN inference on distributed edge devices, [31, 4, 19, 18, 66] modify/search for neural architectures that are suitable for distributing on edge devices. The main focus of such studies is to eliminate data dependency
+
+between edge devices during the inference of CNN models. [31, 4, 18, 66] propose different methods to modify existing CNN models based on: hierarchical grouping of categories for image classiﬁcation [31]; training several disjoint student models using knowledge distillation [4]; tailoring intermediate connections between neurons to form a low-communicationparallelization version of a model [18]; decomposing the spatial dimension by clipping and quantization [66]. [19] proposes to search for novel neural architecture to provide higher concurrency and distribution opportunities. Though modifying/searching neural architecture for CNN distribution can achieve highly efﬁcient parallel neural architecture, it intrinsically shows the following drawbacks: (1) it takes a long time to modify/search optimal neural architecture and to train the neural network in order to recover the accuracy; (2) The modiﬁed neural network cannot achieve the same level of accuracy even after retraining [31, 4, 19, 18, 66].
+E. Deep Reinforcement Learning in CNN Model Compression
+To tackle the complex conﬁgurations and performance of CNN architecture, DRL has been used in CNN model compression and is proven to be effective in ﬁnding optimal CNN model compression schemes [24, 1, 64, 52, 62]. The conﬁgurations of the current layer [24, 1, 64] and the action of the previous layer [24] are deﬁned as the state in the DRL. The action is the compression decision on the current layer [24, 1, 64, 52, 62]. The reward is deﬁned as a function of the performance (e.g., accuracy) [24, 1, 64, 52, 62]. As far as we know, DistrEdge is the ﬁrst paper that utilizes DRL to ﬁnd a CNN inference distribution strategy.
+III. DEFINITIONS AND CHALLENGES
+A. Terms Deﬁnition
+For the convenience of the following discussion, we deﬁne the following terms: (1) layer-volume: a layer-volume refers to one or more sequentially-connected layers in a CNN model (the same concept as fused layers in [68, 53, 69]); (2) splitpart: a split-part is a partial layer-volume. Each (sub-)layer in a split-part is a partial layer in the layer-volume. The number of (sub-)layers in a split-part is equal to that in the layervolume; (3) horizontal partition: the division of a CNN model into layer-volumes; (4) vertical split: the division of a layervolume into split-parts; (5) partition location: the original index (in the CNN model) of the ﬁrst layer in a layer-volume; (6) partition scheme: the set of partition locations in a CNN distribution strategy; (7) split decision: a set of coordinate values on the height dimension of the last layer in the layervolume where the layer-volume is vertically split (We focus on the split on one dimension in this paper and leave splitting on multiple dimensions in the future work); (8) service requester: the device with CNN inference service requests; (9) service providers: the devices that can provide computing resources for CNN inference.
+Fig. 1 shows four examples of CNN inference distribution on two edge devices. Note that the distribution solutions in Fig. 1 (b)(c)(d) are special cases of that in Fig. 1 (a).
+
+ଵ
+
+ଶ
+
+ଵଶଷସ
+
+(a)
+
+(b)
+
+(c)
+
+(d)
+
+Fig. 1. CNN inference distribution on two edge devices (blue and red one): (a) a general distribution form; (b) parallel distribution; (c)
+
+sequential distribution; (d) single-device ofﬂoading.
+
+Speciﬁcally, Fig. 1 (b) takes the whole model as one layervolume (i.e., parallel distribution on edge devices). Fig. 1 (c) takes each layer-volume as one split-part (i.e., sequentially distribution on edge devices). Fig. 1 (d) takes the whole model as one layer-volume and the layer-volume as one split-part (i.e., ofﬂoading to a single device). The design of DistrEdge naturally covers these special distribution forms.
+
+B. Vertical-Splitting Law
+
+A convolutional layer is deﬁned by the following conﬁgura-
+tions: input width (Win), input height (Hin), input depth (Cin), output depth (Cout), ﬁlter size (F ), stride (S), padding (P ), and an activation function. A maxpooling layer is deﬁned by
+the following conﬁgurations: input width (Win), input height (Hin), input depth (Cin), ﬁlter size (F ), and stride (S). The input/output data size and the number of operations of a
+convolutional/maxpooling layer can be determined given these
+conﬁgurations [16]. For two consecutively connected layers,
+the dimension of the former layer’s output data matches the
+dimension of the later layer’s input data. For a layer-volume V˜ with n layers {˜l1, ˜l2, ..., ˜ln} (n ≥ 1),
+a split-part pk is a partial layer-volume with n sub-layers. Each sub-layer is a partial layer of each original layer, e.g., the n-th sub-layer of pk is a partial layer of ˜ln. As we focus on splitting a layer-volume by the height dimension only, the output width and depth of pk are the same as those of ˜ln. We denote the output height of pk as hnou,kt. The output height of the i-th sub-layer is determined by the height of output data
+from the (i + 1)-th sub-layer:
+
+hio,ukt = (hio+ut1,k − 1)Si+1 + Fi+1,
+
+(1)
+
+where Si+1 and Fi+1 are the stride and ﬁlter size of ˜li+1, respectively. Thus, given hnou,kt, the output heights the ﬁrst (n− 1) sub-layers can be determined by Eq. 1 one by one. Further,
+the input height of pk can be calculated by:
+
+h1in,k = (h1ou,kt − 1)S1 + F1,
+
+(2)
+
+The Vertical-Splitting Law is described as: Vertical-Splitting Law (VSL): For a split-part of a layervolume with more than one layer, once the output height of its last sub-layer is determined, the input height of its ﬁrst sub-layer can be calculated by Eq. 1 and Eq. 2.
+
+C. Challenges
+We summarize the following challenges in ﬁnding an optimal CNN inference distribution strategy on edge devices: 1) High Dimensions of Search Space: Most CNN models for computer vision tasks have more than ten layers (mainly convolutional layers), and the output size (height) from each layer ranges from less than 10 to over 200 [51, 23, 54, 47, 46]. It is infeasible to brute-force search over all possible combinations of distribution strategies. 2) Heterogeneous and Nonlinear Device Characters: In practice, the edge devices available for CNN inference distribution can be heterogeneous and with nonlinear characters. The split-parts need to be adjusted accordingly. However, as discussed in Section II, state-of-the-art distribution methods do not fully consider these characters when making their distribution strategies. 3) Various Conﬁgurations across Layers in a CNN Model: The layer conﬁgurations (e.g., height, depth, etc.) change across layers in a CNN model, which leads to various performance (i.e., latency). Consequently, the performance of distributed inference is also affected by the layer conﬁgurations. 4) Dependency between Layers in CNN Model: For most CNN models, the layers are connected sequentially one after another [51, 23, 54, 47, 46]. While the operations of the same layer (layervolume) can be computed in parallel, the operations of two layers (layer-volumes) cannot be computed in parallel. Thus, the devices’ executions of the latter layer-volume are affected by the accumulated latencies of the former layer-volume. Consequently, when making splitting decisions to a layervolume, it is important to consider the accumulated latencies of the split-parts in the former layer-volume.
+IV. DISTREDGE
+To utilize CNN inference distribution with DistrEdge, a computer (e.g., a laptop) collects information of the service requester and service providers and runs DistrEdge to ﬁnd an optimal distribution strategy. The information collected includes network throughput between any two devices, layers’ conﬁgurations of the CNN model, and CNN layer computation/transmission latency proﬁling on each provider. DistrEdge allows various forms to express the proﬁling results of a device. It can be regression models (e.g., linear regression, piece-wise linear regression, k-nearest-neighbor) or a measured data table of computing latencies with different layer conﬁgurations. Based on the optimal strategy, the controller informs the requester to send the split-parts (i.e., weights and biases) to the corresponding providers. The controller also informs the requester and providers to establish necessary network connections. Afterward, the CNN inference can be ofﬂoaded in a distributed manner on these service providers.
+A. Workﬂow of DistrEdge
+The workﬂow of DistrEdge is shown in Fig. 2, which consists of two modules. The ﬁrst module is a CNN partitioner that partitions a CNN model horizontally. The second module is a layer-volume splitter that splits layer-volumes vertically. The partitioner utilizes the layers’ conﬁgurations of the CNN
+
+model to ﬁnd the partition scheme based on the amount of transmission data and the number of operations. Given the partition scheme from the ﬁrst module, the second module splits the layer-volumes with DRL. By modeling the split process as an MDP, a DRL agent is trained to make optimal split decisions for each layer-volume one by one based on the observations of accumulated latencies and layer conﬁgurations (the reward and states). The accumulated latencies implicitly reﬂect the device characters (i.e., computing capabilities and network conditions). During training, the latencies can be directly measured with real execution on devices or estimated by the proﬁling results. In this way, DistrEdge can form an inference distribution strategy on service providers.
+
+CNN Partitioner layer-volume(s)
+
+CNN model for inference
+
+partition random location splits
+
+trans. data argmin an optimal
+
+operation num.
+
+location
+
+config. of next LV
+
+Optimal partition locations
+
+Devices’ Characters
+
+LV Splitter
+max 0
+
+split decision
+Optimal split decisions
+
+latencies
+
+Optimal distribution strategy
+
+Fig. 2. Workﬂow of DistrEdge. B. Design of CNN Partitioner
+
+Algorithm 1 shows the proposed partitioner, Layer Conﬁguration based Partition Scheme Search (LC-PSS). As the execution latency is affected by the amount of transmission data and the number of operations in CNN inference distribution [68, 69], we deﬁne a score Cp as the function of operation number and transmission amount:
+
+Cp = α · T + (1 − α) · O.
+
+(3)
+
+where O and T are the total number of operations and the total
+amount of transmission data in the CNN model, respectively. The hyper-parameter α is used to control the trade-off between the two factors. Given a CNN model M, a partition scheme Rp, and split decisions Rs, O and T can be determined. We generate a set of random split decisions Rrs. With Rrs, we average the scores of all the Cp(Rsi ) (Rsi ∈ Rrs) given Rp and M, denoted as C¯p. We can formulate the optimal partition scheme search problem as:
+
+min
+Rp
+
+1 |Rrs |
+
+|Rrs | i=1
+
+Cp(Rp,
+
+Rsi ,
+
+M), Rsi
+
+∈
+
+Rrs
+
+(4)
+
+where | · | represents the number of elements (random split decisions) in Rrs, Cp can be calculated by Eq. 3 given partition locations Rp and split decisions Rsi of model M. The LCPSS greedily search for optimal Rp that minimizes Eq. 4.
+
+In the (k + 1)-th loop, the LC-PSS searches for an optimal partition location for each layer-volume obtained in the k-th loop (line 4 to 12). The optimal partition locations found in a loop is appended to Rp∗ (line 11). The loop stops when no more optimal partition locations are appended to Rp∗ (line 12, 13). In the worst case, there will be (1 + |M |) · |M |/2 loops to ﬁnd the optimal partition strategy (i.e., when the optimal partition scheme is to partition the CNN model layer by layer). In contrast, if we brute-forcely search over all possible partition strategies for a CNN model M [69], there will be (|M | · |M − 1| · ... · 2) loops.
+
+Algorithm 1: Layer Conf. based Partition Scheme Search
+
+Input: M: the CNN model for inference;
+
+α: the coefﬁcient for partitioning score Cp;
+
+Rrs: a set of random split decisions.
+
+1 Initialize partitioning points record Rp = {1, |M|}.
+
+2 while True do
+
+3
+
+Rp∗ ← Rp;
+
+4 for i = 1, |Rp| − 1 do
+
+5
+
+Cp∗ = ∞;
+
+6
+
+for j = Rp[i], Rp[i + 1] do
+
+7
+
+Rp = Rp ∪ {j};
+
+8 9
+
+C¯p = if C¯p
+
+1 |Rrs |
+< Cp∗
+
+|Rrs | i=1
+
+Cp(Rp,
+
+Rsi ,
+
+M),
+
+Rsi
+
+then
+
+∈
+
+Rrs ;
+
+10
+
+Cp∗ = C¯p; j∗ = j;
+
+11
+
+Rp∗ = Rp∗ ∪ {j∗};
+
+12 if |Rp| = |Rp∗| then
+
+13
+
+break;
+
+14 else
+
+15
+
+Rp ← Rp∗.
+
+Output: Rp∗.
+
+Vl. The i-th split-part in Vl is allocated to the i-th service
+provider. The last sub-layer of the i-th split-part is a sub-layer with operations between xli−1 and xli on the last layer of Vl (xl0 = 0 and xl|D| = Hl). The dimension of the rest sub-layers of the i-th split-part can be determined by Eq. 1. The state sl
+is deﬁned as:
+
+sl = (T l−1, Hl, Cl, F l, Sl)
+
+(7)
+
+where T l−1 are accumulated latencies on the service providers after computation of their allocated split-parts of Vl−1, (Hl, Cl, F l, Sl) are conﬁgurations of the last layer in Vl (i.e., height, depth, ﬁlter size, and stride).
+At step l, the action al determines the shapes of the split parts of Vl allocated to the service providers. On the one hand, the computing latency of a split-part is related to: (1) the shape of its split-part, (2) the device’s characters, (3) the layer conﬁgurations. On the other hand, the accumulated latencies T l are related to: (1) the computing latencies of the split parts in Vl, (2) the transmission latencies occurred between (the split-parts of) Vl−1 and Vl, (3) the accumulated latencies T l−1 for Vl−1. Therefore, the accumulated latencies T l are determined by al and sl together. As T l are partial of sl+1, the splitting problem of Eq. 5 can be regarded as an MDP. In other words, the next state sl+1 depends on the current state sl and the action al.
+2) Splitting Decision Search with DRL: Compared to other optimization algorithms, DRL can deal with the complex environment by learning and can ﬁnd optimal actions efﬁciently without an analytical model of the environment. By modeling the split process as an MDP, we can utilize DRL to make optimal split decisions. As we aim at minimizing the end-toend execution latency T of M, we deﬁne the reward rl as:
+
+rl = 0 (l < L),
+
+(8)
+
+rl = 1/T (l = L).
+
+C. Design of LV Splitter
+
+Given service providers D, the CNN model M, and the optimal partition scheme Rp∗, the LV splitter is to make optimal splitting decisions Rs∗ that minimizes the end-to-end-execution latency:
+
+min
+Rs
+
+T
+
+({M,
+
+Rp∗
+
+};
+
+D;
+
+Rs
+
+)
+
+(5)
+
+where Rs is a series of splitting decisions for all layer-volumes {V1, ..., VL} of M, L is the number of layer-volumes in M.
+1) Modeling as a Markov Decision Process: The problem of Eq. 5 can be modeled as an MDP. We deﬁne the action al as the splitting parameters for a layer-volume Vl:
+
+al = (xl1, xl2, ..., xl|D|−1)
+
+(6)
+
+where |D| is the total number of service providers, xli (i ∈
+[1, |D| − 1]) is the location on the height-dimension of the last
+layer in Vl. The locations satisfy xli ∈ [0, Hl] and xli ≤ xlj when (i < j), where Hl is the height of the last layer in
+
+For an layer-volume splitter, the splitting parameters (decisions) (xl1, xl2, ..., xl|D|−1) are non-negative integers ranging from 0 to Hl. However, due to this problem’s high search space dimension, a discrete action space has an extremely high dimension. Moreover, as the conﬁgurations vary across layers in a CNN model, the dimension of a discrete action space changes across layer-volumes. Thus, it is impractical to utilize DRL algorithms with discrete action space in the LV splitter. When applying DRL algorithms with continuous action space, the action mapping function is deﬁned:
+
+xli = round(Hl ·
+
+x˜li − A ), B−A
+
+(1 ≤ i ≤ |D| − 1)
+
+(9)
+
+where round(·) is to round a real value to an integer, x¯li is an element in al, [A, B] is the activation function’ boundary in DRL agent. With Eq. 7, Eq. 8, Eq. 6, and Eq. 9, the Optimal Split Decision Search (OSDS) is described in Algorithm 2.
+In Algorithm 2, DDPG is an actor-critic DRL algorithm for continuous action space [32]. The DRL agent is trained for M axep episodes to make optimal policy (split decisions)
+
+Algorithm 2: Optimal Split Decision Search (OSDS)
+
+Input: {V1, ..., VL}: layer-volumes of M;
+
+D: service providers;
+
+M axep: the maximum training episode; ∆ , σ2: hyper-parameters for exploration;
+
+Nb, γ: hyper-parameters for training DRL.
+
+1 Randomly initialize critic network Critic(s, a|θc) and
+
+actor network Actor(s|θa) with parameters θc and θa;
+
+2 Initialize target networks Critic and Actor with
+
+parameters θc ← θc and θa ← θa; 3 Initialize replay buffer B.
+
+4 T ∗ = ∞;
+
+5 for episode=1, M axep do
+
+6 Initialize splitting decisions record Rs = {};
+
+7 Receive initial observation state s1;
+
+8
+
+= 1 − (episode · ∆ )2;
+
+9 for h=1, L do
+
+10
+
+if random < then
+
+11
+
+a˜l = Actor(sl|θa) + N (0, σ2);
+
+12
+
+else
+
+13
+
+a˜l = Actor(sl|θa);
+
+14
+
+Map sorted a˜l to al (Eq. 9);
+
+15
+
+Store al into Rs;
+
+16
+
+Split Vl with al and allocate split parts to D;
+
+17
+
+Observe next state sl+1 and reward rl;
+
+18
+
+Store transition (sl, a˜l, rl, sl+1) to B;
+
+19
+
+Sample Nb transitions (si, ai, ri, si+1) from B;
+
+20
+
+Set yi = ri + γCritic (si+1, Actor (si+1|θa)|θc);
+
+21
+
+Critic
+
+loss:
+
+1 Nb
+
+i(yi − Critic(si, ai|θc))2;
+
+22
+
+Update critic and actor networks.
+
+23 Observe end-to-end execution latency T ;
+
+24 if T < T ∗ then
+
+25
+
+Rs∗ ← Rs; T ∗ = T ;
+
+26
+
+Critic∗ ← Critic; Actor∗ ← Actor.
+
+Output: Rs∗, Critic∗, Actor∗.
+
+(Line 5). At the l-th step, the DRL agent makes split decisions for Vl (Line 9), either by random exploration (Line 11) or by the actor network (Line 13). We sort the elements in the original output action vector a˜l (Line 11 or 13) from low to high and map the sorted vector to the true splitting parameters al with Eq. 9 (Line 14). The layer-volume Vl is split by al, and the split-parts are allocated to the service providers in D (Line 16). Afterward, the next state sl+1 and the reward rl can be observed (Line 17) either by simulation or real execution. In each episode, the end-to-end execution latency T can be measured (Line 23). The optimal splitting decisions Rs∗, T ∗, Critic∗, and Actor∗ are stored (Line 24 to 26). The updating of the critic network and the actor network is illustrated in Line 20 to 22. We still utilize the original output action vector a˜l for training the networks (Line 18). Nb tuples are randomly sampled from B (Line 18, 19) to train the actor-critic networks.
+
+V. EXPERIMENTS
+In this section, we ﬁrst explain how the testbed is built. Then we demonstrate seven baselines of state-of-the-art CNN inference distribution methods. For the evaluation, we ﬁrst observe the effect of different α in LC-PSS in different device/network cases. Then we compare the performance (IPS: image-per-second) of DistrEdge with the seven baseline methods in various heterogeneous cases (Table I, II) and largescale cases (Table III). The hyper-parameters in DistrEdge are set as follows: (1) LC-PSS: α = 0.75, |Rrs| = 100; (2) OSDS: M axep = 4000, ∆ = 1/250, σ2 = 0.1 with four service providers (σ2 = 1 with 16 service providers), Nb = 64, γ = 0.99, learning rates of the Actor and Critic network as 10−4 and 10−3, respectively. The Critic network is consisted of four fully-connected layers with dimensions of {400, 200, 100, 100} and Actor network is consisted of three fully-connected layers with dimensions of {400, 200, 100}.
+A. Test Setup
+Our testbed is shown in Fig. 3. Four types (Raspberry Pi3, Nvidia Nano, Nvidia TX2, Nvidia Xavier) of devices are used as service providers. A laptop works as the service controller. A mobile phone is used as the service requester. The wireless router (Linksys AC1900) provides 5GHz WiFi connections among the devices. The sampled throughput traces of wireless network with WiFi bandwidth (300Mbps, 200Mbps, 100Mbps, 50Mbps) are shown in Fig. 4. The router is equipped with OpenWrt [44] system, which allows us to control bandwidth between different devices. The network connections between devices are built with TCP socket. The CNN layers are implemented in TensorRT SDK [42] using FP16 precision and batch size 1. One note is that TensorRT is not a necessary part of the CNN inference distribution implementation. We adopt it to show that DistrEdge is compatible with popular deep learning inference optimizers like TensorRT. For the DRL training in OSDS, we proﬁle the computing latency on each type of device and the transmission latency in each bandwidth level against the height of each layer in a CNN model (granularity as 1). Speciﬁcally, we use TensorRT Proﬁler [43] to proﬁle the computing latency. The transmission latency is measured from the time when the data are read from the computing unit (i.e., GPU or CPU) on the sending device to the time when the data are loaded to the memory on the receiving device (both transmission latency and I/O reading/writing latency are included). Each measurement point is repeated 100 times, and we then compute the mean values as the proﬁled latencies. The proﬁling results are shared with the service controller, and the controller can utilize the results whenever it needs to run OSDS.
+To evaluate the performance of a CNN inference distribution strategy, we stream 5000 images from the service requester to the service providers. An image will not be sent until the result of its previous image is received by the service requester. We measure the overall latency in processing the 5000 images and compute averaged FPS. To reduce overhead, the images are split beforehand according to the distribution strategy. The
+
+Throughput (Mbps) IPS IPS IPS IPS
+
+TX2 Pi3 Nano
+
+Xavier
+
+Controller
+
+WiFi Router
+
+300Mbps F2ig00. M3b. psTes1t0b0eMdb.ps
+300
+250
+200
+150
+100
+50
+0 0 15 30 45 Time Slot (min)
+
+50Mbps 60
+
+Fig. 4. Sampled Network Throughput (Mbps) of WiFi w/ Different Bandwidth.
+split-parts on the providers are also preloaded to their memory. On each service provider, three threads are running parallel to implement computation, data receiving, and data transmission by sharing data with a queue. All the codes are implemented in Python3. We mainly focus on the optimal distribution of the convolutional layers and maxpooling layers in this paper. The last fully-connected layer(s) are computed on the service provider with the highest allocated amount of the last layervolume in our experiments.
+
+B. Baseline Methods
+To evaluate the performance of DistrEdge compared to state-of-the-art CNN inference distribution methods, we take seven methods as our baseline: (1) CoEdge [63] (linear models for devices and networks, layer-by-layer split); (2) MoDNN [36] (linear models for devices, layer-by-layer split); (3) MeDNN [37] (linear models for devices, layer-by-layer split); (4) DeepThings [68] (equal-split, one fused-layers); (5) DeeperThings [53] (equal-split, multiple fused-layers); (6) AOFL [69] (linear models for devices and networks, multiple fused layers); (7) Ofﬂoad: We select the service provider with the best computing hardware (e.g., the best GPU) to ofﬂoad the CNN inference. Note that equal-split refers to splitting layer(s) equally (DeepThings and DeeperThings). In contrast, CoEdge, AOFL, MoDNN, and MeDNN split layer(s) based on linear models of computation and/or transmission. Layer-by-layer refers to making split decisions per layer (CoEdge, MoDNN, and MeDNN). One fused-layer refers to fusing multiple layers once in a CNN model (DeepThings). Multiple fused-layers refer to allowing more than one fused-layers in a CNN model (DeeperThings and AOFL). The term fused-layer is equivalent to layer-volume in DistrEdge.
+C. α and |Rrs| in LC-PSS We ﬁrst study the effect of the hyper-parameter α and |Rrs|
+in LC-PSS (Algorithm 1), as shown in Fig. 5 and 6. α controls the trade-off between O and T when calculating
+Cp (Eq. 3). We observe that, when α is smaller, LC-PSS tends
+
+to partition the CNN model into more layer-volumes, and vice versa. For example, VGG-16 is partitioned into 16 layervolumes with α = 0 and is partitioned into only two layervolumes with α = 1. To observe the overall performance with different α, we further run the OSDS (Algorithm 2) with the partition schemes obtained with α = {0, 0.25, 0.5, 0.75, 1.0} under four types of environments for VGG-16 inference: (1) We have four homogeneous service providers under 200Mbps WiFi; (2) The service providers’ types are heterogeneous (Group DB in Table I); (3) The service providers’ WiFi bandwidths are heterogeneous (Group NA in Table II); (4) We have 16 service (Group LB, LC, LD in Table III). The performance comparison is shown in Fig. 5 (a) to (d). We can observe poor performance with α = 0 (Cp is only affected by the number of operations) and α = 1 (Cp is only affected by the amount of transmission data). The highest performance is achieved with α = 0.75 in all cases. Overall, we should consider both the number of operations and the amount of transmission data when searching for the optimal partition scheme. We set α = 0.75 in the rest of our experiments. This study also shows that distribution CNN model layer-bylayer [63, 36, 37] is not efﬁcient (e.g., α = 0).
+
+𝛼=0 𝛼=0.25 𝛼=0.5 𝛼=0.75 𝛼=1
+
+60
+
+60
+
+60
+
+60
+
+45
+
+45
+
+45
+
+45
+
+30
+
+30
+
+30
+
+30
+
+15
+
+15
+
+15
+
+15
+
+0 Nano TX2 Xavier 0 50 100 200 300
+
+Devices’ Type
+
+Bandwidth (Mbps)
+
+(a)
+
+(b)
+
+0 Nano TX2 Xavier Devices’ Type (c)
+
+0 LB LC LD Group-# (d)
+
+Fig. 5. IPS w/ different α (VGG-16): (a) homogeneous devices (200Mbp); (b) heterogeneous devices’ types (Group DB); (c) heterogeneous network bandwidth (Group NA); (d) large-scale devices.
+
+|Rrs| is the number of random split decisions in Eq. 4. It affects the averaged score C¯p in Algorithm 1 (line 8). With a small |Rrs|, the optimal partition locations generated
+by LC-PSS can change signiﬁcantly, as different groups of random split decisions lead to different C¯p. With a large |Rrs|, the optimal partition locations generated by LC-PSS
+does not show much difference, as different groups of random split decisions lead to similar C¯p. We compare the overall performance (IPS) with different |Rrs| in two cases (Group-
+DB with 50Mbps WiFi and Group-NA with Nano), as shown in Fig 6. For each |Rrs| value, we repeatedly run LC-PSS 50
+times and record the optimal partition locations of each time. We aggregate the IPS performance over 50 times for each |Rrs|
+value in Fig. 6, and the maximum, average, and minimum IPS among 50 results are shown. When |Rrs| is small (e.g., 25 and 50), the IPS varies in a wide range. When |Rrs| is large (larger than or equal to 100), the IPS keeps stable. Thus, we set |Rrs| to 100 in the rest of our tests.
+
+D. Performance under Heterogeneous Environments
+To evaluate the performance of DistrEdge in a heterogeneous environment, we built up multiple cases in the laboratory. These cases can be divided into three types: (1)
+
+IPS <1
+IPS <1
+IPS <1 <1 <1
+
+IPS IPS IPS IPS
+
+20
+
+20
+
+16
+
+16
+
+12
+
+12
+
+8
+
+8
+
+4
+
+4
+
+0 25 50 75 100 125 150 𝐑
+
+0 25 50 75 100 125 150 𝐑
+
+(a)
+
+(b)
+
+Fig. 6. Image per Second w/ different number of random split
+
+decisions in LC-PSS (VGG-16): (a) DB, 50Mbps WiFi; (b) NA, Nano.
+
+cases with heterogeneous devices (Table I); (2) cases with heterogeneous network bandwidths (Table II); (3) cases with large-scale devices (Table III). We utilize image-per-second (IPS) as the performance metric.
+
+TABLE I
+
+GROUPS OF HETEROGENEOUS DEVICES’ TYPES
+
+Group # DA DB DC
+
+Devices’ Types TX2×2+Nano×2 Xavier×2+Nano×2 Xavier×1+TX2×1+Nano×1+Pi3×1
+
+TABLE II
+
+GROUPS OF HETEROGENEOUS NETWORK BANDWIDTHS
+
+Group # NA NB NC ND
+
+Network Bandwidths (Mbps) 50×2+200×2 100×2+200×2 200×2+300×2
+50×1+100×1+200×1+ 300×1
+
+1) Heterogeneous Devices: The performance of DistrEdge and baseline methods is shown in Fig. 7. For each group, we set two network bandwidths {50Mbps, 300Mbps}. As shown in Fig. 7, DistrEdge shows higher performance compared to the baseline methods in all cases of heterogeneous devices’ types. The performance of DistrEdge shows higher performance improvement over the baseline methods in GroupDB, and DC (e.g., 1.5 to 3× over AOFL) compared to that in Group-DA (e.g., 1.2 to 1.5× over AOFL). As the computing capability comparison of the four devices’ types is Pi3<<Nano<TX2<Xavier [27, 26], the cases in Group-DB and Group-DC can be regarded as environments with higher heterogeneous levels compared to those in Group-DA. We can see that DistrEdge is more adaptive to heterogeneous devices’ types compared to state-of-the-art methods.
+
+CoEdge MoDNN MeDNN DeepTings DeeperTings AOFL DistrEdge Offload
+
+20
+
+50
+
+16
+
+40
+
+12
+
+30
+
+8
+
+20
+
+4
+
+10
+
+0 DA
+
+DB
+
+DC
+
+(a)
+
+0 DA
+
+DB
+
+DC
+
+(b)
+
+Fig. 7. Image per Second under Environments w/ Heterogeneous Devices (VGG-16): (a) 50Mbps WiFi; (b) 300Mbps WiFi.
+
+2) Heterogeneous Network Bandwidths: The performance of DistrEdge and baseline methods is shown in Fig. 8. For each group, we set two devices’ types {Nano, Xavier}. As shown in Fig. 8, DistrEdge shows higher performance compared to the baseline methods in all cases of heterogeneous network
+
+TABLE III GROUPS OF LARGE-SCALE SERVICE PROVIDERS (16 DEVICES)
+
+Case # LA LB LC LD
+
+{(Bandwidths (Mbps), Devices’ Types)} {(300, Nano), (200, Nano), (100, Nano), (50, Nano)} × 4 {(300, Pi3), (200, Nano), (100, TX2), (50, Xavier)} × 4 {(200, Pi3), (200, Nano), (200, TX2), (200, Xavier)} × 4 {(50, Pi3), (100, Nano), (200, TX2), (300, Xavier)} × 4
+
+bandwidths. The performance of DistrEdge shows higher performance improvement over the baseline methods in GroupNA, and ND (e.g., 1.2 to 1.7× over AOFL) compared to that in Group-NB and NC (e.g., 1.1 to 1.3× over AOFL). As shown in Table II, the cases in Group-NA and Group-ND are environments with higher heterogeneous levels compared to those in Group-NB and Group-NC. We can see that DistrEdge is more adaptive to heterogeneous network conditions compared to state-of-the-art methods.
+CoEdge MoDNN MeDNN DeepTings DeeperTings AOFL DistrEdge Offload
+
+20
+
+60
+
+16
+
+48
+
+12
+
+36
+
+8
+
+24
+
+4
+
+12
+
+0 NA
+
+NB
+
+NC
+
+ND
+
+0 NA
+
+NB
+
+NC
+
+ND
+
+(a)
+
+(b)
+
+Fig. 8. Image per Second under Environments w/ Heterogeneous
+
+Networks (VGG-16): (a) Nano; (b) Xavier.
+
+3) Large-Scale Devices: The performance of DistrEdge and baseline methods is shown in Fig. 9. Case-LA is with heterogeneous network bandwidth. Case-LB and Case-LD are with heterogeneous network bandwidth and devices’ types. Case-LC is with heterogeneous devices’ types. As shown in Fig. 9, DistrEdge shows higher performance in the four cases of large-scale service providers compared to the baselines (e.g., 1.3 to 3× over AOFL).
+
+CoEdge MoDNN MeDNN DeepTings DeeperTings AOFL DistrEdge Offload
+
+60
+
+48
+
+36
+
+24
+
+12
+
+0 LA
+
+LB
+
+LC
+
+LD
+
+Fig. 9. Image per Second w/ Large-Scale Devices (VGG-16).
+
+E. Performance w/ Different Models
+Besides VGG-16 (classiﬁcation), we implement inference distribution for other seven models of different applications: ResNet50 [23] (classiﬁcation), InceptionV3 [54] (classiﬁcation), YOLOv2 [46] (object detection), SSD-ResNet50 [33] (object detection), SSD-VGG16 [33] (object detection), OpenPose [7] (pose detection), VoxelNet [70] (3D object detection). We test under two cases: (1) Group-DB (Table I) with 50Mbps WiFi, as shown in Fig. 10; (2) Group-NA (Table II) with Nano, as shown in Fig. 11. As shown in Fig. 10 and Fig. 11, DistrEdge outperforms the baseline methods in all the models by 1.1× to over 2.6×.
+
+CoEdge MoDNN MeDNN DeepTings DeeperTings AOFL DistrEdge Offload
+
+60
+
+48
+
+IPS
+
+36
+
+24
+
+12
+
+<1
+
+<1
+
+<1
+
+0 ResNet50 InceptionV3 YOLOv2
+
+SSDResNet50
+
+SSDVGG16
+
+OpenPose VoxelNet
+
+Fig. 10. Image per Second w/ Different Models (DB, 50Mbps).
+
+CoEdge MoDNN MeDNN DeepTings DeeperTings AOFL DistrEdge Offload
+
+50
+
+40
+
+IPS
+
+30
+
+20
+
+10
+
+<1
+
+<1
+
+<1
+
+0
+
+ResNet50
+
+InceptionV3
+
+YOLOv2
+
+SSDResNet50
+
+SSDVGG16
+
+OpenPose VoxelNet
+
+Fig. 11. Image per Second w/ Different Models (NA, Nano).
+
+F. Performance in Highly Dynamic Networks
+The above results are in the WiFi network which has small ﬂuctuation shown in Fig. 4. We further evaluate the performance of DistrEdge under highly dynamic network conditions. Speciﬁcally, we test with distribution on four devices (Nano) under highly dynamic network conditions. We generate four network throughput traces with high ﬂuctuations shown in Fig. 12. Among the baseline methods, CoEdge [63] and AOFL [69] are applicable to dynamic networks. We compare the performance of DistrEdge with CoEdge and AOFL, as shown in Fig. 13. The split decisions of all the three methods are made on a controller (ThinkPad L13 Gen 2 Intel) in an online manner based on the monitored network throughput (CoEdge and AOFL) and intermediate latency (DistrEdge). Note that the trained actor network of DistrEdge runs on the controller to make online split decisions. For DistrEdge and AOFL, the model partition locations are updated when averaged network throughput is detected to be changed signiﬁcantly (e.g., at 20min and 40min time-slot in Fig. 12). For DistrEdge, the actor network is ﬁnetuned on the controller after partition location adjustment, which takes 20s to 210s in total. For AOFL, due to brute-force search for optimal partition locations, it takes 10min to update distribution scheme on the same controller.
+
+Throughput (Mbps)
+
+Throughput (Mbps)
+
+100
+
+100
+
+80
+
+80
+
+60
+
+60
+
+40
+
+40
+
+0
+
+15
+
+30
+
+45
+
+60
+
+Time Slot (min)
+
+0
+
+15
+
+30
+
+45
+
+60
+
+Time Slot (min)
+
+(a)
+
+(b)
+
+Throughput (Mbps)
+
+Throughput (Mbps)
+
+100
+
+100
+
+80
+
+80
+
+60
+
+60
+
+40 0
+
+15
+
+30
+
+45
+
+60
+
+400
+
+15
+
+30
+
+45
+
+60
+
+Time Slot (min)
+
+Time Slot (min)
+
+(c)
+
+(d)
+
+Fig. 12. Sampled Network Throughput (Mbps) of Highly Dynamic
+
+Network: (a) Device 1; (b) Device 2; (c) Device 3; (d) Device 4.
+
+As shown in Fig. 13, the per-image processing latency of CoEdge [63] is the largest because it does not utilize layer-volumes to fuse layers. As data transmission occurs between any two connected layers, large transmission latency
+
+Comp. Latency (ms)
+
+Processing Latency (ms)
+
+is generated, increasing the end-to-end execution latency of the model. In contrast, both AOFL [69] and DistrEdge reduce the transmission latency by fusing layers into layer-volumes. The key difference between AOFL and DistrEdge is that: AOFL makes split decisions based on a linear ratio, but DistrEdge makes split decisions based on the intermediate latency and learned relationship between latency and split decisions. As shown in Fig. 13, the per-image processing latency of DistrEdge is 40% to 65% of that of AOFL.
+DistrEdge AOFL CoEdge 350 300 250 200 150 100 500 15 30 45 60
+Time Slot (min)
+Fig. 13. Per-Image Processing Latency (ms) w/ Different Methods.
+G. Why DistrEdge Outperforms Baselines
+For CoEdge [63], MoDNN [36], and MeDNN [37], as they split a CNN model layer-by-layer, data transmission through networks occurs between any two connected layers. Thus, they show large end-to-end latency due to transmission delay. For DeepThings [68] and DeeperThings [53], though they fuse layers to reduce transmission delay, they only consider equal-split of fused layers (layer-volume) by assuming that the devices are homogeneous. For AOFL [69], it split layervolumes based on a linear ratio. However, as shown in Fig. 14, when the relationship between computing latency and layer conﬁguration is nonlinear, splitting layer-volumes with a linear ratio cannot balance the computing latency. Instead, it can cause computing delay. For ofﬂoad, as it only utilizes one device to compute the CNN model, the end-to-end latency can be larger than the distribution methods that compute the layers in a parallel manner on multiple devices.
+300 200 150 100
+50 50 100 150 200 250 300 350
+Output Width of a Layer-Volume (ten layers)
+Fig. 14. Computing Latency v.s. Output Width in CNN.
+We demonstrate the maximum transmission latency and the maximum computing latency among the four devices of Group-DB (50Mbps WiFi) with different distribution methods. As discussed above, distributions with CoEdge [63], MoDNN [36], and MeDNN [37] have large transmission latency due to layer-to-layer data transmission. DeepThings [68] and DeeperThings [53] have large computing latency because they equally split layer-volumes among devices. As the computing capability of Nano is much smaller than that of Xavier, equally splitting causes high computing delay. AOFL [69] splits layer-volumes with a linear ratio, which can also cause computing delays on devices. In comparison, DistrEdge implicitly learns the nonlinear relationship between the computing latency and layer conﬁgurations with DRL. It makes split decisions based on the observations of intermediate
+
+Latency (ms)
+
+latency of previous layer-volumes and minimizes the expected end-to-end latency.
+Dark Bar: Max. Transmission Latency Light Bar: Max. Computing Latency 200 150 100
+50
+0
+Fig. 15. Max. Transmission Latency (ms) and Max. Computing Latency (ms) among Four Devices (DB, 50Mbps) w/ Different Methods.
+VI. DISCUSSION
+We address the following points in the discussion: (1) State-of-the-art methods (CoEdge and AOFL) that are applicable highly dynamic network environment makes online split decisions based on the monitored network throughput. Similarly, DistrEdge can also make online split decisions (as discussed in Section V-F) by keeping the actor network online. When network condition changes signiﬁcantly, AOFL and DistrEdge all need to update their distribution strategy (including partition locations). Beneﬁting from the lightweight LC-PSS, DistrEdge can update its distribution strategy faster than AOFL based on our evaluation (Section V-F). (2) Based on the network and edge devices’ conditions, DistrEdge divides a CNN model into several split parts. Then it allocates these parts to the edge devices and establishes necessary connections among them. When a user requests CNN inference services, DistrEdge tells the user how to split their input images and which edge devices to send the split images. After the corresponding edge devices generate results, they send the results back to the user. Note that it is possible to obtain an empty set for an edge device. For example, the Pi3 in Group-DC (Table I) is not allocated with any computation due to its low computing capability. (3) TensorRT is one of the popular deep learning acceleration frameworks provided by NVIDIA. We utilize it in our tests to demonstrate that DistrEdge is compatible with other deep learning acceleration techniques. In general, DistrEdge can be utilized alone without any acceleration technique or can be utilized together which other acceleration techniques. (4) We do not consider memory constraint in DistrEdge because state-of-the-art edge devices can provide sufﬁcient memory space for most state-of-the-art CNN inferences [5]. Speciﬁcally, the state-of-the-art CNN models consume less than 1.5GB of memory. In contrast, the state-of-the-art edge devices are equipped with the memory size of 4GB to 32GB. In other words, even running a whole CNN model on one edge device does not suffer from memory limitation. (5) In this paper, we only study DistrEdge with one dimension split. In the future, we will explore multi-dimension split (e.g., width and height).
+VII. CONCLUSION
+In this paper, we proposed DistrEdge, an efﬁcient CNN inference method on distributed edge devices. DistrEdge consists
+
+of a CNN partitioner (LC-PSS) and an LV splitter (OSDS)
+to ﬁnd CNN inference distribution strategy. We evaluated
+DistrEdge in laboratory environments with four types of
+embedded AI computing devices, including NVIDIA Jetson
+products. Based on our evaluations, we showed that DistrEdge
+is adaptive to various cases with heterogeneous edge devices,
+different network conditions, small/large-scale edge devices,
+and different CNN models. Overall, we observed that DistrEdge achieves 1.1 to 3× speedup compared to the best-
+performance baseline method.
+REFERENCES
+[1] Anubhav Ashok et al. “N2n learning: Network to network compression via policy gradient reinforcement learning”. In: arXiv preprint arXiv:1709.06030 (2017).
+[2] Guy B. et al. “Pipelining with futures”. In: TCS (1999). [3] Emna Baccour et al. “RL-PDNN: Reinforcement Learning for
+Privacy-Aware Distributed Neural Networks in IoT Systems”. In: IEEE Access 9 (2021), pp. 54872–54887. [4] K. Bhardwaj et al. “Memory and communication aware model compression for distributed deep learning inference on iot”. In: TECS (2019). [5] Simone Bianco et al. “Benchmark analysis of representative deep neural network architectures”. In: IEEE Access 6 (2018), pp. 64270–64277. [6] Elias C. et al. “Dianne: Distributed artiﬁcial neural networks for the internet of things”. In: WMCAAI. 2015. [7] Zhe Cao et al. “OpenPose: realtime multi-person 2D pose estimation using Part Afﬁnity Fields”. In: IEEE transactions on pattern analysis and machine intelligence 43.1 (2019), pp. 172–186. [8] Zhe Cao et al. “Realtime multi-person 2d pose estimation using part afﬁnity ﬁelds”. In: IEEE CVPR. 2017. [9] Chi-Chung Chen et al. “Efﬁcient and robust parallel dnn training through model parallelism on multi-gpu platform”. In: arXiv preprint arXiv:1809.02839 (2018). [10] Jienan Chen et al. “iRAF: A deep reinforcement learning approach for collaborative mobile edge computing IoT networks”. In: ITJ (2019). [11] B. Enkhtaivan et al. “Mediating data trustworthiness by using trusted hardware between iot devices and blockchain”. In: SmartIoT. IEEE. 2020. [12] Alexander L Gaunt et al. “AMPNet: Asynchronous modelparallel training for dynamic neural networks”. In: arXiv preprint arXiv:1705.09786 (2017). [13] John Giacomoni et al. “Fastforward for efﬁcient pipeline parallelism: a cache-optimized concurrent lock-free queue”. In: ACM SIGPLAN. 2008. [14] Michael I Gordon et al. “Exploiting coarse-grained task, data, and pipeline parallelism in stream programs”. In: ACM SIGPLAN Notices (2006). [15] Lei Guan et al. “XPipe: Efﬁcient pipeline model parallelism for multi-GPU DNN training”. In: arXiv preprint arXiv:1911.04610 (2019). [16] Ramyad H. et al. “Collaborative execution of deep neural networks on internet of things devices”. In: arXiv preprint arXiv:1901.02537 (2019). [17] Ramyad H. et al. “Distributed perception by collaborative robots”. In: RAL (2018). [18] Ramyad H. et al. “LCP: A Low-Communication Parallelization Method for Fast Neural Network Inference in Image Recognition”. In: arXiv preprint arXiv:2003.06464 (2020). [19] Ramyad H. et al. “Reducing Inference Latency with Concurrent Architectures for Image Recognition”. In: arXiv preprint arXiv:2011.07092 (2020).
+
+[20] Ramyad H. et al. “Toward collaborative inferencing of deep neural networks on Internet-of-Things devices”. In: ITJ (2020).
+[21] Song Han et al. “Learning both weights and connections for efﬁcient neural networks”. In: arXiv preprint arXiv:1506.02626 (2015).
+[22] Aaron Harlap et al. “Pipedream: Fast and efﬁcient pipeline parallel dnn training”. In: arXiv preprint arXiv:1806.03377 (2018).
+[23] Kaiming He et al. “Deep residual learning for image recognition”. In: IEEE CVPR. 2016.
+[24] Yihui He et al. “Amc: Automl for model compression and acceleration on mobile devices”. In: ECCV. 2018.
+[25] Hyuk-Jin Jeong et al. “IONN: Incremental ofﬂoading of neural network computations from mobile devices to edge servers”. In: SCC. 2018.
+[26] Jetson Benchmarks. https://developer.nvidia.com/embedded/ jetson-benchmarks. Accessed: 2021-06-04.
+[27] Jetson Nano: Deep Learning Inference Benchmarks. https:// developer. nvidia . com / embedded / jetson - nano - dl - inference benchmarks. Accessed: 2021-06-04.
+[28] Zhihao Jia et al. “Beyond data and model parallelism for deep neural networks”. In: arXiv preprint arXiv:1807.05358 (2018).
+[29] Zhihao Jia et al. “Exploring hidden dimensions in parallelizing convolutional neural networks”. In: arXiv preprint arXiv:1802.04924 (2018).
+[30] Yiping Kang et al. “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge”. In: ACM SIGARCH Computer Architecture News (2017).
+[31] Juyong Kim et al. “Splitnet: Learning to semantically split deep networks for parameter reduction and model parallelization”. In: ICML. 2017.
+[32] Timothy P Lillicrap et al. “Continuous control with deep reinforcement learning”. In: arXiv preprint arXiv:1509.02971 (2015).
+[33] Wei Liu et al. “Ssd: Single shot multibox detector”. In: European conference on computer vision. Springer. 2016, pp. 21–37.
+[34] Fabiola M. et al. “Partitioning convolutional neural networks for inference on constrained internet-of-things devices”. In: 30th SBAC-PAD. IEEE. 2018.
+[35] Fabola M. et al. “Partitioning convolutional neural networks to maximize the inference rate on constrained IoT devices”. In: Future Internet (2019).
+[36] J. Mao et al. “Modnn: Local distributed mobile computing system for deep neural network”. In: DATE. 2017.
+[37] Jiachen Mao et al. “Mednn: A distributed mobile system with enhanced partition and deployment for large-scale dnns”. In: ICCAD. IEEE. 2017.
+[38] Thaha Mohammed et al. “Distributed inference acceleration with adaptive DNN partitioning and ofﬂoading”. In: INFOCOM. IEEE. 2020.
+[39] Deepak Narayanan et al. “Memory-efﬁcient pipeline-parallel dnn training”. In: ICML. 2021.
+[40] Anggi Pratama Nasution et al. “IoT Object Security towards On-off Attack Using Trustworthiness Management”. In: 8th ICoICT. IEEE. 2020.
+[41] NVIDIA Jetson Products. https://developer.nvidia.com/buyjetson. Accessed: 2021-06-02.
+[42] NVIDIA TensorRT. https : / / developer . nvidia . com / tensorrt. Accessed: 2021-05-31.
+[43] NVIDIA TensorRT Proﬁler. https : / / docs . nvidia . com / deeplearning / tensorrt / best - practices / index . html # proﬁling. Accessed: 2021-05-31.
+[44] OpenWrt. https://openwrt.org/. Accessed: 2021-06-04.
+
+[45] Jay Park et al. “Enabling large DNN training on heterogeneous GPU clusters through integration of pipelined model parallelism and data parallelism”. In: ATC. 2020.
+[46] Joseph Redmon et al. “YOLO9000: Better, Faster, Stronger”. In: arXiv preprint arXiv:1612.08242 (2016).
+[47] Shaoqing Ren et al. “Towards real-time object detection with region proposal networks”. In: NIPS (2015).
+[48] Yuvraj Sahni et al. “Data-aware task allocation for achieving low latency in collaborative edge computing”. In: ITJ (2018).
+[49] Noam Shazeer et al. “Deep learning for supercomputers”. In: arXiv preprint arXiv:1811.02084 (2018).
+[50] Mohammad Shoeybi et al. “Training multi-billion parameter language models using model parallelism”. In: arXiv preprint arXiv:1909.08053 (2019).
+[51] Karen Simonyan et al. “Very deep convolutional networks for large-scale image recognition”. In: arXiv preprint arXiv:1409.1556 (2014).
+[52] Ravi Soni et al. “HMC: A Hybrid Reinforcement Learning Based Model Compression for Healthcare Applications”. In: 15th CASE. IEEE. 2019.
+[53] Rafael Stahl et al. “DeeperThings: Fully Distributed CNN Inference on Resource-Constrained Edge Devices”. In: IJPP (2021).
+[54] Christian Szegedy et al. “Rethinking the inception architecture for computer vision”. In: IEEE CVPR. 2016.
+[55] Surat T. et al. “Distributed deep neural networks over the cloud, the edge and end devices”. In: ICDCS. 2017.
+[56] Masahiro Tanaka et al. “Automatic Graph Partitioning for Very Large-scale Deep Learning”. In: arXiv preprint arXiv:2103.16063 (2021).
+[57] Minjie Wang et al. “Supporting very large models using automatic dataﬂow graph partitioning”. In: EuroSys’19.
+[58] Haiqin Wu et al. “Enabling data trustworthiness and user privacy in mobile crowdsensing”. In: IEEE/ACM Transactions on Networking (2019).
+[59] Shuochao Yao et al. “Deep compressive ofﬂoading: Speeding up neural network inference by trading edge computation for network latency”. In: SenSys. 2020.
+[60] Shuochao Yao et al. “Deep learning for the internet of things”. In: Computer (2018).
+[61] Shuochao Yao et al. “Fastdeepiot: Towards understanding and optimizing neural network execution time on mobile and embedded devices”. In: 16th SenSys. 2018.
+[62] Sixing Yu et al. “GNN-RL Compression: Topology-Aware Network Pruning using Multi-stage Graph Embedding and Reinforcement Learning”. In: arXiv preprint arXiv:2102.03214 (2021).
+[63] Liekang Zeng et al. “Coedge: Cooperative dnn inference with adaptive workload partitioning over heterogeneous edge devices”. In: Transactions on Networking (2020).
+[64] Huixin Zhan et al. “Deep Model Compression via Two-Stage Deep Reinforcement Learning”. In: MLKDD’21.
+[65] Beibei Zhang et al. “Dynamic DNN Decomposition for Lossless Synergistic Inference”. In: arXiv preprint arXiv:2101.05952 (2021).
+[66] Sai Qian Zhang et al. “Adaptive Distributed Convolutional Neural Network Inference at the Network Edge with ADCNN”. In: 49th ICPP. 2020.
+[67] Xiangyu Zhang et al. “Accelerating very deep convolutional networks for classiﬁcation and detection”. In: transactions on PAMI (2015).
+[68] Zhuoran Zhao et al. “Deepthings: Distributed adaptive deep learning inference on resource-constrained iot edge clusters”. In: Transactions on CADICS (2018).
+[69] Li Zhou et al. “Adaptive parallel execution of deep neural networks on heterogeneous edge devices”. In: 4th SEC. 2019.
+
+[70] Yin Zhou and Oncel Tuzel. “Voxelnet: End-to-end learning for point cloud based 3d object detection”. In: Proceedings of the IEEE conference on computer vision and pattern recognition. 2018, pp. 4490–4499.
+

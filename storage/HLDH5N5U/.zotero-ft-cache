@@ -1,0 +1,1846 @@
+arXiv:2305.01886v1 [cs.DC] 3 May 2023
+
+Prediction of Performance and Power Consumption of GPGPU Applications THESIS
+submitted in partial fulﬁllment of the requirements for the degree of
+DOCTOR OF PHILOSOPHY
+by
+ALAVANI GARGI KABIRDAS under the supervision of
+Prof. SANTONU SARKAR and co-supervision of
+Prof. NEENA GOVEAS
+BIRLA INSTITUTE OF TECHNOLOGY AND SCIENCE, PILANI 2023
+
+ABSTRACT
+G raphics Processing Units (GPUs) have become an integral part of High-Performance Computing to achieve an Exascale performance. The main goal of application developers of GPU is to tune their code extensively to obtain optimal performance, making efﬁcient use of different resources available on the GPU. While extracting optimal performance of applications on an HPC infrastructure, developers should also ensure the applications have the least energy usage considering the massive power consumption of data centers and HPC servers. In order to do this, a developer must be equipped with tools to understand the energy consumption of applications before launching them. We ﬁrmly believe that understanding and estimating GPU performance and power consumption will aid developers in designing performance-driven as well as energy-aware applications for a given architecture.
+This thesis presents two models developed using static and dynamic analysis of CUDA code, which helps developers in analysing the CUDA kernel’s energy dissipation. The ﬁrst one is a model that predicts the CUDA kernel’s execution time. Here a PTX code is statically analysed to extract instruction features, control ﬂow, and data dependence. We propose two scheduling algorithm approaches that satisfy the performance and hardware constraints. The ﬁrst approach predicts the performance constraints by considering Instruction Level Parallelism (ILP) and Thread Level Parallelism (TLP), which are two types of parallelism that GPUs exploit in order to achieve higher performance. The second approach utilizes resource reservation constraints to schedule these instructions in threads across Streaming Multiprocessors (SMs). We use dynamic analysis to build a set of memory access penalty models and use these models in conjunction with the scheduling information to estimate the execution time of the code.
+The second model is a static analysis-based power prediction built by utilizing machine learning techniques. Features used for building the model are derived by static analysis of PTX code. These features are chosen to understand the relationship between GPU power consumption and program features that can aid developers in building energy-efﬁcient, sustainable applications. The dataset used for validating both models include kernels from different benchmarks suits, sizes, nature (e.g., compute-bound, memory-bound), and complexity (e.g., control divergence, memory access patterns). Developers can refactor their code to build energy-aware GPU applications by employing these two models. We also present a tool that has practically validated the effectiveness and ease of using the two models as design assistance tools for GPU.
+iii
+
+TABLE OF CONTENTS
+
+Page
+
+List of Tables
+
+ix
+
+List of Figures
+
+xi
+
+1 Introduction
+
+1
+
+1.1 Motivation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+
+1.2 Background - GPU Architecture & Programming Model . . . . . . . . . . . 6
+
+1.2.1 CUDA Programming Model . . . . . . . . . . . . . . . . . . . . . . . . 9
+
+1.2.2 Mapping of CUDA Programming model to the GPU Architecture . 10
+
+1.2.3 Energy Modelling of GPU . . . . . . . . . . . . . . . . . . . . . . . . . 11
+
+1.3 Problem Statement . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 12
+
+1.3.1 Objective 1 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 12
+
+1.3.2 Objective 2 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+
+1.3.3 Objective 3 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+
+1.4 Contribution . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+
+1.5 Publications from this Research . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+
+1.6 Thesis Outline . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+
+2 Literature Survey
+
+21
+
+2.1 Design Assistance . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+
+2.2 Energy Prediction of GPU applications . . . . . . . . . . . . . . . . . . . . . 23
+
+2.3 Performance Modelling of GPU . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+
+2.3.1 Algorithmic Approaches . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+
+2.3.2 Statistical Approaches . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
+
+2.3.3 Simulators for Performance Evaluation . . . . . . . . . . . . . . . . 28
+
+2.3.4 Analytical Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+
+2.3.5 Latency Hiding . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+
+iv
+
+TABLE OF CONTENTS
+
+2.3.6 microbenchmarking . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34 2.4 Power Modelling of GPU . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34
+2.4.1 Statistical Approaches . . . . . . . . . . . . . . . . . . . . . . . . . . . 36 2.4.2 Dynamic voltage and frequency scaling (DVFS) . . . . . . . . . . . 38 2.4.3 Simulators for power prediction . . . . . . . . . . . . . . . . . . . . . 38 2.5 Limitations of Existing Work . . . . . . . . . . . . . . . . . . . . . . . . . . . 39 2.5.1 Performance Prediction . . . . . . . . . . . . . . . . . . . . . . . . . . 39 2.5.2 Power Prediction . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 41 2.6 Discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 42
+
+3 Microbenchmarking
+
+45
+
+3.1 PTX ISA . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 46
+
+3.1.1 Generating PTX ﬁle . . . . . . . . . . . . . . . . . . . . . . . . . . . . 47
+
+3.2 Computing Instructions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 47
+
+3.2.1 Computing Instruction Latency Results . . . . . . . . . . . . . . . . 50
+
+3.3 Memory Instructions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 52
+
+3.3.1 Pointer Chasing . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 53
+
+3.3.2 Global Memory Pointer Chasing . . . . . . . . . . . . . . . . . . . . . 53
+
+3.3.3 Global Memory Latency Model . . . . . . . . . . . . . . . . . . . . . . 54
+
+3.3.4 Shared Memory Access Latency . . . . . . . . . . . . . . . . . . . . . 56
+
+3.4 Kernel Launch Overhead . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 57
+
+3.5 Discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 57
+
+4 Modelling GPU Performance
+
+61
+
+4.1 Abstract GPU Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 62
+
+4.2 Static Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 63
+
+4.3 Modelling GPU Performance using ILP & TLP . . . . . . . . . . . . . . . . . 65
+
+4.3.1 Proposed Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 66
+
+4.3.2 Delay Computation Algorithm . . . . . . . . . . . . . . . . . . . . . . 67
+
+4.3.3 GPU Scheduling Algorithm . . . . . . . . . . . . . . . . . . . . . . . . 73
+
+4.3.4 Experimentation Details & Data Collection . . . . . . . . . . . . . . 76
+
+4.3.5 Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 77
+
+4.3.6 Classifying results with respect to parallel dwarfs . . . . . . . . . . 77
+
+4.3.7 Limitations of proposed algorithm . . . . . . . . . . . . . . . . . . . . 80
+
+4.4 Modelling GPU Performance using Resource Allocation . . . . . . . . . . . 81
+
+4.4.1 Analysing loops and branch divergence . . . . . . . . . . . . . . . . . 83
+
+v
+
+TABLE OF CONTENTS
+
+4.4.2 Scheduling Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 84 4.4.3 Other Assumptions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 86 4.4.4 Scheduling Algorithm . . . . . . . . . . . . . . . . . . . . . . . . . . . 87 4.4.5 Dynamic Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 91 4.4.6 Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 97 4.4.7 Experiment Setup . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 97 4.4.8 Data Collection . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 98 4.4.9 Results for Kepler Architecture . . . . . . . . . . . . . . . . . . . . . 100 4.4.10 Results across GPU Architectures . . . . . . . . . . . . . . . . . . . . 101 4.4.11 Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 105 4.5 Discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 109
+
+5 Power Prediction
+
+111
+
+5.1 Why a machine learning based approach for power prediction? . . . . . . 111
+
+5.2 Initial Investigation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 112
+
+5.2.1 Features Considered . . . . . . . . . . . . . . . . . . . . . . . . . . . . 113
+
+5.2.2 Feature Engineering . . . . . . . . . . . . . . . . . . . . . . . . . . . . 113
+
+5.2.3 Model Building & Results . . . . . . . . . . . . . . . . . . . . . . . . . 115
+
+5.2.4 Result & Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 115
+
+5.3 Proposed Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 118
+
+5.4 Feature Identiﬁcation & Acquisition . . . . . . . . . . . . . . . . . . . . . . . 119
+
+5.4.1 Registers per thread, Shared memory per block . . . . . . . . . . . . 120
+
+5.4.2 Occupancy . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 120
+
+5.4.3 Instruction issue cycles . . . . . . . . . . . . . . . . . . . . . . . . . . 121
+
+5.4.4 Memory Access Penalties . . . . . . . . . . . . . . . . . . . . . . . . . 122
+
+5.4.5 Program Feature Extraction Algorithm . . . . . . . . . . . . . . . . . 124
+
+5.4.6 Dataset Creation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 129
+
+5.4.7 Likelihood of noise in the dataset . . . . . . . . . . . . . . . . . . . . 130
+
+5.4.8 Other Assumption . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 131
+
+5.5 Feature Engineering . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 133
+
+5.5.1 Derived Attributes: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 133
+
+5.5.2 Non-correlated Attributes . . . . . . . . . . . . . . . . . . . . . . . . . 133
+
+5.5.3 Impactful Attributes . . . . . . . . . . . . . . . . . . . . . . . . . . . . 137
+
+5.6 Model Evaluation Metrics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 138
+
+5.7 Model Selection & Evaluation . . . . . . . . . . . . . . . . . . . . . . . . . . . 139
+
+vi
+
+TABLE OF CONTENTS
+
+5.7.1 ANN Experiments & Analysis . . . . . . . . . . . . . . . . . . . . . . 140 5.7.2 SVR Based Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 143 5.7.3 Random Forest Based Regressors . . . . . . . . . . . . . . . . . . . . 144 5.7.4 ExtraTrees Regressor . . . . . . . . . . . . . . . . . . . . . . . . . . . 146 5.7.5 Gradient Boosting Regressor . . . . . . . . . . . . . . . . . . . . . . . 146 5.7.6 XGBoost Regressor . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 147 5.7.7 CatBoost . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 148 5.7.8 Model Building & Training: Implementation Details . . . . . . . . . 148 5.8 Final Model Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 151 5.8.1 Analyzing Inﬂuential Features from Architecture Viewpoint . . . . 156 5.8.2 Outlier Detection . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 157 5.8.3 Analysing Prediction Model using Parallel Dwarfs . . . . . . . . . . 161 5.9 Discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 162
+
+6 Tool Design
+
+165
+
+6.1 Tool Architecture and Implementation . . . . . . . . . . . . . . . . . . . . . . 166
+
+6.1.1 Program Analyzer . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 167
+
+6.1.2 Execution Time Predictor . . . . . . . . . . . . . . . . . . . . . . . . . 168
+
+6.1.3 Power Consumption Predictor . . . . . . . . . . . . . . . . . . . . . . 168
+
+6.1.4 Report Generator . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 168
+
+6.2 Plugin Usage Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 169
+
+6.2.1 Prerequisite . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 169
+
+6.2.2 Plugin Setup . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 169
+
+6.2.3 User Input . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 170
+
+6.2.4 Result Generation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 171
+
+6.2.5 Case Study: Matrix Multiplication . . . . . . . . . . . . . . . . . . . . 171
+
+6.3 Comparison of results of Power & Execution Time Prediction . . . . . . . . 174
+
+6.4 Discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 175
+
+7 Conclusion and Future Directions
+
+177
+
+7.1 Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 177
+
+7.2 Directions for Future Work . . . . . . . . . . . . . . . . . . . . . . . . . . . . 178
+
+Biographies
+
+181
+
+Bibliography
+
+183
+
+vii
+
+TABLE OF CONTENTS
+
+Appendix A
+
+199
+
+Dynamic Analysis-based Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 199
+
+GPU Events . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 199
+
+Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 202
+
+Appendix B
+
+205
+
+Microbenchmarking . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 205
+
+Kernel Launch Overhead Code Snippet . . . . . . . . . . . . . . . . . . . . . 205
+
+Pointer Chasing Benchmark Code Snippet . . . . . . . . . . . . . . . . . . . 205
+
+Efﬁcacy of Global Memory Throughput Model . . . . . . . . . . . . . . . . . . . . 206
+
+Comparison with the throughput model by Volkov et al. . . . . . . . . . . . 206
+
+Key Takeaways . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 208
+
+viii
+
+LIST OF TABLES
+
+TABLE
+
+Page
+
+3.1 Tesla K20 Compute Instruction Summary . . . . . . . . . . . . . . . . . . . . . 51 3.2 Measured PTX instruction latencies L . . . . . . . . . . . . . . . . . . . . . . . 51 3.3 Latency computation of global memory access instructions for Tesla K20 GPU 55 3.4 Evaluation of Model for latency of global memory access instructions . . . . . 55
+
+4.1 Notations used for model attributes . . . . . . . . . . . . . . . . . . . . . . . . . 64 4.2 Results of GPU Scheduling Algorithm . . . . . . . . . . . . . . . . . . . . . . . . 78 4.3 Dwarf and its Mean Absolute Error . . . . . . . . . . . . . . . . . . . . . . . . . 80 4.4 Modelling result for dynamic analysis parameter across different statistical
+functions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 93 4.5 Exponential Models for Global & Shared Memory Throughput . . . . . . . . . 93 4.6 Hardware Features values for GPUs under consideration . . . . . . . . . . . . 98 4.7 Benchmarks Under Study . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 99 4.8 Actual vs Predicted Execution Time (µs) . . . . . . . . . . . . . . . . . . . . . . 101 4.9 Mean Absolute Percentage Error for each dwarf across different GPU archi-
+tecture . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 104 4.10 Throughput Comparison: Our approach vis a vis Volkov’s[20] approach . . . . 105 4.11 Comparison with existing approaches . . . . . . . . . . . . . . . . . . . . . . . . 109
+
+5.1 Features Considered for feature selection . . . . . . . . . . . . . . . . . . . . . . 113 5.2 Features Considered for initial case study . . . . . . . . . . . . . . . . . . . . . . 115 5.3 Results across GPU architectures . . . . . . . . . . . . . . . . . . . . . . . . . . . 116 5.4 Features considered for feature selection. Highlighted rows indicate features
+that are ﬁnally selected by data-driven methods (section 5.5) . . . . . . . . . . 127 5.5 Standard deviation of power values collected . . . . . . . . . . . . . . . . . . . . 133 5.6 ANN Model Experiment Results . . . . . . . . . . . . . . . . . . . . . . . . . . . 144 5.7 Machine Learning model and its hyperparameters . . . . . . . . . . . . . . . . 148
+
+ix
+
+LIST OF TABLES 5.8 Validation score for machine learning algorithms across GPU architectures . 151 5.9 XGBoost results for all three architectures after 5 runs . . . . . . . . . . . . . 153 5.10 XGBoost Vs CatBoost Evaluation . . . . . . . . . . . . . . . . . . . . . . . . . . 154 5.11 Validate score for machine learning techniques after outlier removal . . . . . 161 5.12 Mean Absolute Error across Parallel Dwarfs . . . . . . . . . . . . . . . . . . . . 162 6.1 Results for Matrix Multiplication Across architectures . . . . . . . . . . . . . . 172 6.2 Comparison of Performance & Power results for selected benchmarks . . . . . 174 1 Validation score for Machine Learning Algorithms . . . . . . . . . . . . . . . . 203
+x
+
+LIST OF FIGURES
+
+FIGURE
+
+Page
+
+1.1 Kepler GK110 architecture . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8 1.2 Tesla K20 SM Architecture . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8 1.3 GPU Memory Design . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8 1.4 Topic ﬂow of Thesis with publications mapped to Objectives . . . . . . . . . . . 18
+
+2.1 Crossing the Chasm . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 2.2 Outline of the Survey . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+
+3.1 Throughput for fma with ILP=1 . . . . . . . . . . . . . . . . . . . . . . . . . . . . 48 3.2 Piece-wise model for global instruction latency . . . . . . . . . . . . . . . . . . . 58 3.3 Kernel Launch Overhead . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 58
+
+4.1 Static Analysis of CUDA Code . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 65 4.2 Proposed Execution Time Prediction Model . . . . . . . . . . . . . . . . . . . . . 68 4.3 Execution Time Prediction Model . . . . . . . . . . . . . . . . . . . . . . . . . . . 79 4.4 Proposed performance prediction model . . . . . . . . . . . . . . . . . . . . . . . 83 4.5 Effect of launch parameters on the performance of kernel . . . . . . . . . . . . 85 4.6 Illustration of Algorithm 6 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 90 4.7 Model for Computing Global Memory Throughput . . . . . . . . . . . . . . . . . 93 4.8 Error observed for two GPUS of Kepler Architecture . . . . . . . . . . . . . . . 100 4.10 Actual vs predicted execution time of CFD Solver for multiple GPU architectures103 4.11 Prediction error of the Rodinia kernels on Tesla K20 GPU for Konstantidis Vs
+Proposed model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 105
+
+5.1 Pearson Correlation Coefﬁcient . . . . . . . . . . . . . . . . . . . . . . . . . . . . 114 5.2 Relative feature importance for Tesla K20 . . . . . . . . . . . . . . . . . . . . . 117 5.3 Overview of Power Prediction Modeling Approach . . . . . . . . . . . . . . . . . 119 5.4 Example of Program Feature Extraction Algorithm . . . . . . . . . . . . . . . . 126
+
+xi
+
+LIST OF FIGURES
+5.5 Pearson Correlation Coefﬁcient Heatmap . . . . . . . . . . . . . . . . . . . . . . 136 5.6 Kendall Correlation Coefﬁcient Heatmap . . . . . . . . . . . . . . . . . . . . . . 137 5.7 Pearson Correlation Coefﬁcient heatmap of ﬁnal set of features . . . . . . . . 138 5.8 Feature Importance Plot using (a) Random Forest (b) SHAP . . . . . . . . . . . 139 5.10 Relationship between features and power consumption . . . . . . . . . . . . . . 142 5.11 Loss function plot for Adaptive Learning rate ANN . . . . . . . . . . . . . . . . 143 5.12 Measured Vs Predicted power consumption for popular benchmarks . . . . . . 150 5.13 Error in predicted power for popular benchmarks . . . . . . . . . . . . . . . . . 152 5.14 Loss function plot for most precise tree-based methods . . . . . . . . . . . . . . 153 5.15 Plots for crucial program features’ dependency on the power consumption . . 155 5.17 Partial Dependency Plot (PDP) of all features of XGBoost . . . . . . . . . . . . 159 5.18 Outlier score Density using HDBSCAN . . . . . . . . . . . . . . . . . . . . . . . 160 6.1 Overview of Energy Estimation Tool . . . . . . . . . . . . . . . . . . . . . . . . . 166 6.2 Functional Architecture of Energy Estimation Tool . . . . . . . . . . . . . . . . 167 6.3 Energy Estimation Tool . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 170 6.4 Energy Estimation Result . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 171 6.5 LIME output generation in Plugin . . . . . . . . . . . . . . . . . . . . . . . . . . 172 6.6 Power prediction analysis using LIME . . . . . . . . . . . . . . . . . . . . . . . . 173 6.7 Comparison of results of Power & Execution Time Prediction . . . . . . . . . . 175 1 Feature Importance for energy prediction . . . . . . . . . . . . . . . . . . . . . . 203 2 Feature Importance for power prediction . . . . . . . . . . . . . . . . . . . . . . 203 3 Throughput model vs Volkov model . . . . . . . . . . . . . . . . . . . . . . . . . . 206 4 Comparison using Rooﬂine Model . . . . . . . . . . . . . . . . . . . . . . . . . . . 207
+xii
+
+LIST OF ABBREVIATIONS
+
+HPC GPU GPGPU
+CUD A SM PTX SP ILP TLP WS SFU DFU LSU SM RF SV R ANN XGBoost CatBoost E xtraT r e es
+
+High Performance Computing Graphics Processing Unit General Purpose Graphics Processing Unit. By GPU and GPGPU, we mean NVIDIA GPU in this thesis Compute Uniﬁed Device Architecture Streaming Multiprocessor Parallel Thread Execution single precision cores Instruction Level Parallelism Thread Level Parallelism warp schedulers special function units double precision units load-store units Streaming Multiprocessor Random Forest Support Vector Regression Artiﬁcial Neural Network Extreme Gradient Boosting Categorical Boosting Extremely Randomized Trees
+
+xiii
+
+CHAPTER
+
+1
+INTRODUCTION
+S cientiﬁc computing in the early 90’s needed data parallel computation, due to which the early High Performance Computing (HPC) machine, CM-5, comprising of an array of co-processors, was built. With CM-5, started the idea of ofﬂoading vector and matrix computations onto a co-processor array. The HPC programming community during that time was small and highly specialized in hand-crafting programs to exploit the hardware infrastructure with some support from the compiler such as automatic vectorization of some part of the code. The HPC hardware and software infrastructure were never accessible to the general programming community.
+The scenario has changed over the last two decades with the introduction of cell processors, GPGPU, or Xeon Phi accelerators. The combination of a large number of scalar processors and the accelerators have been able to achieve Exa-FLOP-level performance under the umbrella of Heterogeneous Computing 1. Furthermore, these processors and accelerators are now available as commodity hardware. Simultaneously, the scalar CPUs have become multi and many-core. As a result, the High-Performance Computing
+1https://www.top500.org/lists/
+1
+
+CHAPTER 1. INTRODUCTION
+(HPC) capability today is not just restricted within the scientiﬁc community but became affordable for the programming community at large. Consequently, there have been a shift in computing paradigm from serial to parallel [1]. Furthermore, these processors and accelerators are now available as a commodity hardware in the form of Graphics Processing Units (GPUs) .
+GPUs are an integral part of most modern supercomputers, HPC clusters, and servers of different scales as well as a commodity hardware. Three out of ﬁve top supercomputers in the world utilize GPUs to achieve exa-ﬂop performance. Although GPUs were traditionally built for rendering graphical images because each pixel of an image can be rendered by each core since it is a multi-core machine. Over last two decades, this capability of GPU is harnessed to perform compute-intensive tasks which need high data processing parallelism for e.g. Deep learning [2, 3]. Many scientiﬁc and industrial applications are written to harness the compute power of GPUs where the embarrassingly parallel parts of an application which run on large data sets are executed by the GPU [4]. Since the same set of operations are to be performed on each data element independently, each GPU thread is capable of carrying out this task. For e.g. leading automobile company Tesla is using a supercomputer with NVIDIA GPU cores which are used to train deep neural networks for Tesla’s Autopilot self-driving system [5].
+Although GPUs are popular for their programmability and high throughput, their energy consumption is a crucial concern [6–8]. Currently, the world’s fastest Supercomputer Fugaku consumes 717576 kWh energy in a day, almost triple its predecessor, Supercomputer Summit (242304 kWh/day) 2. If every new performance-hungry machine triples its consumption, it will become the biggest hurdle on the path toward sustainable and green computing. Besides, the increase in energy consumption gives rise to temperature management issues, which leads to employing cooling systems, which also contribute
+2https://www.top500.org/lists/
+2
+
+1.1. MOTIVATION
+to energy consumption and an increase in maintenance cost. Therefore, understanding and predicting GPU energy consumption is the need of the hour. As GPUs evolve with every new architecture, this task becomes more complex and challenging. In this thesis, we make a contribution towards estimating the amount of energy that an NVIDIA GPU application can consume while developing the application. Such a support can be a useful tool to build energy-aware GPU applications, with a broader perspective of sustainable computing. We ﬁrst discuss the motivation of this work and then delve into its background.
+1.1 Motivation
+Energy consumption is a major challenge for HPC systems in their quest toward the holy grail of Exa-FLOP performance [6, 7]. In the past, improvements in the energy efﬁciency of CPUs came about as a byproduct of Moore’s law, which accurately predicted that the number of transistors on a CPU would double every two years. However, the pace of improvement in the energy efﬁciency of CPUs has been slowing down. Because the scaling of CPUs has hit this power wall, the focus is shifting to multi-core and parallel architectures to improve energy efﬁciency. An important factor in choosing a GPU is that it offers better performance per watt ratio [7, 8], compared to the CPU for high-throughput and high-latency applications. However, if the GPU is not utilised efﬁciently, the energy consumption of GPUs, which is almost triple the amount of energy consumed by a CPU, is of grave concern [9].
+In order to circumvent energy debt [10, 11], which is the wastage of energy due to poorly written code, it is crucial to understand the energy consumption of applications at the code level. Green Software Foundation released Software Carbon Intensity (SCI), an initial speciﬁcation for scoring a software system for carbon emissions [12]. The purpose of SCI is to help users and developers make informed choices about carbon emissions
+3
+
+CHAPTER 1. INTRODUCTION
+from the tools, approaches, architectures, and services used in software development. GSF states that there are three ways to reduce the carbon emissions of software:(a) Use less hardware, (b) Use less energy, and (c) Carbon awareness. Considering the importance of energy consumption from a carbon emission perspective, We must equip GPU developers with tools that can assist them in building energy-saving applications to achieve the goals of sustainable computing [13]. An accurate prediction approach for predicting the energy consumption of an application before running it is a signiﬁcant research problem. Looking at the pace at which parallel programming is being adapted in various application domains [14], if this problem is not explored now, developers will have to run their programs to compute energy consumed, which is not always feasible, environment-friendly, and economical. Therefore, in this thesis, we attempt to propose a solution to this critical problem of energy prediction.
+Energy prediction of an application can be performed using static [15, 16] or dynamic analysis [17, 18]. A purely static analysis-based prediction is done by analysing the application code without executing the application whereas dynamic analysis based approach involves the evaluation by running the application on the target hardware. A dynamic analysis-based model can be more accurate since the data collected represents the actual execution of the application most accurately. However, it defeats the purpose of energy prediction since multiple runs of application will lead to energy wastage. Also, a dynamic analysis model which uses special hardware cannot be architecture-agnostic since the hardware may not be compatible with newer architectures [6]. Chen and Shi [19] advocated for software based prediction tools; although these tools provide lower degree of prediction accuracy, they allow better ﬂexibility, speciﬁcally when the required specialized hardware is unavailable.
+Considering the architectural complexity of the hardware and the fact that crucial insights are not revealed by the vendors, a purely static analysis-based model is a
+4
+
+1.1. MOTIVATION
+challenging problem to solve. Architectural complexities involve factors such as GPU’s complex internal memory hierarchy and thousands of processors, which lead to numerous impediments for energy modelling. Also, for GPU applications, one can perform static analysis of PTX (Parallel Thread Execution) code, an intermediate representation of CUDA (Compute Uniﬁed Device Architecture) kernel. All the instructions in PTX code may or may not be executed on hardware due to hardware level optimizations.
+The advantage of the static analysis-based model is that it can be used to design an energy-aware GPU application. It can assist application developers in using appropriate program features while developing an application so that the GPU consumes less energy when the application is deployed on the GPU. Without any application development support, such ﬁne-tuning is not accessible during implementation. There is a dire need for a reasonably accurate static analysis-based energy prediction model, which can predict energy usage without running the application, and which can be modelled on different GPU hardware characteristics.
+Energy Modelling solutions for GPUs have been proposed using statistical techniques on hardware parameters [20, 21], simulators [22, 23], and instruction-level source code analysis [24]. We observe that a signiﬁcantly high amount of effort has been put into GPU application development in comparison to the development of supporting tools for performance analysis. Existing proﬁlers [25, 26], and simulators [22, 27] show only the execution proﬁle data of an application. Developers are expected to be knowledgeable to analyze this information, understand the application ﬂow, and reason about the performance bottlenecks. These are undoubtedly highly time-consuming and expertisedependent tasks.
+These observations have motivated us to build an energy prediction model to estimate the energy usage of an NVIDIA CUDA kernel application without the need to execute it. We are proposing a GPU energy model based on two sub-models that, when combined,
+5
+
+CHAPTER 1. INTRODUCTION
+provide energy estimation. The ﬁrst model is designed to predict the execution time (performance) of the application. The second model estimates the power consumption by analyzing the code. These models can be integrated in a design assistance tool to help GPU programmers develop energy-aware and energy-efﬁcient applications. The proposed approach should be architecture-agnostic and needs to be extended to newer architectures by tuning some parameters.
+Any GPU application developer can utilise the proposed models easily and ﬁnd their usefulness in multiple domains. For e.g., one can use the performance prediction model in the Cloud-based GPU renting services [28]. In such a scenario, a developer, with a reasonable approximation, would like to foresee the required amount of time for which he needs to rent this hardware to plan his budget.
+Although we plan to design a static analysis model for energy consumption, energy dissipation is more intricately related to architecture components. Hence one cannot develop a solution for modeling energy consumption without understanding architectural constructs. Therefore in the next section, we present the background details of GPU architecture which are essential to understand our proposed solution for the performance and power prediction of the CUDA kernel. As mentioned earlier, we are presenting a static analysis based solution; hence one needs to understand the programming model used for GPUs. Therefore we also discuss the required background information on the programming model for GPUs in the next section.
+1.2 Background - GPU Architecture & Programming Model
+GPU works as co-processor to a CPU, where it accelerates the task for general-purpose computing applications. CPU ofﬂoads some of the compute-intensive and time consuming
+6
+
+1.2. BACKGROUND - GPU ARCHITECTURE & PROGRAMMING MODEL
+portions of the code on the GPU where it uses its massively parallel processing power to boost performance. It is extremely crucial to understand the architecture of a GPU for building an empirical model which captures its execution details.
+The model proposed in this thesis is architecture agnostic and works across multiple GPU architectures. The GPU which was extensively used for experimentation and validation; an NVIDIA Tesla K20 is described here for understanding the architecture details of a GPU. The NVIDIA Tesla K20 GPU (Figure 1.1 ) is based on Kepler GK110 architecture with compute capability of 3.5 and is composed of 13 computational components which are called streaming multiprocessors (SMs). Each SM consists of fully pipelined 192 single-precision CUDA cores, 64 Double Precision units (DPUs), 32 special function units (SFUs) 3. The SM schedules threads in groups of 32 parallel threads called warps. Each SM features four warp schedulers and eight instruction dispatch units (Figure 1.2) , allowing four warps to be issued and executed concurrently. Kepler’s quad warp scheduler selects four warps, and two independent instructions per warp can be dispatched each cycle.
+GPU architecture offers multiple memory options such as global, shared, constant, and texture which developer can utilize as per applications demand. The constant and texture are read only memory spaces available on GPU. Since we focus on General Purpose GPU Computing (GPGPU), we consider global and shared memory in our model because constant and texture memory is more concerned with graphics applications. We have illustrated the memory design for a CUDA thread in Figure 1.3. The CUDA cores have access to a private set of registers allocated from a register ﬁle. The shared memory is assigned to a block, and global memory space is within a grid. Hence, threads within a block can share data using shared memory, but to access data across blocks, the data must be accessed from global memory. L1 cache co-exists with shared memory and
+3https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/tesla-product-literature/NVIDIAKepler-GK110-GK210-Architecture-Whitepaper.pdf
+7
+
+CHAPTER 1. INTRODUCTION
+
+Figure 1.1: Kepler GK110 architecture Global memory accesses are always cached in L2.
+
+Figure 1.2: Tesla K20 SM Architecture
+
+Figure 1.3: GPU Memory Design
+
+8
+
+1.2. BACKGROUND - GPU ARCHITECTURE & PROGRAMMING MODEL
+1.2.1 CUDA Programming Model
+NVIDIA GPUs can be programmed using CUDA (Compute Uniﬁed Device Architecture) for GPGPU applications. CUDA is an extension to standard ANSI C where the part of the code that’s supposed to be executed by thousands of threads in the GPU is expressed as a kernel function. Although CUDA is an extension to ANSI C, it offers very low level constructs which are related to architecture components of GPU. For e.g. thread level operations, choice of different types of memory while programming. Through these features CUDA offers a direct extension to GPU architecture. In the past studies, strong correlation is observed between CUDA constucts and energy consumption for constructs such as global memory instructions [29] , number of blocks [30, 31] etc. Therefore, in this section, we discuss only those features of CUDA programming model which will be utilised which are linked to hardware and are utilised in building the proposed model.
+The kernel function which executes on a GPU is declared using the __global__ keyword. All the instructions to be executed on GPU are incorporated in this function. The kernel is launched using a hierarchy of thread groups: grid, block, and thread. A grid is composed of a set of thread blocks that executes a kernel function, and each block is composed of hundreds of threads.
+CUDA provides a device abstraction by deﬁning a logical architecture of the device, which remains unchanged even when the GPU is changed [32]. CUDA also provides ﬂexibility in assigning resources. For instance, the programmer can use a thread block, which shares their data through shared memory and synchronize their actions by utilizing built-in primitives. The CUDA programming model assumes a Single Instruction Multiple Threads (SIMT) computation where instructions are executed in a lockstep fashion. The threads are synchronized with a function sync_threads(), which is a barrier for threads. Furthermore, the programmer has the design option to share the registers among a group of threads.
+9
+
+CHAPTER 1. INTRODUCTION
+CUDA provides an abstraction in memory usage by providing keywords such as global, local and shared. In addition, there are two programming constructs- namely "constant" and "texture" for two particular memory types. The "constant" memory is visible to all threads and stores data that will not be changed over the course of kernel execution.
+The next important aspect is to investigate how a CUDA kernel is executed in a GPU. This is relevant for our work since we develop a scheduling algorithm in this thesis which tries to imitate instruction scheduling of a GPU.
+1.2.2 Mapping of CUDA Programming model to the GPU Architecture
+The host program speciﬁes the parameters for each kernel invocation at runtime. The required parameters represent the grid and block dimensions. Optionally the user can also specify how much shared memory is available per-block. Threads within the same block are assigned unique identiﬁers based on their coordinates. In a similar manner, the blocks which form the grid are assigned identiﬁers based on their coordinates. A thread is uniquely identiﬁed in a grid by combining its thread ID with the ID of the block to which it belongs. Threads within a block can share data through shared memory and can perform barrier synchronization using special CUDA API calls. CUDA threads can access data from different memory spaces as illustrated in Figure 1.3.
+The CUDA execution model achieves throughput by assigning thread blocks of a kernel to SMs. When a kernel is launched, the blocks of the grid are distributed to the SMs in parallel based on the hardware limit. The registers are allocated from the register ﬁle which is partitioned among the warps, and shared memory is allocated for each of the thread blocks. Since these resources are limited, there is a hardware limit on number of blocks and warps that can be executed together on a SM.
+10
+
+1.2. BACKGROUND - GPU ARCHITECTURE & PROGRAMMING MODEL
+A very important parameter in GPU execution is Warp which is a group of 32 thread for scheduling threads on GPU architecture. SM schedules instruction at warp granularity. A Warp Scheduler Unit on GPU schedules warps for execution, and Dispatch Unit issues the same instruction for all the warp’s threads. Threads may have diverged path because of control-ﬂow. In such a scenario, all the divergent paths are executed serially and the path is disabled for inactive threads.
+With this background information on GPU architecture and CUDA programming model we now move to discussing how the energy modelling of GPU is proposed in this thesis.
+1.2.3 Energy Modelling of GPU
+Energy modelling of a machine involves measuring its performance in execution time and the power consumed during its runtime. Hence one can estimate energy consumption of a kernel based on two sub-models which independently compute the power level and execution time. We can combine the results obtained from the performance model and the power-occupancy model to estimate the energy consumption of GPU.
+E = P × tkernel where E is the energy estimate of the kernel in Joules, P is the estimated average power level during the execution of the kernel in Watts, and tkernel is the execution time of the kernel in seconds. In order to calculate the energy consumption, it must be noted that there may be several sources of error in the computation model, which involve a very deep knowledge of the NVIDIA infrastructure. NVIDIA’s GPU architecture is proprietary information and cannot be easily found, except through several experiments conducted on the GPUs and rigorous microbenchmarking [33]. Because hardware implementation details are
+11
+
+CHAPTER 1. INTRODUCTION
+not publicly available, calculating the execution time and power consumption of a kernel is an ambitious and challenging task.
+As seen in a K20 GPU power measurement paper by Burtscher et al. [34], the actual power level of the GPU during kernel execution was found to be mostly constant. This is because the components of the GPU’s SMs were in active state. If the components are idle, the power level drops to a much lower value. The power level of the GPU needs to be estimated accurately. For this, the possible approaches must be analyzed to ﬁnd the one that works best. Possible approaches include a regression-based approach to predict the power, and statistical estimates based on average power level over several past usages of the GPU.
+With respect to execution time prediction model, Amaris et al. [35] compared results of analytical and machine learning models and concluded that analytical models are more precise than the other approaches. In this work, we built analytical model for execution time prediction by creating a mathematical abstraction of the program’s execution. The computation is performed in the form of a function which takes into account the target architecture, the input program and the launch parameters. With this background, we now discuss the problem statement of our work in further detail.
+1.3 Problem Statement
+Based on our plan to model static analysis-based energy prediction using performance and power estimation, we present following objectives that we fulﬁll in this thesis.
+1.3.1 Objective 1
+We aim to design an analytical model to predict execution time of CUDA kernel. For this, we plan the following activities
+12
+
+1.3. PROBLEM STATEMENT
+1. Identifying microbenchmarks for computing intrinsic details of GPU hardware Instruction execution is governed by some critical parameters such as latency, througput etc. Very little information about these parameters (such as theoretical peak performance) are provided by the vendor [32]. These details may not precisely match the real-time metrics due to hardware complexities and hence we have to recompute it by microbenchmarking the hardware.
+2. Creating an accurate GPU execution model Due to the increasing popularity of GPUs in main stream computing, it is becoming exceedingly important to analyze and understand GPU application performance. We observe that a signiﬁcantly high amount of effort has been put into GPU application development compared to supporting tools for performance analysis. Existing proﬁlers [25, 26] and simulators[22, 27] show only the execution proﬁle data of an application. Developers are expected to be knowledgeable to analyze this information, understand the application ﬂow, and reason about the performance bottlenecks. These are undoubtedly highly time-consuming and expertise-dependent tasks. The execution time of a CUDA program, besides data dependency, is dependent on multiple hardware features such as memory and cache usage, branch prediction, pipeline stalls, instruction latency, and others. Predicting the execution time for a particular GPU architecture needs a profound understanding of the architectural details, which NVIDIA does not disclose in the public domain. In the absence of this knowledge, modeling various architectural characteristics of a GPU such as scheduling of instructions, estimating latency of every instruction, estimating memory throughput, and modeling launch overhead without any architectural details from the vendor is quite challenging. We need a performance prediction model tool that can 13
+
+CHAPTER 1. INTRODUCTION
+• Estimate the execution time of a CUDA kernel without having to run the kernel on an NVIDIA GPU
+• Solution can involve extensive static analysis of code and if dynamic analysis is required it should be one time collection of data.
+• The approach can be attuned to gain insights into program design issues to help the developer.
+1.3.2 Objective 2
+We aim to build a prediction model for modelling GPU power consumption of CUDA kernel. For this, we plan the following activities
+1. Choosing features which can be generated using static analysis Power consumption of a computing device is intricately related to its hardware features. Consequently, there has been a signiﬁcant body of work to investigate the relationship between hardware features and power consumption [36–39]. However, our goal is to develop a power prediction model based on code features and minimal runtime information so that the model can be used for power consumption prediction without running a CUDA program. To the best of our knowledge, not much work has been done that uses such an approach. Choosing the features which contribute to power consumption and can be collected without running an application is a difﬁcult task.
+2. Building a dataset of static analysis based features To the best of our knowledge, we did not come across any existing dataset which collects program analysis data and power consumption. Hence we have to build an in-house dataset for the same. To create the dataset we need to run CUDA benchmarks with different launch conﬁgurations (grid size, block size) and measure power consumption of each 14
+
+1.3. PROBLEM STATEMENT
+benchmark. We also need a method using which we can collect power consumption of benchmarks without using any external hardware. Since the proposed model should be easily usable by a application developer without a need of any specialised equipment. Therefore data collection is a tedious and laborious task involving multiple methods and resources to cover the spectrum of features extracted using static analysis.
+3. Choosing a suitable model for predicting power consumption We did not come across any algorithmic approaches to understand the relationship between power consumption and program characteristics for GPU applications. Hence we will have to use machine learning based model for building an accurate power prediction model. We need to systematically analyse and select the most appropriate model for power prediction from the pool of available machine learning algorithms.
+1.3.3 Objective 3
+We expect that the insights gained while building these models will signiﬁcantly help to create an architecture-agnostic model for energy consumption of CUDA kernel which can be tuned to multiple architecture. For this, we plan the following activities
+1. Investigate different architectures which can be tuned by the model to adapt to newer architectures Over the last two decades NVIDIA has introduced eleven architectures with increasing GPU’s performance efﬁciency sometimes at the cost of its complexity and power dissipation 4[6, 40]. Therefore we need to consider the adaptability of our model to multiple architectures since the GPU hardware evolves much faster than the lifespan of an application running on the hardware . The proposed solution should be designed in such a way that it can be tuned to newer architectures by
+4https://www.nvidia.com/en-in/about-nvidia/corporate-timeline/
+15
+
+CHAPTER 1. INTRODUCTION
+taking its architecture details as input. Hence we need to investigate different architecture and ﬁnd out the features which can be tuned such that the model can be adapted to newer architectures.
+2. Validating the model across multiple architectures Once we ﬁnd the parameters for tuning the model to newer architecture, we need to validate if both performance and power prediction models work for different architectures. In order to do so, we have to identify the newer architectures and popular GPUs belonging to these architectures. Adapting the performance model to newer architecture will be easier than power prediction model since we wish to use an analytical model. Data collection for performance prediction will involve only getting actual execution time of benchmarks and microbenchmarking. Whereas data collection for power prediction model will involve executing thousands of benchmarks with different launch conﬁguration and hence will be more laborious task.
+1.4 Contribution
+In order to address the research questions identiﬁed, we proposed solutions for building energy-aware GPU application. Our contributions in this work are as follows:
+• We proposed a novel set of microbenchmarks to collect different architectural features of a GPU.
+• We designed a lightweight approach that combines the static analysis of a CUDA application and architectural features of a GPU derived from the dynamic analysis performed only once for given hardware. 16
+
+1.5. PUBLICATIONS FROM THIS RESEARCH
+• We have created a dataset from a set of CUDA benchmark applications. We have deﬁned a feature engineering methodology to identify a set of features that inﬂuences power consumption. This dataset and feature extraction code is made available 5.
+• We developed a machine-learning based power prediction model for NVIDIA GPGPU applications using program analysis and hardware attributes.
+• We analyze the results of power prediction model to understand the impact of program features on the power consumption of NVIDIA GPU.
+• We have considered the adaptability of our execution time and power prediction model to different architectures. We have found that our approach works across four architectures: Kepler, Maxwell, Pascal, and Volta.
+• We also presented a design assistance tool which can assist heterogeneous application developers to build energy-aware applications.
+1.5 Publications from this Research
+In Figure 1.4, we have mapped the publications to the topics covered in this thesis. The following is the list of publications that resulted from our research.
+1. Santonu Sarkar and Gargi Alavani. 2018. How Easy it is to Write Software for Heterogeneous Systems? SIGSOFT Softw. Eng. Notes 42, 4 (October 2017), 1–7.
+2. Gargi Alavani, Kajal Varma and Santonu Sarkar, "Predicting Execution Time of CUDA Kernel Using Static Analysis," 2018 IEEE Intl Conf on Parallel & Distributed Processing with Applications, Ubiquitous Computing & Communications,
+5https://github.com/santonus/energymodel
+17
+
+CHAPTER 1. INTRODUCTION
+Figure 1.4: Topic ﬂow of Thesis with publications mapped to Objectives Big Data & Cloud Computing, Social Computing & Networking, Sustainable Computing & Communications, 2018, pp. 948-955.
+3. Gargi Alavani, Jineet Desai and Santonu Sarkar, "An Approach to Estimate Power Consumption of a CUDA Kernel," 2020 IEEE Intl Conf on Parallel & Distributed Processing with Applications, Big Data & Cloud Computing, Sustainable Computing & Communications, Social Computing & Networking , 2020, pp. 984-991.
+4. Gargi Alavani, Santonu Sarkar, "Performance modeling of graphics processing unit application using static and dynamic analysis", Concurrency and Computation: Practice and Experience, 2021, Volume - 34.
+5. Gargi Alavani, Jineet Desai and Santonu Sarkar, "GPPT: A Power Prediction Tool for CUDA Applications," 2021 36th IEEE/ACM International Conference on Automated Software Engineering Workshops (ASEW), 2021, pp. 247-250.
+6. Gargi Alavani, Jineet Desai, Snehanshu Saha and Santonu Sarkar, " Program Analysis and Machine Learning based Approach to Predict Power Consumption of CUDA Kernel" Communicated 18
+
+1.6. THESIS OUTLINE
+1.6 Thesis Outline
+The rest of this dissertation is organized as follows. Chapter 2 surveys the state of the art and contextualizes our contribution to prior work in this ﬁeld. Chapter 3 presents the microbenchmarking approach and results. Chapter 4 describes the execution time prediction model. Chapter 5 proposes the power prediction model based on machine learning techniques. Chapter 6 presents the design assistance tool developed in this study. Chapter 7 concludes the dissertation and presents directions for future research.
+19
+
+CHAPTER
+
+2
+LITERATURE SURVEY
+W ith the growing demand for performance-oriented problems, programmers routinely execute the embarrassing parallel part of the application in a GPU in order to achieve signiﬁcant speedup. These applications are becoming complex and long-running. Traditional programmers are not well-versed with programming for heterogeneous systems, and it is quite some time away for these programmers to become parallel programming experts. With evolving architectural complexities of multi-core systems, accelerators, and hybrid systems, the need for tools that can help application developers to harness their computing power efﬁciently is the need of the hour.
+2.1 Design Assistance
+Parallel programming is arduous compared to serial programming, and hence there is a need for different types of design assistance tools. As observed in Berkeley’s technical report, [14], unless writing scalable parallel programs becomes as easy as writing
+21
+
+CHAPTER 2. LITERATURE SURVEY
+programs for sequential computers, developers will ﬁnd it difﬁcult to switch to the new paradigm. The technical report by Berkeley and Illinois parallel processing group [41] has highlighted that unless such support tools and methods are not in place, heterogeneous computing will not be accepted in the mainstream. The work by Wienke et al. [42] reports an empirical study to determine various factors that can inﬂuence programmer productivity. Though preliminary, the result shows that the prior knowledge of the parallel computing platform plays the most signiﬁcant role in programmer productivity. However, it is noteworthy that inﬂuences of the environment and tools on productivity are ranked second and third, respectively.
+So far, the main focus areas in the parallel computing software landscape have been the following. a. Compiler infrastructure: Which is mainly pioneered by the hardware manufacturers like Intel, AMD, and NVIDIA to build sophisticated compilers mostly. b. Programming language support: Which is also pioneered by the likes of Intel, AMD, NVIDIA, and so on to build programming language extensions (like CUDA, OpenCL) and libraries to write parallel programs. c. Algorithm development: Many advanced parallel algorithms have been developed by trained developers to harness the computing power of mutlticore architectures e.g. CUDA toolkit [43]. While these areas are essential, we posit that there are other critical research areas for parallel computing software, which are discussed as follows.
+Software development for a heterogeneous computing environment comes with some inherent challenges:
+(i) How can software development be made simpler by hiding the underlying hardware complexities? [44–46]
+(ii) What are the existing solutions available for common design problems? [47, 48] 22
+
+2.2. ENERGY PREDICTION OF GPU APPLICATIONS
+(iii) What kind of algorithmic skeletons can be used to implement efﬁcient parallelism? [49–51]
+(iv) What reusable components can be used to develop software faster? [52, 53] (v) How software can be autotuned to gain maximum performance on hardware? (vi) What are the techniques available for verifying the semantics and pointing out
+software bugs? [54–56] (vii) Which tools can help developers build energy-aware sustainable computing applica-
+tions? [12]
+Considering these critical issues, developers ﬁnd it challenging to switch from a sequential programming style to deal with the complexities of a parallel program (depicted as a chasm in Figure 2.1). Proposing design assistance solutions for each of these issues can make the job of parallel developers efﬁcient and easier. In this thesis, we focus on one of these research questions, i.e., " Which tools can help developers build energy-aware sustainable computing applications?". With the advancements in parallel programming architectures comes the dire need for building design assistance tools to help developers build energy-efﬁcient tools that make these architectures a sustainable computing alternative. In this thesis, we are attempting to propose design assistance tools that will aid developers in building energy-aware sustainable computing GPU applications. Hence we survey the existing solutions for the prediction of energy consumption of GPUs in the following sections.
+2.2 Energy Prediction of GPU applications
+While supercomputers and parallel computers generally augment our computation power manifold, they consume a lot of energy and dissipate a lot of heat. As a result, the cooling systems form a signiﬁcant part of operating costs and the cost of electricity (enough
+23
+
+CHAPTER 2. LITERATURE SURVEY
+Figure 2.1: Crossing the Chasm to power a small city) [6]. The main goal of developers of GPU is to tune their code extensively to obtain optimal performance, making efﬁcient use of different resources available on the GPU. However, an application running on an HPC infrastructure should perform optimally, and at the same time, it needs to consume the least energy required to run the application.
+A developer must be equipped with tools to understand the energy consumption of GPUs before launching the application. A signiﬁcant body of work has attempted to address various aspects of the energy prediction model of GPU programs [7]. As discussed earlier, we are dividing the problem of energy consumption into performance and power estimation. Hence in this thesis, we survey prior work related to modelling performance and power consumption of GPU applications. Firstly, we discuss in detail existing literature on performance prediction. Then we review the existing literature on the power prediction of GPU. The overview of this literature survey is shown in Figure 2.2.
+24
+
+2.3. PERFORMANCE MODELLING OF GPU
+Figure 2.2: Outline of the Survey
+2.3 Performance Modelling of GPU
+Performance modelling is a broad and well-studied topic entailing various metrics such as latency, throughput, concurrency, memory access efﬁciency, and so on, at various levels of granularity, starting at the level of individual instruction upto the entire application [13]. Our work focuses on developing a complete GPU kernel’s execution time prediction model rather than predicting latency and throughput at the instruction level. Existing studies on performance prediction can be classiﬁed as algorithmic[57, 58], analytical models[29, 35, 59–61], statistical approaches[35, 62–64], and simulation [65]. There are some application-speciﬁc performance models developed which are tuned to computation needs, memory usage, access patterns of GPU application [66–68]. We present a survey of these performance prediction techniques covering a breadth of approaches and existing solutions.
+2.3.1 Algorithmic Approaches
+Early work in modelling parallel algorithm behaviour began with the PRAM model[69], followed by the Network model[70], the BSP model[71], the Log-P model [72], and the QRQW model[73, 74]. These models help the programmer to understand parallelism in a multiprocessor system.
+25
+
+CHAPTER 2. LITERATURE SURVEY
+Amaris et al. [75] designed a simplistic and intuitive Bulk Synchronous Parallel (BSP)based design for execution time prediction. BSP is a model for parallel computation that allows algorithmic analysis of programs that consider the number of computations and memory accesses of the GPU, with supplementary information on cache usage collected from proﬁling. Model results are within 0.8 to 1.2 times the actual performance for the two benchmarks. In another work by Amaris et al. [35], they compared the results of analytical and machine learning models and concluded that analytical models are more precise than the other approaches. However, they conducted the study on only two benchmarks and showed nearly 20% prediction error.
+Since algorithmic approaches are not architecture-speciﬁc, one can neither perform an architecture-speciﬁc performance analysis nor predict the execution time of a given program for a complex architecture such as a GPU using these models. We now present the statistical/machine learning approaches for performance prediction.
+2.3.2 Statistical Approaches
+The machine learning model by Amaris et al. [35] utilised Linear Regression, Support Vector Machine and Random Forest to predict execution time of application. Eiger[40] is an automated statistical methodology for performance model. They utilised 47 features from both the application and the hardware which are collected by executing the application on target machine. The approach is validated using 12 benchmarks. Madougou et al. [13] utilised Eiger for GPU and found that the accuracy is not uniform for different types of benchmarks.
+The work by Shuaiwen et al. [20] built an ANN model for execution time prediction using performance counters using the CUPTI library rather than using PTX code information. The authors claimed to restrict the average absolute prediction error within 6.7% for 12 benchmarks. A major difference of their approach with ours is that their
+26
+
+2.3. PERFORMANCE MODELLING OF GPU
+ANN model requires performance counter values which can only be obtained by running CUDA kernels. In our opinion, this defeats the purpose of predicting the application’s execution time without the need for running the same. Also, their model does not work for the asymmetric workload, whereas our model takes care of those, as mentioned earlier.
+Stargazer [76] is an automated GPU performance exploration framework which randomly samples the parameter values of the full GPU design space. It is based on stepwise regression modeling which helps to understand the most inﬂuential architectural parameters to the performance of the application. Stargazer uses simulated data (GPGPU-Sim [22]) and only considers hardware characteristics. It is highly time-consuming approach and lacks the performance analysis from application perspective.
+Zhang et al. [63] proposed a Random Forest (RF) based model for ATI GPU. They utilize feature importance of RF to understand most inﬂuential variables to the execution performance (throughputs) of the target GPU. The approach is validated on 22 kernels and runtime data for building the model is collected using 23 performance counter. Counter-based approaches are not extendable to GPUs which do not support counters and also the current counters do not cover all performance factors.
+ScaleClass [77] estimates the performance and power of GPUs across a range of hardware conﬁgurations for OpenCL kernels. A neural network classiﬁer is utilised to predict cluster’s scaling behavior which is described by a new kernel based on its performance counters. However compared to earlier statistical approaches based on LR and RF, ScaleClass accuracy is lower which could be because regression-based approaches usually perform better than neural networks in terms of accuracy [78]. Existing statistical approaches are utilising performance counters, runtime proﬁling data, or simulation data for the performance prediction. We will now discuss how simulators contribute to performance prediction.
+27
+
+CHAPTER 2. LITERATURE SURVEY
+2.3.3 Simulators for Performance Evaluation
+Simulators are quite helpful for investigating GPU-based workloads’ characteristics. Since simulators are primarily built to emulate machines hardware behaviour they do not directly perform execution time prediction. However, they play an important in performance prediction by being utilised to build a prediction model using the traces of GPU runtime hardware behaviour. For e.g. GPGPU-Sim [22] is used for building performance prediction tool [76]. Hence we brieﬂy discuss their contribution in performance prediction.
+GPGPU-Sim [22], GPU-Tejas [27], PPT-GPU [79] are popular simulators available for NVIDIA GPU. Though PPT-GPU [79] simulation framework claims to predict applications’ performance in a fast and accurate manner; however they have not presented any result to support this claim. Simulators have reported their execution times to perform simulations. For instance, the mean execution time for the GPGPU-Sim tool is 14100.29 seconds, whereas GPU-Tejas reported an average execution time to be 32.80s [27].
+2.3.4 Analytical Model
+Analytical models represent a mathematical abstraction of the program’s execution. The result is usually represented in the form of a function which takes into account the target architecture, the input program and the input data. Analytical models are built for end-to-end prediction of execution time as well as for representing performance of GPU using metrics such as throughput. We ﬁrst discuss the existing approaches for end-to-end prediction of execution time for CUDA kernel followed by other performance evaluation metrics utilised for performance prediction.
+28
+
+2.3. PERFORMANCE MODELLING OF GPU
+2.3.4.1 End-to-end Execution Time Prediction
+An important work closely aligned to ours was by Kothapalli et al. [57] where the authors proposed a GPU-speciﬁc prediction model, inspired by Queue-Read Queue-Write PRAM Model [73, 74], to give a rough estimate of the execution time of a CUDA kernel. Here the authors proposed a scheduling model that is based on two approaches. It considers either all instruction latency while scheduling or only the maximum of either memory or computation instruction latency. However, the results suggest that such an approach sometimes grossly overestimates and sometimes underestimates massively. The authors have considered three benchmarks for their case study: Matrix Multiplication (31.25% error), List Ranking (12.50% error), and Histogram.
+Hong and Kim [80] have proposed an early execution time prediction model for a GPU. The approach computes the maximum possible number of warps per SM and counts computing instructions (e.g., add, mul) which can be executed when waiting for one memory operation. A signiﬁcant drawback of this model is that it does not consider computing instruction latency which is crucial for any performance prediction. They assume a ﬂat four cycles issue latency for compute instruction irrespective of occupancy. Hence if a benchmark is compute-intensive with very few memory instructions, the execution time prediction will be underestimated.
+Sim et al.[81] improved Hong and Kim’s approach [80] by including arithmetic latency. The authors ﬁrst computed the time taken by arithmetic instructions and memory instructions separately. Total time is then calculated by either choosing the max of the two or using their proposed equation. Along with the ILP and TLP, they also considered Memory Level Parallelism (MLP). However, this model continues to have a large overestimation error for kernels with high memory latency.
+Huang et al. [82] presented an interval analysis based technique called GPUMech, for modelling GPU performance. GPUMech has modeled multithreading and resource
+29
+
+CHAPTER 2. LITERATURE SURVEY
+allocation due to memory usage. It presents results for two scheduling approaches: Round Robin policy and greedy-then-oldest policy. They used GPUOcelot [83] that executes GPGPU kernel and collect per-warp instruction traces. Observed error for GPUMech is 13.2% the round-robin scheduling policy and 14.0% error for the greedy-then-oldest policy.
+A GPU kernel execution time prediction model based on compiler techniques that consider computing as well as memory access latency together was proposed for the ﬁrst time by Baghsorkhi et al. [84]. They utilized an annotated program dependence graph called “Work ﬂow graph”, which is an extension of CFG. Later, Volkov et al. [85] experimentally proved that this model works best at 100% occupancy and fails in any other case. In reality, 100% occupancy cannot be achieved in many non-trivial applications. We also observed that the instruction throughput shows a linear or sublinear growth when we plot it against number of warps per SM, which was not visible in their model [84].
+Resios et al. [59] formulated a parameterized model for delay calculation of computing and memory instructions. However, their usage of parameters such as Instruction Level Parallelism (ILP) as well as Thread Level Parallelism (TLP) makes this delay value too low to be true. Their thread scheduling model is overly simpliﬁed since they multiply the execution time by the number of threads. The authors have reported the precision of 1.64 for the Transpose benchmark and 1.89 for the 2D Convolution ﬁlter benchmark.
+Williams et al. [86] proposed the rooﬂine model concept for multicore systems. This model relates processor performance to off-chip memory trafﬁc, where the execution time is computed using peak ﬂoating-point performance, peak memory bandwidth, and operational intensity. This model has inﬂuenced several research works related to GPU performance. Konstantinidis et al. [87] improvised the rooﬂine model[86] and used only runtime data collected by executing the CUDA kernel code multiple times to build their execution time prediction model. To improve the accuracy of the model, the
+30
+
+2.3. PERFORMANCE MODELLING OF GPU
+authors proposed include the utilization factor (Eutil), as an option. However, Eutil is also computed using actual execution time for each kernel.
+An execution time prediction analytical model for GPU with instruction level and thread-level parallelism awareness was presented by Luo et al. [60]. The proposed model contains two components: memory sub-model and computation sub-model. The memory sub-model is estimating the cost of memory instructions by considering the number of active threads and GPU memory bandwidth. Correspondingly, the computation submodel is estimating the cost of computation instructions by considering the number of active threads and the applications arithmetic intensity. They utilised Ocelot[83] to analysis PTX codes and obtain time cost of each PTX instructions. Their result show that the model can reach 90 percentage accuracy in average for the six benchmarks considered in this study.
+2.3.4.2 Other Performance Evaluation Metrics
+We now evaluate a few important publications that focused on predicting performance metrics other than end-to-end execution time. Li et al. [88] developed a cross-rooﬂine model called Transit, that predicts computation throughput and memory throughput, which is validated on Fermi and Kepler architecture with 90% and 83% prediction accuracy, respectively. However, unlike our approach, their model fails to predict complex kernels such as Gaussian, lavaMD, and ParticleFilter.
+Volkov et al. [85] proposed an analytical model to predict arithmetic and memory throughput. Furthermore, the model is not tested for real-life applications and is tested for only one benchmark. The pointer chasing benchmark used by them is a mix of arithmetic and memory instructions, where all arithmetic instructions are identical, and all memory instructions are identical. As a result, instructions become evenly interleaved and back-to-back dependent. We have noticed another discrepancy in Volkov’s article [85] where the memory throughput model presented is not exponential, though the
+31
+
+CHAPTER 2. LITERATURE SURVEY
+author acknowledges that the memory throughput should be exponential. Through extensive experimental study, we have observed that the actual memory throughput shows exponential growth.
+Huang et al. [82] presented a GPUMech tool based on interval analysis technique to simulate multithreading and resource allocation due to memory usage in a GPU. They used GPUOcelot framework to collect per-warp instruction traces using run-time analysis. GPUMech provides Cycles Per Instruction(CPI) stacks for the memory hardware components analysed, which can assist developers in visualizing performance bottlenecks of a kernel.GPUMech simulation model[82] presented the observed error to be 13.2% for round-robin scheduling policy and 14.0% for the greedy-then-oldest policy. GPUMech utilizes runtime traces of warp execution along with instruction latency.
+Lemeire et al.[89] proposed a set of microbenchmarks in OpenCL using occupancy rooﬂine method which they claim to be sufﬁcient in order to predict the performance of GPUs. In order to compute the cycles per instruction for each compute unit, they compute the characteristics of an instruction as: its issue and completion latency. They modelled each compute unit as a pipeline for computations and a pipeline for the memory access. They also measured the inﬂuence of independent instructions within a kernel and impact of thread divergence.
+Branch divergence plays a important role in performance of an application. If the data, processed by a GPU application causes a periodic branch divergence which has a patterns, it is sometimes possible to refactor the code remove this divergence, if this pattern can be discovered through a dynamic analysis [90]. However, it is extremely hard to predict any characteristics of a potential branch divergence phenomenon with purely static analysis based approach.
+We have tabulated the results of existing approaches in Table 4.11. In this thesis, we propose an analytical model for performance prediction. In order to design an analytical
+32
+
+2.3. PERFORMANCE MODELLING OF GPU
+model for performance, it is crucial to understand how latency hiding is modelled in the model. We now discuss some of the approaches used for the same.
+2.3.5 Latency Hiding
+Latency hiding for any GPU performance model is an important aspect that should model carefully. Latency hiding in a GPU is carried out by running independent instructions within multiple warps. We compare the latency hiding of our proposed algorithm with other approaches. Hong et al. [80] assumed 4 cycles per instruction for arithmetic throughput irrespective of GPU occupancy. In many popular approaches [85, 89, 91] it is empirically shown that at 100% occupancy, the GPU almost completely hides the latency of arithmetic instructions. In such cases, Hong et al. [80] model will grossly overestimate the performance, and when the occupancy is very low, it will lead to underestimation (an arithmetic instruction takes more than 4 cycles). Volkov [85] model performs latency hiding using a concept called arithmetic intensity along with both arithmetic and global memory instruction latencies. However, their model is derived from one benchmark with identical arithmetic and memory instructions, with no independent instructions. In contrast, our approach considers independent instructions, resource allocation. Furthermore, we have evaluated our approach on 44 benchmarks from different benchmarks suites, sizes, nature (e.g., compute-bound, memory-bound), and complexity (e.g., control divergence, memory access patterns).
+The idea of using data dependence and instruction latency in a graph-based model presented by Baghsorkhi et al. [84] is on similar lines as our model. However, while implementing latency hiding, they compute delay by subtracting non-blocked arithmetic instructions from the latency of memory instruction using analytical equations.
+As discussed earlier, microbenchmarking is crucial in designing a fairly accurate performance prediction model since the crucial hardware details are not publicly available.
+33
+
+CHAPTER 2. LITERATURE SURVEY
+Hence we discuss some of the existing popular work on microbenchmarking GPUs.
+2.3.6 microbenchmarking
+The use of microbenchmarks is critical to understand the nature of GPU instruction execution[33, 92–94] since the vendors are reluctant to share these crucial details. We discuss here notable works that use microbenchmark extensively to analyze GPUs performance [89], understanding hardware characteristics [33] and apply it for assessing energy utilization [95].
+Lemeire et al. [89] presented OpenCL microbenchmarks to gather performance characteristics of GPU. The authors performed a study of the inﬂuence of independent instructions within a kernel and thread divergence.
+Wong et al. [33] measured the latency and throughput of different types of arithmetic and logic operations performed in a kernel for Fermi architecture GPU. They studied functionality of branch divergence and of the barrier synchronization, and also measured the structure and performance of the memory caching hierarchies.
+Andersch et al. [96] analyzed the static as well as dynamic latency behavior of GPU microarchitectural components using GPGPU-Sim GPU timing simulator. They conclude that GPUs are not as effective in latency hiding as believed to be, and suggest that latency should be a major GPU design consideration besides throughput.
+2.4 Power Modelling of GPU
+Over the last few years, the importance of understanding the power consumption of HPC machines has increased signiﬁcantly. GPU power measurement and estimation can be brieﬂy divided into direct methods, including using external and internal hardware for monitoring power and indirect techniques such as modeling and simulation [6]. Utilizing external hardware sensors is costly for proﬁling large-scale distributed systems, and
+34
+
+2.4. POWER MODELLING OF GPU
+internal hardware sensors are still being veriﬁed for their accuracy and reliability. Hence researchers are also working extensively on indirect power modeling and measurements. Indirect power modelling includes models based on hardware performance counters, simulators, and PTX-based power models. Our work is an attempt to contribute to indirect power modelling of GPUs. We built a PTX-based power model using machine learning techniques. We discuss some of the research efforts that propose and evaluate indirect power estimation.
+Chen and Shi [19] discuss the need for power proﬁling to optimize existing algorithms and lay down various hardware and software-based mechanisms existing in power modeling of computing systems. They believe that although software-based tools offer a lower degree of accuracy, they allow for ﬂexible usage due to the lack of specialized hardware. The power consumption of a computing device is intricately related to its hardware features. Consequently, there has been a signiﬁcant body of work to investigate the relationship between hardware features of a machine and its power consumption [36– 39]. Mittal and Vetter [7] surveyed the methods of analyzing GPU energy efﬁciency. They conclude that there is a need for using multiple approaches at the chip design level, architectural level, programming level, etc., to get the maximum increase in GPU energy efﬁciency. A survey by Bridges et al. [6] also promotes application-level analysis for power prediction especially PTX-based power models, which they believe can yield valuable and informative predictions. However, not much work has been done to understand the relationship between code features and power consumption. To the best of our knowledge, we still do not have any algorithmic approach to understand the relationship between power consumption and program characteristics.
+35
+
+CHAPTER 2. LITERATURE SURVEY
+2.4.1 Statistical Approaches
+Statistical approaches employ machine learning algorithm to perform GPU power prediction. Data utilised for these approaches is collected from hardware events which are captured using sensors and counters or application based features. One of the initial works on the statistical model for power prediction was carried out by Ma et al.[97]. They utilized Support Vector Machine (SVR) and Support Linear Machine (SLR) to estimates the power used by the GPU over a small time window. Training data was generated by creating benchmarks that stress different GPU sub-units. SVR outperformed SLR emphasizing a complex model works efﬁciently over a linear model for power prediction.
+2.4.1.1 Counter Based Models
+Counter Based Modeling techniques predict power consumption of application by correlating each with hardware events. These events are accessible through performance counters. Performance counters are generated based on hardware actions, (e.g., number of issued instructions, number of memory accesses, cache operations). These operational events give users access to low-level hardware activities. Models designed using data from counters which are able to explain hardware events, exhibit strong correlations to power consumption. Hence these models can yield accurate power models.
+Nagasaka et al. [98] propose a statistical method to estimate a CUDA kernel’s power consumption using performance counters. The approach uses GPU performance counters as the independent variable and power consumption as the dependent variable and trains a linear regression model. Both Ma et al. [97] and Nagasaka et al. [98] emphasized that the acquisition of global memory access counts is crucial for accurate GPU power modeling. Song et al. [20] proposed the ﬁrst counter-based model built using a neural network.
+Jia et al. [99] presented Starchart, a design space partitioning tool that uses re36
+
+2.4. POWER MODELLING OF GPU
+gression trees to perform GPU Performance and Power Tuning. The Performance API (PAPI) library [100] is extended to measure energy and power, in addition to performance counters. However, it produces some anomalies while measuring power. Song et al. [20] believe that no accurate model combines simplicity, accuracy, and support for emergent GPU architectures in isolating energy and performance bottlenecks to identify their root causes. They proposed a neural network model to estimate the average power using performance metrics. They utilize hardware performance counters with BP-ANN based prediction model that is accurate to within 2.1% for power prediction.
+2.4.1.2 PTX-based Model
+Parallel Thread Execution (PTX) is a pseudo-assembly code which is an intermediate step in CUDA compilation. This code includes the list of instructions to be executed by the GPU. If one wants to pedict power consumption a priori, PTX instructions can be leveraged to analyze the power of a CUDA program. This approach provides powerful optimization capabilities to programmers before executing their code.
+A work by Hong et al. [29] propose an integrated power and performance prediction model for a GPU architecture. They modelled the relationship between power and PTX instructions through mathematical equations. They designed a set of synthetic microbenchmarks which stress different architectural components in the GPU. They then map these components to PTX instructions to understand instructions impact on power consumption. They use this approach to predict the optimal number of active processors for a given application. However, their model fails to predict asymmetric and control-ﬂow intensive applications.
+Singh et al. [101] applied non-linear functions on data collected using micro benchmarking to predict the power consumption of GPU. Zhao et al. [102] present a model which gives power prediction for the GPU by counting each PTX instruction as input.
+37
+
+CHAPTER 2. LITERATURE SURVEY
+2.4.2 Dynamic voltage and frequency scaling (DVFS)
+Dynamic voltage and frequency scaling (DVFS) is a popular approach for improving power efﬁciency [6, 36, 37]. Abe et al. [103] explore the domain of application of DVFS techniques to GPU accelerated systems which produce predictable results in CPU-only systems trivially, but owing to the complex nature of GPU architecture, fail to produce similar results.
+We cannot use DVFS for static-anaysis based power prediction. This approach is not suitable to build a model to predict the power consumed by a CUDA application because: Firstly, there is no established relationship (direct or latent) between the GPU frequency and the CUDA program structure. Moreover, DVFS is auto-enabled in GPUs and should not be disabled since it can lead to system failure. Moreover, the vendor does not provide any external control to manipulate DVFS in order to build a dynamic model which can capture system behaviour by executing only once.
+2.4.3 Simulators for power prediction
+Although counter-based models are popular and have proven to be effective, the execution of an application defeats its purpose. There are many simulation-based power prediction tools available which replace the need to execute an application yet help to ﬁnd correlation between hardware features and power [23, 38, 104] .
+Chen et al. [105] proposed a GPU power consumption model using the tree-based random forest method to understand and estimate power consumption based on performance variables collected by collecting runtime data from GPGPU-Sim. Prediction accuracy using leave-one-out cross-validation (LOOCV) for the random forest is 7.77% with MSE 302.6, regression tree is 11.68% with MSE 637.8, and linear regression is 11.70% with MSE 2548.0. However, it fails to predict for benchmarks such as BlackScholes, which are compute-intensive. Results observed in this model emphasize that the relationship
+38
+
+2.5. LIMITATIONS OF EXISTING WORK
+between GPU power and its subprocesses is non-linear and complex. Hence advanced machine learning algorithms are required to capture this relationship.
+Lim et al. [38] constructs a power model for GPUs by combining empirical data with data obtained from McPAT [106], a CPU power tool. The model is trained using a particular set of benchmarks, after which it is used for predicting power. The reported average error is 12.8% for Merge benchmarks. Although simulations provide useful power predictions, the modeling of the simulator requires a deep understanding of architecture and processes, which is quite complicated.
+A simulator called GPUSimPow [39] helps estimate the power consumption of a kernel on a given GPGPU architecture without physically running the kernel on the GPU, but by using hardware models for the internal components of GPUs. It breaks the overall power estimate to individual component power usage. Because the hardware is modelled directly, authors claim that simulation is possibly the most accurate method of estimating the energy consumption of a kernel. However, it is also a more time-consuming method as the entire execution of the kernel from start to ﬁnish needs to be modelled precisely. For a set of benchmarks, GPUSimPow shows an average relative error of 11.7% for GT240 and 10.8% for GTX580. Wang[107] extended the popular GPU simulator GPGPU-Sim [22] to include power modelling. However, the accuracy of his results was not published.
+2.5 Limitations of Existing Work
+2.5.1 Performance Prediction
+• Problem Solving Approach: Most of the existing approaches for performance modelling are derived from runtime data [20, 80, 82, 84]. To utilize these approaches for understanding the performance of a long-running application is not 39
+
+CHAPTER 2. LITERATURE SURVEY
+feasible, costly, and energy inefﬁcient. Hence, building a model that can predict applications’ performance without execution is a signiﬁcant contribution in this area. In the work by Konstantinidis et al. [87], to improve the accuracy of the model, the authors proposed inclusion of the utilization factor (Eutil), as an option. However, Eutil is computed using actual execution time for each kernel which defeats the purpose of prediction for conserving energy. Two important studies from the static analysis approach include Resios et al. [59]’s parameterized model, which provides a good foundation for an analytical model. However, their GPU simulation model is weak, with no scheduling of threads involved. Similarly, the work by Kothapalli et al. [57] should have been more intuitive since their approach sometimes grossly overestimates and sometimes underestimates.
+• Need for microbenchmarking: Microbenchmarking is the key to peeping into the GPU BlackBox, and it should be the ﬁrst step toward building a good prediction model. Although there are existing microbenchmark suits such as Wong et al. [33], their results are based on an older Tesla architecture NVIDIA GT200 GPU. Building a microbenchmark design that can be effectively utilized across new architectures is crucial. We also need new set of microbenchmarks which can capture critical characteristics such as kernel launch overhead, memory throughput, the effect of throughput for different ILP values etc. Baghsorkhi et al. [84] discussed kernel launch overhead and how they are signiﬁcant for benchmarks with very low execution time. However, they did not present any methodology for computing and incorporating it in their work.
+• Validation: Although some of the existing approaches claim to observe decent accuracy, it should be noted that most of them are validated on a very small dataset of two to ten kernels [57, 59, 60, 75, 80]. Building a performance prediction 40
+
+2.5. LIMITATIONS OF EXISTING WORK
+model validated across a decent number of benchmarks is also crucial for it to be considered a reliable solution.
+• Architecture-speciﬁc Model: It is observed that most of the existing approaches which is validated for one architecture [57, 59, 75, 80]. With newer architecture emerging within a year or two, building architecture-speciﬁc models seems an expensive approach in terms of resources and time. We need architecture-agnostic models which work across multiple architectures after tunning a few parameters.
+2.5.2 Power Prediction
+• Problem Solving Approach: The power consumption of a computing device is intricately related to its hardware features. Consequently, there has been a signiﬁcant body of work to investigate the relationship between hardware features and power consumption [20, 97, 98, 100, 105, 108]. This runtime hardware data is collected either using power meters, hardware counters, or by proﬁling the execution of the CUDA kernel. Although using a power meter or hardware counterbased approach is considered more reliable and accurate, multiple runs of an application are sometimes required to collect this data. As seen in the work of Nagasaka et al. [98], some hardware counters may not be available, which affects the prediction model. Also, some architectures allow counters to a whole SM. In such a case, if there is an imbalanced number of cores utilized per SM, the prediction may get affected [6]. We observe that very few related works are based on static input features [29, 102]. It is crucial to propose a static analysis-based power prediction tool that saves energy for executing an application and results in accurate prediction. Such an approach is helpful for a priori analysis. A survey by Bridges et al. [6] suggests that a PTX-based power model can produce valuable and informative predictions 41
+
+CHAPTER 2. LITERATURE SURVEY
+when one wants to optimize an application. We need to equip developers with a tool to help programmers identify energy hotspots in their CUDA kernel and refactor the code for energy efﬁciency.
+• Architecture-speciﬁc Model: Power computing model based on hardware counters cannot be architecture-agnostic since the number of hardware counters and type of counters utilized may not be uniform across architectures [6]. Building a model based on only hardware details for power prediction may not work as efﬁciently on newer hardware. In such a scenario, there is a need for an approach which can be tuned for newer architectures without much time and efforts.
+• Ease of Use: Although direct methods are fundamental, they still exhibit a tradeoff between accuracy and ease of use. Also, in the age of cloud computing, hardware is not available on sight for direct power measurement. Internal sensors are easy to use, but vendor documentation for these sensors is unavailable, e.g., the NVML library for GPUs abstracts crucial sensor information. In this scenario, an easy-to-use program analysis-based approach that can be executed on commodity hardware can be essential.
+2.6 Discussion
+In this chapter, we surveyed the ﬁeld to precisely understand the state of the art of techniques for predicting the performance and power consumption of GPU applications. In this context, our literature survey covered the spectrum covering different types of existing approaches for tackling both problems. We have included several approaches based on runtime proﬁling, hardware data, simulators, and static analysis.
+Statistical approaches for performance prediction are utilising performance counters, runtime proﬁling data, or simulation data. Using runtime data routs the purpose of
+42
+
+2.6. DISCUSSION
+prediction if one wants to use these results for a priori analysis. Existing static analysis based approaches for performance prediction are algorithmic and analytical. We observed that existing algorithmic methods reported in the literature are not architecture-speciﬁc. Hence one can use them for modelling an abstract parallel machine but not for an architecture-speciﬁc performance analysis or execution time prediction of a speciﬁc device such as a GPU. Most of the existing static analysis based analytical models predict performance using some metrics (e.g. throughput) and not end-to-end execution time. Also, many of these models are tested on only one architecture; hence re-usability efﬁciency of these models is uncertain.
+Since power consumption is more intrinsic to hardware behaviour, existing work is more focused on observing hardware behaviour while executing an application using performance counters and simulators. Current literature does not have sufﬁcient studies around static analysis based power prediction approach. Existing studies that utilise hardware-speciﬁc runtime data cannot be extended to newer architectures and restrict usability without specialised hardware.
+We seek to overcome observed limitations in the literature by proposing a reasonably accurate performance and power prediction model that is more intuitive, static analysisbased, and architecture-agnostic. We also believe that a study that is exhaustively tested with more number of benchmarks will be more reliable and acceptable.
+43
+
+CHAPTER
+
+3
+MICROBENCHMARKING
+A s concluded in Chapter 2, microbenchmarking is a very crucial step in the quest of modeling GPU behaviour. This chapter discusses the microbenchmarks designed in this study for the various native instruction set. The purpose of designing microbenchmarks is to compute the properties of some fundamental operations that inﬂuence the higher level system behavior. A microbenchmark attempts to measure the performance of a small unit of code with which one can determine how the code is going to behave as part of an application. This microbenchmarking data can be used for optimization, simulation and analysis of GPU software.
+Microbenchmarking data has been proved to be a crucial input in performance models [59, 89, 91]. It is a way to create knowledge and deeper understanding about a hardware architecture. It helps researchers to provide undocumented processor performance properties not disclosed by vendors. We can utilise microbenchmark to compute upper performance limits for sustained performance. Microbenchmarks can also help in ﬁnding performance bugs in architectures.
+Every architecture differs from its predecessor and hence instruction execution char45
+
+CHAPTER 3. MICROBENCHMARKING
+acteristics of one architecture may vary from the other. Instruction execution is governed by some critical parameters such as latency, througput etc. Very little information about these parameters(such as theoretical peak performance) are provided by the vendor. Also, these details may not precisely match the real-time metrics and hence we have to recompute it by microbenchmarking the hardware.
+We have come across work on microbenchmarking Fermi architecture in [59], [33] and [57]. When we carried out the microbenchmarking, to the best of our knowledge there was not much work done on Kepler architecture. Also, we did not come across a study which computed minimum number of ready warps required to achieve peak throughput through microbenchmarking. Similarlly, We did not ﬁnd a study which quantiﬁed kernel launch overhead through microbenchmarking.
+With these perspectives in mind, we present the following in this chapter:
+• Microbenchmarks are developed for GPU architecture which calculate the peak performance values of computing instructions belonging to PTX instruction set.
+• A model to estimate kernel launch overhead which has signiﬁcant impact on performance of Kernel.
+• A Global memory latency Model which predicts the latency of instruction based on access stride
+We begin with understanding the instructions presented in PTX representation of CUDA kernel.
+3.1 PTX ISA
+PTX stands for Parallel Thread Execution [109], a low-level parallel thread execution virtual machine and instruction set architecture (ISA) for GPU applications. PTX is a
+46
+
+3.2. COMPUTING INSTRUCTIONS
+stable ISA which spans multiple GPU generations. PTX is also a machine-independent ISA for C/C++ and other target compilers. Because of these features, PTX is extensively used for hand-coding, and architecture tests.
+3.1.1 Generating PTX ﬁle
+CUDA code is compiled into PTX code by adding the –ptx option in the nvcc statement while building. This statement results in the generation of a .ptx ﬁle. PTX is an intermediate code representation, and not an executable. It is very similar to assembly code, but it is not the actual code that is executed in the GPU, because it has to pass through a few more intermediate steps. The .ptx ﬁle achieved after compilation consists of the code of each kernel that is deﬁned in the corresponding .cu ﬁle.
+A basic PTX code consists of the following statements: Comments, Directives beginning with ’.’, Computing instructions, Global memory access statements, Shared memory access statements, Synchronization statements, Branch statements, Labels, and Return statements. We scan through the PTX code and categorise each of these statements.
+We analyse computing instructions and memory access instructions seperately since the approach for microbenchmarking the two differs signiﬁcantly. We ﬁrst discuss the details of microbenchmarking Computing instructions.
+3.2 Computing Instructions
+Computing instructions are arithmetic and logical instructions which can be integer operations ( such as add, mul), ﬂoating point operations (such as fma), or special instructions (such as sqrt). We have developed microbenchmarks to compute latency, throughput and peakwarps for computing instruction.
+To compute latency, we launch a single thread with two dependent instructions of the same instruction type to ensure that the GPU cannot issue the next instruction until
+47
+
+CHAPTER 3. MICROBENCHMARKING
+
+1 __global__ void throughput_kernel ( int *
+
+dummy) {
+
+2 / / in itialization of parameters
+
+3
+
+int j = blockIdx . x*blockDim . x +
+
+threadIdx . x + blockDim . x*threadIdx .
+
+y;
+
+4
+
+for ( int i =0; i <innerLoopIter ; i ++) {
+
+5 repeat256 ( b+=a ; a+=b ; ) ;
+
+6
+
+}
+
+7
+
+dummy[ j ]= b+a ; / / s t o r e r e s u l t s t o
+
+avoid compiler optimization
+
+8}
+
+Listing 3.1: throughput_kernel
+
+Figure 3.1: Throughput for fma with ILP=1
+
+the previous instruction has ﬁnished. Before executing instructions, the start time Ts is recorded. Then we execute a set of 256 instructions to ensure that the total execution time is substantial enough to be recorded. We record the time after the execution Te and measure the execution time T = Te − Ts. We repeat this process N times and accumulate the execution time of each run (Ttot + = T). Finally, we compute the average latency of the instruction as L = Ttot/(2 ∗ 256 ∗ N).
+Throughput and peakwarps value estimation processes are relatively more complex than the latency computation since instruction level parallelism (ILP) plays an important role here. In the absence of any independent instructions, it was observed that throughput saturates after a certain Thread Level Parallelism(TLP) value. To get a further increase in throughput, we need independent instructions inside the CUDA kernel available to each scheduler. This can be achieved by adding independent instructions in the kernel; with every new independent instruction, the ILP value is raised by 1. The set of instructions for ILP 1, ILP 2 and ILP 3 shown below, explains this approach.
+
+ILP=1 Instructions: b+=a; a+=b;
+
+ILP=2 Instructions: b+=a; a+=b; c+=d; d+=c;
+
+ILP=3 Instructions: b+=a; a+=b; c+=d; d+=c; e+=f; f+=e;
+
+For illustration, the CUDA kernel snippet for adds instruction is shown in listing 3.1 for 48
+
+3.2. COMPUTING INSTRUCTIONS
+ILP 1. This kernel is invoked from the main program shown in listing 3.2 to compute throughput for this instruction. An important observation is that the peak throughput and the number of active warps required to achieve peak throughput differ for different ILP values. To characterize this phenomenon, we execute this benchmark with different ILP values. For each ILP, we create a different version of the kernel in listing 3.1 by altering line 6 with the code for the corresponding ILP (shown above), keeping the rest of the code in listing 3.1 and listing 3.2 the same. Throughput and peakwarp computation process for different ILP values for a compute instruction (such as adds) is summarized below:
+1. Design multiple versions of a throughput computation kernel, for each ILP.
+2. For each ILP, execute the corresponding version of the kernel. The throughput_func code in Listing 3.2 is called by increasing the number of active warps launched, to generate a dataset D(w, tput) by recording throughput per cycle tput for each active warp w.
+3. For each ILP, we deﬁne the peakwarp as
+P W = min{w | | D(w) − D(w ) |> , ∀w ∈ W}
+This is computed from D that has a set of active warps W, and for each w ∈ W, there is a corresponding throughput per cycle tput = D(w). This metric is derived by modifying the standard argmax function by introducing a small positive threshold parameter . This, in turn, ignores minor variations in throughput values from the maximum (a small positive threshold ). As seen in Figure 3.1, P W (highlighted as a red dot) is the warp value present on the x-axis of the red dot. Note that the throughput value starts oscillating after this highlighted point.
+1 i n t throughput_func ( dim3 Db, dim3 Dg) {
+49
+
+CHAPTER 3. MICROBENCHMARKING
+2 cudaEventRecord ( s t a r t , 0 ) ; throughput_kernel <<<Dg , Db>>>(d_dummy) ; 3 cudaEventRecord ( stop , 0) ; cudaEventSynchronize ( stop ) ; 4 cudaEventElapsedTime(&elapsedTime , start , stop ) ; 5 / * return per unit throughput using time , GPU c l o c k speed e t c . * / 6 return throughput_per_cycle ; 7}
+Listing 3.2: PeakWarps Calculation Code
+In order to execute the benchmark programs for measurement, we have taken the following steps to avoid quantiﬁcation errors.
+• Compiler optimization has been disabled to zero level to avoid undesirable optimizations done even at zero level, results of GPU kernel execution were stored in dummy variables as shown in listing 3.1. The use of dummy variables to avoid compiler-level optimization is a common practice in designing microbenchmarks [110, 111].
+• We ensured that only one single thread is executed for measuring the latency values to avoid latency hiding due to parallelism, by launching the latency kernel with only one thread per block in one grid.
+• While computing throughput values, we have taken care that occupancy of SM is always above 90%. This was ensured by launching 256 threads per block per SM.
+3.2.1 Computing Instruction Latency Results
+The latency values obtained using proposed microbenchmarks are presented in the second column of Table 3.1. As seen in Table 3.1, a signiﬁcant difference is observed in the results obtained by varying ILP values for each type of instruction. In an ideal scenario, in Tesla K20 SM with four warp schedulers with two instruction dispatchers,
+50
+
+3.2. COMPUTING INSTRUCTIONS
+
+Table 3.1: Tesla K20 Compute Instruction Summary
+
+Instruction
+addf,subf,mulf adds,subs,and fma mads muls divs divf sqrt setp cvt mov
+
+L
+9 9 10 20 9 424 894.5 359 22 10 2
+
+Throughput (T P )
+
+ILP=1 ILP=2 ILP=3
+
+122 128 167
+
+120 127 136
+
+119 95
+
+143
+
+31
+
+28
+
+25
+
+28
+
+32
+
+32
+
+2.35 2.5
+
+2.36
+
+1.066 1.0
+
+1.02
+
+3.48 3.19 3.2
+
+50
+
+50
+
+50
+
+31
+
+31
+
+31
+
+150 N/A N/A
+
+PeakWarps (P W )
+
+ILP=1 ILP=2 ILP=3
+
+36
+
+20
+
+18
+
+36
+
+20
+
+18
+
+36
+
+20
+
+16
+
+20
+
+10
+
+8
+
+8
+
+8
+
+8
+
+32
+
+32
+
+32
+
+32
+
+32
+
+32
+
+40
+
+40
+
+40
+
+36
+
+28
+
+28
+
+12
+
+12
+
+12
+
+32
+
+N/A N/A
+
+Table 3.2: Measured PTX instruction latencies L
+
+NVIDIA GPU -> Architecture -> addf adds subf subs mulf muls and fma mads divf divs cvt sqrt setp mov shared load & store
+
+Quadro K4200 Kepler 10 9 10 10 9 9 9 9 18 1252 418 33 440 22 2 40
+
+Tesla K20 Kepler 9 9 9 9 9 9 9 10 20 894.5 424 10 359 22 2 47
+
+Tesla M60 Maxwell 15 15 15 15 15 86 15 188 100 1278 1026 195 550 30 51 38
+
+GTX 1050 Pascal 15 15 15 15 15 86 15 12 15 1398 503 195 481 30 55 39
+
+Tesla V100 Volta 15 15 15 15 15 15 15 232 30 977 815 218 487 30 49 39
+
+51
+
+CHAPTER 3. MICROBENCHMARKING
+256 instructions can be dispatched every cycle. Observed throughput value without independent instructions (e.g. 120 adds, subs instruction per cycle for ILP=1) suggests that at least a few of the dispatchers may remain underutilized due to the non-availability of independent instruction from the same warp. We also observed that incrementing ILP after 3 (for most of the instructions) does not signiﬁcantly affect throughput, which can be correlated to the fact that both the dispatch units of the scheduler are getting fully utilized if there are more than three independent instructions available. We present latency of computing instructions across multiple GPU architectures in Table 3.2.
+3.3 Memory Instructions
+NVIDIA GPU offers multiple memory options, such as global, shared, constant, and texture. We focus on only global and shared memory instructions in the current work. We have developed microbenchmarks for quantifying latency and throughput of global and shared memory instructions. We will consider constant and texture memory as a future work. Latency for accessing global memory instructions (global load and store) depends upon the amount of data being accessed at a particular moment to account for the additional waiting time due to resource constraints. Due to its high latency value, global memory access heavily inﬂuences the execution time of a CUDA kernel. Therefore, it is crucial to accurately estimate the latency value of global memory access for a useful execution time prediction[59, 80].
+Among the wide variety of existing approaches, pointer-chasing based microbenchmarking is considered an accurate and popular approach to compute memory instruction latency. The pointer chasing algorithm for GPU is presented in Algorithm 1 for the host (CPU) and Algorithm 2 for the device. In the host algorithm, the array is initialized with stride values then the kernel code is invoked. Inside kernel code in the device algorithm, the start time and end time of the memory access instruction with the pointer chasing
+52
+
+3.3. MEMORY INSTRUCTIONS
+approach is recorded. In line 4 of Algorithm 2, we ensure that the next memory instruction is not executed until the previous instruction is complete. Hence, this approach can record the number of cycles utilized for executing one single memory instruction. An iterator is used to execute the instruction a large number of times to ensure the latency is not too small to be measurable. We store the value of j in a dummy variable to avoid any compiler-level optimization.
+3.3.1 Pointer Chasing
+A pointer-chasing microbenchmark, ﬁrst introduced by Saavedra et al. [112] for CPUs, initializes a set of array elements with the index of the next memory access. The distance between two consecutive memory accesses is called stride size. The latency of memory access is the time difference in clock cycles between the memory access issue and the data availability in the processor register. In the pointer-chasing experiment, the complete array is traversed sequentially to record the average memory access latency. This approach was adapted for GPUs as well [33, 113]. We have modiﬁed the approach by [113] for latency computation of GPU memory instructions.
+3.3.2 Global Memory Pointer Chasing
+The pointer chasing algorithm for GPU is presented in Algorithm 1 for the host (CPU) and Algorithm 2 for the device. In the host algorithm, the array is initialized with stride values then the kernel code is invoked. Inside kernel code in the device algorithm, the start time and end time of the memory access instruction with the pointer chasing approach is recorded. In line 5 of Algorithm 2, we ensure that the next memory instruction is not executed until the previous instruction is complete. Hence, this approach can record the number of cycles utilized for executing one single memory instruction. An iterator is used to execute the instruction a large number of times to ensure the latency is not
+53
+
+CHAPTER 3. MICROBENCHMARKING
+
+too small to be measurable. We store the value of j in a dummy variable to avoid any
+
+compiler-level optimization. The code snippet for pointer chasing is available in Appendix
+
+8.
+
+Algorithm 1 Memory Latency Host (CPU) Algorithm
+1: initialise stride 2: for k= 0 to N do 3: h_arr[k]=(k+stride) % N; 4: Copy host array (h_array) to device ( d_arr) 5: memLatKernel«<Dg, Db»>(d_dummy,d_arr);
+
+Call Latency Kernel
+
+Algorithm 2 Memory Latency Device (GPU) Algorithm
+
+1: procedure GMMEMLATKERNEL(d_dummy, d_array)
+
+2: start_time = clock();
+
+3: initialise j=0;
+
+4: for it=0 to iteration do
+
+5:
+
+j=d_arr[j] ;
+
+6: end_time = clock(); 7: d_dummy =j; 8: latency = (end_time - start_time) / iteration
+
+average memory latency
+
+3.3.3 Global Memory Latency Model
+We observed that in existing studies, the reported latency value for global memory instructions is above 400 cycles for a Kepler architecture [57, 93]. However, our pointer chasing microbenchmark on Tesla K20 reported the average reported latency 221! If we use the high value reported in the literature (e.g. 580 as mentioned in [57]), the resultant prediction model can be a gross overestimation. We further noticed that the latency value is dependent on launch parameters, hence it is not ﬁxed. This observation led to the building of a regression model for global memory latency which computes observed latency based on launch parameters. This will ensure that based on the launch conﬁguration, the latency value will vary from the lowest to the maximum observed latency.
+54
+
+3.3. MEMORY INSTRUCTIONS
+
+Table 3.3: Latency computation of global memory access instructions for Tesla K20 GPU
+
+Stride Interval nT_b*nB <4096 4096<nT_b*nB <24576 24576<nT_b ∗ nB <991232 991232<nT_b*nB <2203648)
+
+Global Load/Store Latency L = 0.02828 × nT_b × nB + 220 L = 0.004780 × nT_b × nB + 251.7 L = 0.0001679 × nT_b × nB + 307.8 L = −0.00002529 × nT_b × nB + 501.8
+
+Table 3.4: Evaluation of Model for latency of global memory access instructions
+
+MSE RMSE R-Square RSS
+
+RSE P-value
+
+22.95 4.79 0.99
+
+32801.69 4.80 2.20e-16
+
+Data Collection: We launched the microbenchmark discussed earlier repeatedly to record global load/store instruction latency by varying its launch parameters (nB, nT_b). We ensured that we measured the average time taken to execute one instruction per thread by varying the number of threads scheduled. While recording the latency, we disabled the caching of data for memory instructions. We collected a signiﬁcant number of datapoints to represent the wide range of latency values observed. Each data point was collected by taking an average of recorded time.
+
+1. Recorded latency values were plotted against the stride of access (nT_b × nB). As seen in Figure 3.2, the plot is non-linear. There are three breakpoints, each delimiting two linear relationships.
+2. A piecewise linear regression model of the form L = a · nT_b · nB + b ﬁts the best. Table 3.3, presents the four equations for the linear regression model.
+
+The proposed latency model’s evaluation metrics were MSE: 22.95, RMSE: 4.79, RSquare: 0.99, RSS: 32801.69, and RSS: 4.80. The R-square value (0.9967) observed for this model shows the goodness of ﬁt for this data.
+55
+
+CHAPTER 3. MICROBENCHMARKING
+
+3.3.4 Shared Memory Access Latency
+
+Shared memory is a non-cached memory shared amongst threads within a block. Its
+
+latency is much lower than global memory instructions because of its chip location (each
+
+SM has a dedicated shared memory space). To avoid long latencies of global memory
+
+access, application developers can move the data into and out of shared memory from
+
+global memory before and after operation execution. For shared memory, accesses are
+
+issued individually for each thread. We use the pointer chasing approach shown in
+
+Algorithm 3 for shared memory access latency. The approach is similar to the global
+
+memory pointer chasing method reported in Algorithm 2. Here we declare a shared
+
+memory array (shdata[]) which is ﬁrst initialized with stride values. In line 8, pointer
+
+chasing is utilized to ensure only one instruction per thread is executed.
+
+Shared memory is divided into equally sized memory modules called banks which
+
+are accessed simultaneously whereas global memory is accessed in strides. The latency
+
+reported for global memory is at least 100x higher than shared memory. The variations in
+
+the reported latency values for shared memory are very low compared to the variations
+
+in the global memory. Therefore we did not employ any regression model for shared
+
+memory. Results of shared memory latency recorded across architectures are presented
+
+in Table 3.2.
+
+Algorithm 3 Shared Memory Kernel Algorithm
+
+1: procedure SMMEMLATKERNEL(d_dummy, d_array)
+
+2: Declare shdata[] as shared memory array
+
+3: for i=0 to N do
+
+4:
+
+shdata[i] = d_array[i];
+
+5: start_time = clock();
+
+6: initialise j=0;
+
+7: for it=0 to iteration do
+
+8:
+
+j=shdata[j] ;
+
+9: end_time = clock(); 10: d_dummy =j; 11: latency = (end_time - start_time) / iteration
+
+average memory latency
+
+56
+
+3.4. KERNEL LAUNCH OVERHEAD
+3.4 Kernel Launch Overhead
+A CUDA kernel execution time is impacted by the time to launch a kernel in a GPU, deﬁned here as the kernel launch overhead. This is the time consumed just before and after executing the kernel instructions. We have constructed an empirical model to characterize this overhead. We ran an empty kernel (no instructions) with different conﬁgurations(number of threads, threads per block).
+1. We recorded the execution time of this empty kernel by changing its launch parameters (number of threads, number of blocks per thread). Resios et al. [59] claimed that kernel launch overhead could be modeled with constants since its value does not change. However, we discerned that the execution time of an empty kernel increases with an increase in the number of threads being launched.
+2. We built three statistical models to reproduce its behavior and assessed them using the R-square goodness of ﬁt (shown in Table 4.4). The higher value of the R-square ensures that the model describes the data best.
+3. The plot of the linear regression model (for Tesla K20 data), which gives maximum R-square (0.9877), is depicted in Figure 3.3. Kernel Launch Overhead ( l_overhead ) model for Tesla K20 GPU is 0.00002 · nB · nT_b + 1.4489. Similarly, we built the kernel launch overhead model using linear regression for each GPU architecture under study.
+The code snippet of Kernel Launch Overhead is available in Appendix 8.
+3.5 Discussion
+We have designed microbenchmarks for the NVIDIA GPU, which can be used for optimization, simulation, and analysis of GPU software. Microbenchmarking provides
+57
+
+CHAPTER 3. MICROBENCHMARKING
+Figure 3.3: Kernel Launch Overhead Figure 3.2: Piece-wise model for global instruction latency a deeper understanding of the execution of computing instruction by quantifying its performance in latency, throughput and peakwarps metrics. Although there are existing studies on microbenchmarking GPU, we have made novel contributions in presenting characteristics of computing and memory instructions. One of the novelty of this work is reporting the change in throughput and peakWarps with different values of ILP. This change in throughput and peakwarps values is utilised for building a performance model in Equation 4.3 of Chapter 4 for computing instruction delay. We have also proposed a novel model for calculating global memory latency which includes microbenchmarking and piece-wise linear regression, which is not carried out in any other study to the best of our knowledge. This model utilises pointer chasing approach for microbenchmarking. A piecewise linear regression model is ﬁt over this results to ensure that the global memory latency is neither overestimated and not underestimated. We also computed kernel launch overhead which inﬂuences the performance of a GPU application as well.
+Our observed results were validated against other existing studies in microbenchmarking [114, 115]. Computing instruction and shared memory instruction latency values equal other micro benchmarking studies. Throughput values were found to be fairly close to the theoretical ones for compute capability 3.5, as mentioned in [32]. The
+58
+
+3.5. DISCUSSION microbenchmarking model developed in this Chapter is utilised for predicting performance and power prediction in Chapters 4 and 5, respectively. Memory instruction execution is impacted by factors such as uncoalesced accesses and data races. We have not considered them in latency calculations. In the future, we would like to explore microbenchmarking all types of memory instructions in GPU memory hierarchy, focusing on various access factors affecting memory instruction performance.
+59
+
+CHAPTER
+
+4
+MODELLING GPU PERFORMANCE
+M icrobenchmarking approach discussed in Chapter 3 provides the foundation for the execution time prediction model of a GPU kernel. Using the microbenchmark results, we build an analytical model to predict the execution time of a GPU kernel by analyzing the intermediate PTX code of a CUDA kernel, without the need of executing it. Performance prediction involves estimating the execution time of executable software or estimating values of other performance factors of a computing machine, such as instruction throughput, cache misses, and so on. In this thesis, we use the term “performance prediction” to imply the predicted execution time of a GPU kernel. In the absence of the internal details of a GPU, we build an abstract GPU model with characteristics gathered from static analysis, one time dynamic analysis and vendor published details which are essential for modelling GPU performance. This abstract GPU model enacts as the actual GPU hardware for referring features in computing certain performance parameters (e.g. instruction latency). It is also useful in building architecture-agnostic model since it helps to study and present common properties 61
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+between multiple GPU architectures. We now describe this abstract GPU model with which we present the performance prediction model.
+4.1 Abstract GPU Model
+For the purpose of estimating the execution time of a kernel, we represent a GPU as
+G P U = 〈R,A , T,P T X, Rmap,L ,T P ,BW ,P 〉
+• R denotes the following set of GPU resource types for each SM i) SP: single precision cores ii) W S: warp schedulers iii) SFU: special function units iv) DPU: double precision units v) LSU: load-store units.
+• A denotes the following set of attributes of a GPU: i) accesssz: Represents the number of bytes a GPU accesses for every memory instruction ii) nSM: Number of Streaming Multiprocessors iii) nT h_smM: maximum number of threads per SM v) L2_sz: L2 cache size vi) νgpu: GPU clock frequency and vii) νmem: memory clock frequency (viii) re g_bM: Total number of registers available per block (ix) shm_bM: Total number of bytes of shared memory available per block (x) nBM: Maximum thread blocks per SM (xi) wSMM : Maximum number of active warps on an SM (xii) Szw : Warp size represents number of threads per warp (xiii) Szgl : Number of bytes in a single global memory transaction
+• T is the set of all instruction types, namely {Compute (C), Global Memory (Gm), 62
+
+4.2. STATIC ANALYSIS
+Shared Memory (Sm), Miscellaneous (M)}. Each instruction type is associated with a resource. • P T X denotes the set of PTX instructions that can be obtained from the NVIDIA GPU documentation. Each PTX instruction is associated with an instruction type. • Rmap : P T X → R uniquely maps an instruction to a resource type. • L : PTX → N is the latency function that associates a latency of a PTX instruction as a positive integer l. Instruction latency stands for the number of clock cycles taken by an instruction to complete its execution. • T P : Represents throughput of computing, global and shared memory instructions. • BW : Represents bandwidth for global load and store transfers of memory instructions • P : Denotes a set of overheads and penalties, some based on T P . We consider the following: i) l_overhead: Kernel Launch Overhead function ii) gm_penalt y: Global Memory Penalty function iii) sm_penalt y: Shared Memory Penalty function and iv) cm_penalt y: Cache Miss Penalty function
+This model is constructed once for a particular GPU architecture. Table 4.1 presents the notations used for model attributes.
+4.2 Static Analysis
+In order to collect various execution features of a CUDA kernel, we perform a static analysis of a CUDA kernel by compiling the code into a PTX format[109] using the nvcc compiler. Subsequently, we construct a control-data ﬂow graph for each kernel code in PTX representation. Here, we model each basic block [116] as a data ﬂow graph
+63
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+Table 4.1: Notations used for model attributes
+
+Dynamic Analysis Attributes
+
+Feature
+
+Source of computation
+
+Latency L
+
+microbenchmarking
+
+Latency for global memory access
+
+Linear regression Model
+
+l_overhead
+
+Linear Regression Model
+
+gm_ p enal t y
+
+Exponential Model
+
+sm_ p enal t y
+
+Exponential Model
+
+cm_ p enal t y
+
+Parameterised Equation
+
+Hardware Attributes
+
+Device attributes A
+
+Device Query
+
+Number of instances for each resource r ∈ R Architecture Documentation
+
+Inputs
+
+nB: Number of thread blocks
+
+User Input
+
+nT_b: Number of threads per block
+
+User Input
+
+nLoop: Number of loop iterations
+
+User Input
+
+re g_t: Number of registers per thread
+
+NVCC Compiler
+
+shm_b: Shared memory per block
+
+NVCC Compiler
+
+G = 〈V , E〉 where each vertex v ∈ V denotes a PTX instruction and a directed edge e : u → v denotes that the computation of v is data-dependent on u. The edge e is labeled with the latency value L (u). Furthermore, for each v ∈ V , the Rmap(v) function can be used to get the corresponding resource type.
+The control-data ﬂow graph [116], used to model the entire kernel, is represented as Gcf g = 〈C, E〉 where each node B ∈ C is a basic block associated with a data-ﬂow graph[117–119]. Since the edge of a CDFG represents a control ﬂow, the edge is not labelled with any latency information. A back edge of a CDFG represents a loop. A back-edge is annotated with the loop iteration count nLoop. Since the CUDA program follows a structured programming style, it is possible to convert a CDFG as a set of regions [120] where each region is a set of basic blocks, and a back-edge in a CDFG becomes a self-loop of a loop-region [120]. Such a transformation is very common in any compiler during code generation. Hence we do not elaborate on this any further.
+The static analysis phase is illustrated with an example in Figure 4.1.
+64
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+Figure 4.1: Static Analysis of CUDA Code We proposed two approaches for modelling GPU performance. The ﬁrst approach is using parameterised equations to capture Instruction Level Parallelism (ILP) and Thread Level Parallelism (TLP). Second approach for performance modelling is inspired by resource allocation. In the following section, we present the ﬁrst approach in detail and then elaborate on the approach for building a resource allocation based model for execution time prediction.
+4.3 Modelling GPU Performance using ILP & TLP
+As discussed in the literature survey (refer to Chapter 2), parallelism is an important factor that inﬂuences the performance [59] of a GPU. For all types of instructions, increasing parallelism (either by increasing the number of threads or the number of independent instructions) leads to an increase in performance bounded by hardware constraints. Resios et al. [59] demonstrated that performance increases linearly with parallelism through experimental study. They demonstrated this phenomenon with transfer overhead, memory bandwidth, and instruction throughput.
+65
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+Parallelism in GPU is achievable through two factors: instruction level and threadlevel parallelism. At the instruction level, parallelism is achieved by having independent instructions within a thread that hide latency to achieve better performance. At the thread level, with the increasing number of threads, there are more independent instructions hence an increase in performance till the hardware limit is reached. In the past, Resios et al.[59] tried to model GPU behaviour with the parallelism modelling approach. However, they have implemented it on Fermi architecture along with a very naive scheduling algorithm.
+This observation has motivated us to investigate the role of Instruction Level Parallelism (ILP) and Thread Level Parallelism (ILP) in determining a GPU application’s performance. Accordingly, we plan to model ILP and ILP using parameterised equations to predict the performance of GPU applications. The details of this approach are presented in Section 4.3.1.
+
+4.3.1 Proposed Model
+
+We present an analytical model for predicting the execution time of CUDA kernel using static analysis of PTX code as shown in Figure 4.2, involves two main phases:
+1. Calculating the execution time of a single thread by adding up individual instruction delays using Delay Computation Algorithm (DCA).
+2. Calculating the overall execution time of the kernel by modeling the scheduling of threads on Streaming Multiprocessors (SM)using GPU Scheduling Algorithm (GSA).
+Execution Time Model proposed in this work is modelled as a function of these two phases:
+
+(4.1)
+
+tkernel = f (DC A,GS A)
+
+In the ﬁrst phase, we gather the microbenchmarking details for each instruction type along with hardware characteristics. After analyzing the PTX code and building
+66
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+a Control Flow Graph (CFG), these details are used for calculating the delay of each instruction(di) using ILP, TLP, instruction features (latency, throughput,peakwarps) and instruction speciﬁc features (memory bandwidth, bank conﬂicts, coalescing). The total delay for the kernel(dk) is measured by using a delay calculation algorithm that utilizes di and CFG.
+To execute the threads launched by a kernel, NVIDIA scheduler schedules these threads in batches of waves. The vendors do not disclose the way this scheduling is done. We proposed a simple scheduling algorithm that constitutes the next phase of this work.
+The second phase uses total kernel delay for one thread and simulates the execution of GPU by scheduling the threads to predict kernel execution time(tskernel). Kernel launch overhead is added to the execution time computed by this scheduling algorithm. We also calculate the time penalty for each memory bottleneck (b_penalty) and add it to the total predicted execution time. b_penalty is summation of sm_penalt y and gm_penalt y.
+
+(4.2)
+
+tkernel = tskernel + l_overhead + b_penalty
+
+All the components of these two phases are discussed in detail in section 4.3.2 and 4.3.3.
+
+4.3.2 Delay Computation Algorithm
+In actual GPU execution, PTX code has to pass-through a few more intermediate optimization steps before execution on GPU. However, we do not have access to this optimized code. Hence, we dissected this PTX code to gather attributes and ﬂow of the program which is supplied as the input to the scheduling model.
+67
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+Figure 4.2: Proposed Execution Time Prediction Model 4.3.2.1 Algorithm for Computing Instruction Delays GPU Scheduling model involves calculating the number of GPU clock cycles it would take to execute a single thread entirely. A simplistic model of a kernel program is a sequence of PTX instructions all beginning with the operation name, and a list of register operands if the instruction makes use of operands. The sequence of instructions is read from the PTX code, and one by one, the delay of each instruction is computed using a parametric model proposed by Andreas et al. [59]. Parametric equations from this thesis which are used in this model are discussed in the following sections.
+While the base model remains similar, it requires a signiﬁcant modiﬁcation to have an accurate estimation of the execution time. Speciﬁcally, we use the base model only to compute instruction delays and then construct a scheduling simulation to calculate the total execution time. In the scheduling algorithm, for computing the number of cycles, we
+68
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+assign the instructions to each dispatching unit serially. However, if there is dependent instruction, it is considered in the next cycle. For brevity and completeness, we have discussed the base model used to compute instruction delays in algorithm 4.
+
+4.3.2.2 Instruction Level Parallelism
+
+Within a basic block, the instruction level parallelism factor, which is the effective number
+
+of instructions per cycle, is calculated after traversing the block of instructions to count
+
+the number of instructions that can be executed independently. The registers used in
+
+the
+
+instructions
+
+are
+
+compared
+
+to
+
+detect
+
+dependencies
+
+between
+
+them.
+
+Here
+
+ILP
+
+=
+
+ninst ncycles
+
+,
+
+where ninst is the total number of instructions executed in the basic block, and ncycles is
+
+the actual count of the number of independent execution cycles for computing number
+
+of cycles we allot the instructions to each dispatching unit serially. However, if there is
+
+dependent instruction, it is considered in the next cycle.
+
+4.3.2.3 Thread Level Parallelism
+The instructions in the kernel are taken from the basic block list constructed in the PTX analysis stage. The value of the maximum number of active warps on an SM wSMM is a hardware upper limit. Since it takes into account the actual kernel launch parameters, this can be taken as the initial thread-level parallelism TLP. This is done because the number of blocks launched by a kernel is usually enough to constitute a full wave. For more accuracy, this can be dynamically recalculated at every stage, but in most cases, the hardware limit can be taken as TLP = wSMM. TLP is the number of active warps on an SM. It is a crucial factor to be considered while estimating the execution time of all the instructions.
+69
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+4.3.2.4 Instruction Delay Computation
+
+Some of the parameterized equations used in this work are inﬂuenced by the GPU
+
+performance prediction model of Andreas et. al[59]. They have successfully demonstrated
+
+these equations for Fermi architecture. We are tuning these equations by improvising
+
+them for Kepler architecture.
+
+As stated by their approach, if the number of warps is not enough to reach peak
+
+performance, all instructions are executed in parallel, and the latency is hidden because
+
+of the thread parallelism. Once the pipeline of instructions becomes full, the subsequent
+
+warps are required to wait for the cores to be freed, and hence stalls occur. In this case,
+
+an
+
+extra
+
+penalty
+
+factor(
+
+S T
+
+zw P
+
+)
+
+is
+
+required
+
+to
+
+measure
+
+the
+
+effects
+
+of
+
+the
+
+pipeline
+
+stalls.
+
+Our contribution to the approach by Andreas et. al[59] is the use of peakWarps and
+
+throughput calculated using microbenchmarking. Andreas et. al[59] used the theoretical
+
+values for maximum warps per SM and throughput, whereas we computed instruction
+
+delay using the observed values computed using microbenchmarking which improves
+
+the accuracy of the model.
+
+For a compute instruction i, the delay is computed as
+
+(4.3)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+d
+
+c i
+
+=
+
+L I LP ×T LP
+
+
+
+
+
+   
+
+L ILP×TLP×peakWar ps
+
++
+
+S zw TP
+
+i f ILP × TLP ≤ peakWar ps otherwise
+
+Similarly for a memory access instruction i, delay is computed as
+
+(4.4)
+
+
+
+      dmi =
+
+L I LP ×T LP
+
+
+
+
+
+   
+
+L I LP ×T LP
+
++
+
+pm
+
+i f ILP × TLP ≤ peakWar ps otherwise
+
+In the case of memory access requests, serialization occurs once the number of memory
+
+access requests is too high to be fulﬁlled at once by the GPU hardware owing to bandwidth
+
+70
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+and transfer size constraints. Like in the case of computing instructions, a penalty factor (pm) is added to model the serialization effect[59].
+
+4.3.2.5 Memory Access Latency
+
+The penalty of the memory access instruction differs based on whether the access is a global memory access or a shared memory access because the architecture and speeds of both these types of memory are vastly different. Global memory instructions contribute highly to total instruction delay since the number of clock cycles taken by this instruction are maximum amongst all instructions. In the case of global memory access, the penalty of global memory instruction is given by:
+
+(4.5)
+
+gm_penalty = Szgm × c BWg
+
+Coalescing factor, c depends for every benchmark depending upon stride of access which is not possible to analyze from the PTX code. We observed that memory latency of global instruction changes with the change in the stride of access. Based on this observation, we have built a regression model based on global load/store instruction latency against stride of access. This model is explained in Chapter 3 in detail.
+In case of shared memory access, penalty is computed as
+
+sm_penalt y = Szw × Szsm + nbc × size
+
+nsb × BWs
+
+BWs
+
+where Szsm is the number of transferred bytes to/from shared memory. A shared memory is divided into a limited number of banks nsb. The design of shared memory is such that consecutive accesses to the same bank are serialized and cannot be executed in parallel. The number of bank conﬂicts(nbc) is also difﬁcult to model by analyzing the PTX code and will be considered in the future work. We observed latency of 47 cycles for shared memory access instruction using microbenchmarking.
+
+71
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+4.3.2.6 Delay Calculation Algorithm
+
+Instructions on GPU cores execute in SIMT fashion. If there is branch divergence within a warp, each of the instructions in both branches is traversed, and the threads which do not take a branch remain idle during this time, while the remaining threads execute the instruction.
+To ﬁnd the instruction count, an assumption is made that at least one thread takes each branch in every warp, i.e., no branch remains untraversed during the execution of a warp. The total instruction count is obtained by summing up the instructions in sequential basic blocks. If a loop is detected, the instruction count of the looped path is multiplied by the number of iterations, and the computation continues. So, the total delay of the kernel is the sum of delays of all the basic blocks in the kernel. We consider this as the number of cycles that a single thread (or warp) takes to execute on the GPU.
+The execution time of a single thread, tthread, is given by
+
+(4.6)
+
+tthread
+
+=
+
+dk νgpu
+
+where the overall delay of kernel(dk) is dk = insts di.
+
+Algorithm 4 Delay calculation algorithm
+
+1: procedure DELAY CALCULATION(G P U , L , T P ) dk = 0 2: for each BasicBlock in K ernel do
+
+3:
+
+dB = 0
+
+4:
+
+for each I nst in BasicBlock do
+
+5:
+
+Calculate di
+
+6:
+
+dB = dB + di
+
+7:
+
+if BasicBlock has a loop then
+
+8:
+
+dB = dB ∗ ni
+
+9:
+
+dk = dk + dB
+
+10: return dk
+
+72
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+
+4.3.3 GPU Scheduling Algorithm
+Since a GPU core can execute one thread at a time, the number of threads that can simultaneously be launched on a GPU is limited by the total number of cores. More threads may be available for execution, but these threads must wait until the cores become available for them to execute. Because these threads wait, they are effectively serialized. A “wave” in our model is the number of threads required to occupy all the cores of the GPU within the limits of resource constraints like shared memory and register requirements. All the threads can be grouped into such waves. Counting the number of such waves leads to the count of the number of serialized sets of threads, which is denoted by the parameter nserial.
+
+4.3.3.1 Execution time per thread
+
+The ﬁrst step to estimate the execution time is to calculate the number of GPU clock
+
+cycles required by a thread to execute the kernel. This relies on the premise that each
+
+instruction takes different clock cycles, which is again dependent on several microarchi-
+
+tecture hardware factors and program characteristics. The execution time of a single
+
+thread say tthread, is given by:
+
+(4.7)
+
+tthread =
+
+i∈insts di νgpu
+
+where the value of di depends on the type of instruction.
+
+4.3.3.2 Handling Memory Bottlenecks
+Memory bottleneck gives a signiﬁcant contribution to the error of execution time estimations. It is because memory bottlenecks not only depend on the program but also in the state of the hardware system. Bottlenecks in the performance of a program can be analyzed with the theoretical approach based on an in-depth understanding of the scheduling algorithm. We incorporated one such approach by Luo et al. [60] in this model.
+73
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+It calculates a parameter MPD or memory access parallel degree that represents the maximum warp number that can be executed in parallel at a time. Using MPD, we can calculate the time penalty for each bottleneck and add it to the total predicted execution time. The global memory bandwidth limits memory transfer speed. So, if too many warps perform the memory operation, due to limited bandwidth some of the warps will need to wait till the bandwidth become available. Hence this kind of execution will be a serial execution. In order to calculate the upper limit on the number of warps that can execute at the same time, we computed per warp memory bandwidth. Then we obtained the MPD by dividing the GPU bandwidth by the bandwidth of all the warps in execution. Using MPD, we can get the time penalty of the bottleneck which is added to the total execution time at every occurrence of the bottleneck.
+
+4.3.3.3 Parameters used in scheduling algorithm
+
+The kernel launch parameters, i.e. the number of blocks (nB) and the number of threads
+
+per block (ntb), must be given to the scheduling model. The total number of threads
+
+launched is calculated from the kernel launch parameters by nT = ntb ∗ nB, and a
+
+number
+
+of
+
+warps
+
+per
+
+thread
+
+block
+
+is
+
+given
+
+as
+
+nwb
+
+=
+
+ntb S zw
+
+.
+
+All
+
+threads
+
+of
+
+the
+
+same
+
+thread
+
+block are executed in the same SM. Assuming a balanced load scheduling model, each
+
+SM in the GPU gets an approximately equal number of blocks to execute. So the number
+
+of blocks assigned per SM is obtained by equally dividing the blocks among all available
+
+SMs
+
+i.e.
+
+nT h_sm
+
+=
+
+nT m tS M ∗nS M
+
+.
+
+The
+
+maximum
+
+number
+
+of
+
+blocks
+
+that
+
+can
+
+execute
+
+on
+
+an
+
+SM in one wave is computed using maximum blocks per SM by nBM = nT h_sm/nSM.
+
+4.3.3.4 Algorithm for scheduling threads
+CUDA provides an abstraction over how the execution of threads occurs. When it comes to simulating the GPU, terminology differs from that of program launching parameters. In this section, we will discuss the simulation algorithm in terms of the basic unit of
+74
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+execution i.e., warp. Now that the delay information is obtained, the blocks must be scheduled on the GPU such that the overall time can be estimated. The simulation algorithm takes the GPU hardware speciﬁcations and the limitations of block count reported by the CUDA Occupancy Calculator as inputs and calculates the value of nserial in order to determine the overall execution time. The warp scheduler in a GPU schedules one instruction from each of the threads in a warp to execute in parallel. This is modeled by assuming that an instruction I nst is executed completely on all warps before the next instruction is issued to all warps. In this manner, all the instructions are executed one by one in all warps. However, this sufﬁces to calculate overall execution time.
+We have assumed that one instruction executes per-cycle for all the benchmarks. This assumption is made after proﬁling benchmarks and observing its Instruction Per Cycle (IPC) value to be between 0.8 and 1.2. The number of instruction issue cycles (nic) for a particular benchmark is derived from the number of warps issuing instructions per cycle and the number of warps per block. nic is then used to get the execution time per thread (tthread) by multiplying it with the tthread. The blocks are allotted to the GPUs by dividing them in a set of warps till the hardware limit of maximum warps per SM(mwSM) is reached for each SM. This is one wave of allocation. So, a maximum of mwSM ∗ nSM blocks are allotted in one wave. This continues until all the warps to be scheduled are executed.
+The simulation algorithm is given in Algorithm 5. In each wave, the execution time is calculated by a product of the maximum number of blocks scheduled(numblocksRound) by delay for one thread. The total execution time is the sum of individual wave’s execution times. After all possible full waves are executed the execution time of any remaining blocks is added to the calculated execution time. The last wave is not a full wave as they are not enough blocks to occupy all the SMs. In the end, total execution timetkernel is computed by adding kernel launch overhead and memory bottleneck penalty to execution
+75
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+time computed by the scheduling of threadstskernel in line 21 of the algorithm.
+
+Algorithm 5 GPU Scheduling Algorithm
+
+1: procedure SCHEDULER(G P U , dk)
+
+2: tskernel = 0
+
+3:
+
+nic
+
+=
+
+nTb ncSM
+
+4:
+
+tthread
+
+=
+
+dk νgpu
+
+5:
+
+tthread = tthread ∗ nic
+
+6: for each T hreadBlock do
+
+7:
+
+numblocksRound = 0
+
+8:
+
+currentSM = 0
+
+9:
+
+SM counters[0..numSMs] = 0
+
+10:
+
+while numblocksRound <= nBM do
+
+11:
+
+SMcounters[currentSM] = SMcounters[currentSM] + 1
+
+12:
+
+numblocksRound = numblocksRound + 1
+
+13:
+
+if currentSM == numSMs − 1 then
+
+14:
+
+currentSM = 0
+
+15:
+
+else
+
+16:
+
+currentSM = currentSM +1
+
+17:
+
+tskernel = tskernel + maximum(numblocksRound) ∗ tthread
+
+18: tkernel = tskernel + l_overhead + b_penal t y 19: return tkernel
+
+4.3.4 Experimentation Details & Data Collection
+The proposed model is implemented using Java. Apart from PTX code as the primary input, the model takes in conﬁguration ﬁles for the GPU hardware characteristics and some kernel-speciﬁc parameters which cannot be predicted (launching parameters, loop iterations) but are known to an application developer. The ratio of the number of active warps to the maximum allowed number of warps on an SM is known as the occupancy of each SM. We used NVIDIA’s CUDA Occupancy Calculator [121] to get the maximum number of blocks and warps which are taken as input for the model, as these hardware limits are required during the simulation phase.
+This work was implemented for the NVIDIA Tesla K20 GPU which consists of 13 streaming multiprocessors. Each SM of this Kepler architecture features 192 single-
+76
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+precision CUDA cores, 32 load/store units, 32 Special Function Units (SFUs), 64 doubleprecision units, and four warp schedulers (each warp scheduler has two dispatch units). The execution time of a kernel greatly depends on the underlying hardware characteristics of the GPU. NVIDIA’s CUDA SDK includes a deviceQuery program which, on execution, reports a list of the hardware characteristics of the GPU being used. Some parameters are obtained from the speciﬁcations of the GPU[122]. The CUDA SDK also includes a bandwidthTest program which is repeatedly executed to ﬁnd the average global memory bandwidth.
+4.3.5 Results
+Results are shown for this proposed model by analyzing and scheduling 45 benchmark kernels. These benchmarks are from CUDA toolkit[43] and Rodinia [123]. Benchmarks can be classiﬁed into popular parallel dwarfs based on their functionality. The predicted execution time is compared against the actual execution time of kernels. The actual execution time for each kernel is obtained by running them on the Tesla K20 GPU using CUDA events. The mean absolute error obtained is 26.86%. The plot of actual vs. predicted execution time for these benchmarks is shown in Figure 4.3. R square value for this regression plot is 0.8245, and the RSS value is 0.928. The results for the benchmarks under study are presented in Table 4.2.
+4.3.6 Classifying results with respect to parallel dwarfs
+Parallel dwarfs represent the pattern of computation and communication [1]. 13 Dwarfs were proposed as representatives of parallel applications for investigating parallel programming models as well as architectures. Analysing the results to know which type of kernel patterns prediction results are precisely close would be insightful. This could pinpoint the issues we need to investigate further.
+77
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+Table 4.2: Results of GPU Scheduling Algorithm
+
+Benchmark
+Binomial Options Black Holes Breadth First Search Breadth First Search Breadth First Search CFD CFD CFD CFD CFD CFD CFD Clock Convolution Seperable Convolution Text Convolution Text Fast Walsh Transform Gaussian Gaussian Gaussian Gaussian K means K means LUD LUD Matrix Multiplication Merge Sort NW NW Particle Filter saxpy Scan Shﬂ_scan Sobol Qring Sobol Qring Srad Stereo Transpose Transpose Transpose Transpose Transpose Transpose Transpose Vector Addition
+
+Kernel
+BinomOpt BlackScholes BFSv1_65536 BFSv1_4096 BFSv1_1MW CFDFlux_193K CFDTimeStep_Missile CFDTimeStep_193K CFDInit_Missile CFDInit_193K CFDTimeStep_97K CFDStepF_193K Clock ConvS_R ConvT_R ConvT_C FWT_M GaussF2_2048 GaussF2_4096 GaussF1_2048 GaussF1_1000 KmeansInvert KmeansPoint LUDPeri LUDDiag MatrixMul_200 MergeMS_generateSample NW2 NW1 ParFilt_Norm Saxpy scanExclusiveShared shﬂ_initimage QR_inv QR_QRNG Srad1 Stereo Tpose1_shared memory copy Tpose0_simple copy Tpose2_Naive Tpose7_diagonal Tpose6_ﬁne-grained Tpose3_coalesced Tpose4_optimized VectAdd
+
+Execution Time (Actual) 5541.7 544.75 60.1 47.6 119.9 613.2 119.8 106.72 59.58 58.66 60.54 61.06 49.7 1657.22 730.37 621.41 799.42 1355.52 5365.5 334.144 45.024 7715 2981.41 55.772 52.5 539.8 3310.6 48.54 43.81 368.67 95.968 433.89 84.54 156.09 496.89 81.952 2002.4 42.465 101.12 101.38 86.75 78.3 83.26 83.26 2.64
+
+Execution Time ( Predicted ) 4967 814.83 52.12 43.07 226.6 355.999 81.44 79.83 54.637 53.89 60.92 96.181 53.692 2422.2 787.6 787.675 775.623 1134.2 4651.41 299.3 43.074 3035.6 1247.89 50.66 47.97 487.872 2830.641 44.87 44.83 330.88 133.14 436.014 88.373 52.424 503.6 66.29 1256.9 42.651 116 129.99 149.46 141.12 154.9 156.89 2.4298
+
+78
+
+4.3. MODELLING GPU PERFORMANCE USING ILP & TLP
+Figure 4.3: Execution Time Prediction Model
+To understand how these dwarfs assist in analyzing results, we classiﬁed these benchmarks into parallel dwarfs[1][14]. The mean absolute error for each dwarf obtained is shown in Table 4.3. It was observed that for Dynamic Programming dwarf which is represented by Needleman-Wunsch (NW) benchmark kernels, the mean absolute error is 4.93% followed by Dense Linear Algebra dwarfs(e.g., Matrix multiplication, Gaussian elimination). Dynamic programming dwarfs are memory latency limited whereas Dense Linear Algebra is computationally limited. Kernels represented by Sparse linear algebra are bound by both compute and memory and show a mean absolute error of 29.41.
+Spectral method dwarfs(e.g., Fast Walsh Transform), which are bounded by memory latency, have the highest mean absolute error of 39.46%. All other dwarfs considered in this work are memory bound except Monte Carlo, which is problem dependent. With this analysis, we claim that our proposed model works better for computationally bound kernels than memory-bound kernels.
+79
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+Table 4.3: Dwarf and its Mean Absolute Error
+
+Dwarf Unstructured Grid Structured Grid Spectral Method Sparse Linear Algebra Monte Carlo Graph Traversal Dynamic Programming Dense Linear Algebra
+
+No. of Kernels 9 6 1 2 3 3 2 19
+
+Mean Absolute Error 29.07% 26.58% 39.46% 29.41% 33.88% 26.91% 4.93% 26.47%
+
+4.3.7 Limitations of proposed algorithm
+As discussed earlier, predicting the execution time of a CUDA kernel using static analysis with very high accuracy is a hard problem. From this perspective, the observed mean absolute error of 26.86% is a reasonable performance of the proposed model. While investigating the prediction results, we observed that the model underestimates the execution time in many cases as seen in Figure 4.3. When we revisited our approach, we concluded that the usage of parameters such as Instruction Level Parallelism (ILP) as well as Thread Level Parallelism (TLP) in Equation 4.3 and 4.4 makes this delay value too low.
+Considering a fully pipelined architecture with Instruction level parallelism, the delay due to an instruction execution is a small value; however, it may not be as low as the delay computed using 4.3 and 4.4 in some cases. Especially in cases where kernel code is executed with a small number of threads executing an instruction, we still have to wait for this instruction to complete its execution (instruction latency) on the allocated resource if there are not concurrently enough executing threads and instructions. If this latency value is divided by a large value based on the equation, the computed delay is lower than the actual delay. Hence considering the resource allocation approach can help to improve upon this underestimation. In the ﬁrst approach, the model does not consider GPU hardware resource allocation while estimating the delay except for the maximum
+80
+
+4.4. MODELLING GPU PERFORMANCE USING RESOURCE ALLOCATION
+number of parallel executing warps. GPU features resources such as Single Precision Units, Load Store Units, Special Function Units, etc. which cater to different types of instructions. Scheduling the threads and instructions based on details of hardware resource availability associated with the instruction type may be a more intuitive way of designing a more robust and efﬁcient model.
+In the second model we present in the next section, we consider another perspective for modelling Instruction Level Parallelism (ILP) and Thread Level Parallelism (TLP) models by adapting a resource allocation approach. In this approach, we model ILP by modelling the instruction mapping to resources using the possibility of parallel execution of instructions. TLP is modelled using hardware resource constraints on the parallel execution of threads. We reutilize the static analysis of the CUDA code of building basic blocks and control ﬂow graph from the ﬁrst approach. We then schedule these topologically sorted instructions by considering hardware constraints. We present this model in detail in the next section.
+4.4 Modelling GPU Performance using Resource Allocation
+Performance prediction involves estimating the execution time of a computing machine or estimating the execution of other performance factors (such as cache misses). This work uses the term “performance prediction” to imply the predicted execution time of a GPU kernel. The proposed performance prediction model takes a CUDA program as input and estimates its execution time, as explained in Figure 4.4.
+We have re-utilised some of the pre-processing steps and data used in the ﬁrst approach. That is why Figure 4.4 and Figure 4.2 have signiﬁcant similarities since the steps of pre-processing using PTX code by static analysis are identical in both approaches.
+81
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+Both models use kernel launch parameters as user input and employ microbenchmarking data. However, both the models differ signiﬁcantly in modelling memory behaviour and GPU scheduling algorithm approach.
+The overall process consists of three main phases:
+
+1. We compile the program to obtain the corresponding PTX format[109]. We also consider inputs related to kernel launch parameters, namely the grid size (number of blocks) and the block size (number of threads per block). Then a static analysis is performed on the PTX code.
+
+2. We develop a set of models by collecting the hardware details of the GPU under consideration by running the device query application provided by NVIDIA[43] only once. We also run various microbenchmark programs to collect several other parameters required for the performance prediction.
+
+3. We perform scheduling of the PTX code using the above information to estimate the total delay. Computing CUDA kernel execution time (t_kernel) using our proposed model is summarized in the following equation:
+
+(4.8) dtotal =dkernel + l_overhead + gm_penal t y + sm_penal t y + cm_penal t y
+
+(4.9)
+
+tkernel
+
+=
+
+dtotal νgpu
+
+Equation 4.8 sums up the delay due to the execution of instructions and the penalties,
+
+which signiﬁcantly contribute to the total execution time of the kernel. We compute the
+
+simulated delay of a kernel (dkernel) by analyzing the PTX code using Algorithm 6-8 discussed in Section 4.4.2. To this delay, we add launch overhead, global memory penalty,
+
+shared memory penalty, and cache penalty, which signiﬁcantly contribute to the total
+
+execution time of a kernel. These penalties are independent in terms of the resources
+
+being used; hence can be summed up together. We compute these kernel penalty factors
+
+by running microbenchmarks designed as discussed in detail in Section 4.4.5.
+
+82
+
+4.4. MODELLING GPU PERFORMANCE USING RESOURCE ALLOCATION
+Figure 4.4: Proposed performance prediction model
+4.4.1 Analysing loops and branch divergence
+The overall instruction count takes into account a loop estimation (based on the number of iterations) and branch divergence. If a loop is identiﬁed, the instruction delay of the looped path needs to be multiplied with the input provided by the user (number of loop iterations), and the calculation proceeds. We have to rely on users for loop iterations since most of the practical applications are non-afﬁne [124], and the problem of predicting the number of loop iterations of non-afﬁne benchmarks is yet to be solved.
+A GPU SM executes each instruction in a Single Instruction Multiple Thread (SIMT) model, where threads in one warp (set of 32 threads) execute the same instruction. When an instruction is a branch type, all the threads in a warp may not take the same branch, thereby causing a branch-divergence -[125]. Like the loop, it is hard to predict the branch divergence.
+The proposed approach assumes that each branch is taken by at least one thread in every warp. In other words, we assume that no branch remains untraversed during the warp execution. This implies that the thread taking the branch will execute the
+83
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+instruction while the remaining threads will execute a NO-OP. Hence the execution time will be computed based on the longest path in CDFG. However, the ﬁnal instruction delay can be imprecise in case the longest branch is never chosen during a warp execution.
+4.4.2 Scheduling Model
+Using the static analysis data discussed in the previous section, we develop a scheduling model which captures behavioural characteristics of a GPU. Since vendors do not publish crucial insights such as pipeline details, branch prediction, and caching behaviour, we make some assumptions about GPU operation to implement GPU scheduling. First, we discuss resource allocation, which plays a vital role in scheduling.
+4.4.2.1 Resource Allocation
+As mentioned in Section 4.1, G PU comprises of a set of resources R. Algorithm 6 performs scheduling and resource allocation of instruction u in a SIMT fashion to compute the delay. During this process, the algorithm allocates multiple instances of the resource type for u.
+For instance, suppose that an add instruction uses the resource type “single-precision adder”. The algorithm will allocate all single-precision adders (say 32) in the GPU while scheduling the add instruction. In doing so, multiple warps may become active simultaneously if the number of available resources is sufﬁciently large. In reality, the scheduling mechanism and warp management are pretty complex since instructions dispatched for executions can be a mixture belonging to multiple warps. Modeling such intricacies is impossible without knowing the exact scheduling strategy employed by an NVIDIA GPU. We have not modeled such behavior in Algorithms 6-8.
+84
+
+4.4. MODELLING GPU PERFORMANCE USING RESOURCE ALLOCATION
+4.4.2.2 Notion of a Wave The number of threads ready for execution can be more than the maximum number of threads (per SM) allowed in the GPU. In such a case, the proposed scheduler executes the threads in batches. We refer to this batched execution as "waves” in the WORK. One wave of execution in our model implies the number of threads that can launch at a time on a GPU. The execution time observed for one wave is then multiplied by the number of waves launched to obtain the total execution time.
+Figure 4.5: Effect of launch parameters on the performance of kernel To compute the number of waves, we experimented with running a vector addition kernel with different nB (number of blocks) and nT_b (threads per block) values as launch parameters for a Tesla K20 GPU, which has 13 SMs. The result has been depicted in Figure 4.5. We observed, for example, with nB = 15, SM0 gets block 0 and block 13, SM1 gets block 1 and block 14, and the remaining SMs get one block each, irrespective of nT_b values. Intuitively, this implies that the number of waves can be calculated as waves = nB/nSM . Such an approach was also proposed by Kothapalli et al. [57]. However, a closer observation at Figure 4.5 reveals that this intuitive formulation does not hold as explained next. Suppose the K20 GPU takes t units of time to execute 13 blocks (each SM executes one block) of the vector addition kernel. In that case, the GPU should take close to 2t
+85
+
+CHAPTER 4. MODELLING GPU PERFORMANCE
+
+units of time when we attempt to launch 26 blocks if this intuitive computation was to be
+
+reasonably accurate. However, none of the nT_b lines in Figure 3 exhibits this behaviour.
+
+For instance, the actual execution time for nB=5000 is not double the execution time for
+
+nB=2500. Thus, we cannot conclude that in general, if we compute the execution time for
+
+one wave, it can be then multiplied by nB/nSM to get the total execution time.
+
+In the proposed approach, we ﬁrst compute the total number of threads per SM to be
+
+nB ∗ nT_b
+
+scheduled (nT h_Schd) as
+
+. Next, based on the register and shared memory
+
+nSM
+
+requirement, we compute the maximum number of threads per SM (nT h_smM) for one
+
+wave. Using nT h_Schd and nT h_smM, Algorithm 8 computes the number of waves.
+
+In each wave, we use a resource allocation technique for modelling the execution of
+
+threads on a GPU, which is loosely inspired by [126].
+
+4.4.3 Other Assumptions
+There are few other assumptions, listed as follows:
+• The GPU is superscalar architecture; at least one instruction will complete its execution every cycle after the pipeline is ﬁlled[20]. To model this, we have divided the latency of an instruction into pipeline latency (Lpipeline) and instruction latency (L ) during instruction scheduling in line 6 of Algorithm 6.
+• The number of waves depends on the availability of resources required for the type of instruction. Therefore, we compute waves during the scheduling of threads.
+• One block is scheduled on one SM irrespective of the number of threads per block. Once all the SMs are assigned one block each, the next round of assignments will start from the ﬁrst SM. This phenomenon was conﬁrmed with experimentation. To accommodate this behaviour, we compute nTh_schd in line no. 2 of Algorithm 8 by dividing the number of blocks (nB) by the number of SMs (nSM). 86
+
+4.4. MODELLING GPU PERFORMANCE USING RESOURCE ALLOCATION
+
+• It is not possible to simulate the instructions in the actual order that they follow on a GPU since multiple warps are launched one after the other. A warp scheduler can select n warps and dispatches m independent instructions every cycle based on the architectural resource constraints[127]. Hence instruction in multiple warps does not follow a particular order if more than one warp is scheduled. However, implementing this behaviour is extremely challenging. Here, the model assumes that the instructions for one warp are executed completely before the next warp resumes execution as seen in Algorithm 6 line 15, where delay for each instruction is added based on the resource being used.
+
+4.4.4 Scheduling Algorithm
+
+We wish to ﬁnd the optimal order of execution of an instruction for which we implement an algorithm, loosely based on list scheduling [126, 128]. The scheduling honours two constraints, namely:
+
+1. Precedence Constraints: The scheduler uses data-ﬂow graph G associated with a basic block while scheduling operation and ensures that the minimum delay between two nodes with an edge (u, v) is the latency(L (u)) of the node u. The scheduler also honours the control ﬂow across blocks by considering the control ﬂow graph Gcf g of the entire kernel in Algorithm 7.
+
+2. Resource Constraints: Since the GPU computation follows a SIMT model; one
+
+instruction is executed by multiple threads, each on a different data element. Even
+
+when the scheduler can schedule a large number of threads to execute an instruc-
+
+tion, the execution is ﬁnally constrained by the total number of resources available
+
+for that instruction. For instance, if N threads are ready to execute an addition
+
+operation and there are R[SP] number of single-precision cores available (per
+
+SM), the addition will be performed in
+
+N R[SP]
+
+batches. The proposed scheduling
+
+87
+

@@ -1,0 +1,2832 @@
+5870
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+
+EdgeAdaptor: Online Conﬁguration Adaption, Model Selection and Resource Provisioning
+for Edge DNN Inference Serving at Scale
+
+Kongyange Zhao , Zhi Zhou , Member, IEEE, Xu Chen , Senior Member, IEEE, Ruiting Zhou , Member, IEEE, Xiaoxi Zhang , Member, IEEE, Shuai Yu , Member, IEEE, and Di Wu , Senior Member, IEEE
+
+Abstract—The accelerating convergence of artiﬁcial intelligence and edge computing has sparked a recent wave of interest in edge intelligence. While pilot efforts focused on edge DNN inference serving for a single user or DNN application, scaling edge DNN inference serving to multiple users and applications is however nontrivial. In this paper, we propose an online optimization framework EdgeAdaptor for multi-user and multi-application edge DNN inference serving at scale, which aims to navigate the three-way trade-off between inference accuracy, latency, and resource cost via jointly optimizing the application conﬁguration adaption, DNN model selection and edge resource provisioning on-the-ﬂy. The underlying long-term optimization problem is difﬁcult since it is NP-hard and involves future uncertain information. To address these dual challenges, we fuse the power of online optimization and approximate optimization into a joint optimization framework, via i) decomposing the long-term problem into a series of single-shot fractional problems with a regularization technique, and ii) rounding the fractional solution to a near-optimal integral solution with a randomized dependent scheme. Rigorous theoretical analysis derives a parameterized competition ratio of our online algorithms, and extensive trace-driven simulations verify that its empirical value is no larger than 1.4 in typical scenarios.
+Index Terms—Edge intelligence, edge computing, DNN inference serving, online optimization
+Ç
+
+1 INTRODUCTION
+DRIVEN by the burgeoning as well as accelerating convergence of artiﬁcial intelligence (AI) and Internet-ofThings (IoT), we have recently witnessed an unprecedented booming of AI-of-Things or AI-empowered IoT applications. This new trend is known as AIoT [1], which has gained sparking interest from both academia and industrial. To materialize the vision of AIoT, edge intelligence has emerged as an enabling paradigm to address the last mile delivery issue faced by AI [2]. With edge intelligence, dataand computation-intensive AI tasks are pushed from the centralized cloud to the network edges to serve the ubiquitous IoT users and devices in closer proximity. This closer
+ Kongyange Zhao, Zhi Zhou, Xu Chen, Xiaoxi Zhang, Shuai Yu, and Di Wu are with the School of Computer Science and Engineering, Sun Yat-sen University (SYSU), Guangzhou 510006, China. E-mail: zhaokyg@mail2. sysu.edu.cn, {zhouzhi9, chenxu35, zhangxx89, yushuai, wudi27}@mail. sysu.edu.cn.
+ Ruiting Zhou is with the School of Cyber Science and Engineering, Wuhan University, Wuhan 430072, China. E-mail: ruitingzhou@whu.edu.cn.
+Manuscript received 23 November 2021; revised 17 May 2022; accepted 22 June 2022. Date of publication 7 July 2022; date of current version 31 August 2023. This work was supported in part by the National Natural Science Foundation of China under Grants 62172454, 62072344, U20A20159, 61972432, 62102460, 62002397, U20A20177, and U1911201, in part by the Guangdong Basic and Applied Basic Research Foundation under Grants 2021B151520008 and 2021A1515011912, and in part by the Science and Technology Planning Project of Guangdong Province under Grants 2018B030322004 and 2021 A0505110008. (Corresponding author: Zhi Zhou.) Digital Object Identiﬁer no. 10.1109/TMC.2022.3189186
+
+proximity spurs prominent beneﬁts including reduced transmission delay, energy consumption, and wide-areanetwork (WAN) bandwidth usage [3].
+While recognizing the prominent advantages of edge intelligence, we should also note that edge nodes are typically provisioned with limited resources (e.g., low-end and weak CPU/GPU). Such resource limitations deteriorate the performance of state-of-the-art AI models based on deep neural network (DNN) (e.g., VGG [4] and ResNet [5] for computer vision tasks), since the latter is far more resourcehungry and delay-sensitive in AIoT scenarios. To address this performance degradation incurred by the mismatch between resource supply and demand, model compression is widely applied to practical resource-constrained edge deployment [6], [7]. After applying model compression methods, such as model weight pruning and quantization [8], the compressed model is with less number of weights, smaller model size, and thus less resource consumption as shown in Fig. 1. In orthogonal to model compression, application conﬁguration adaption can be also exploited to reduce the resource footprint of DNN inference serving. For computer vision tasks with image input, the resolution of the image can be degraded (e.g., from 720p to 240p as shown in Fig. 1) to accelerate the model inference [9].
+Notably, pilot efforts on edge intelligence have mostly focused on energy-efﬁcient DNN inference serving for a single user or application [10], [11], [12], the problem of edge DNN inference serving to multi-user and multi-application deployment at scale has been largely overlooked. Orchestrating DNN inference serving for multiple users and
+
+1536-1233 © 2022 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See ht_tps://www.ieee.org/publications/rights/index.html for more information.
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5871
+
+ﬁrst relax the integer constraint and regularize the time-cou-
+
+pling term in the long-term problem. Next, we temporally
+
+decompose it into a series of single-shot fractional subpro-
+
+blems that do not involve future information and thus can
+
+be readily solved. To maintain the feasibility of the frac-
+
+tional solution, we further round it to a feasible integer solu-
+
+tion by carefully designing a randomized dependent
+
+rounding scheme. Essentially, at the core of the dependent
+
+rounding scheme, is to compensate each rounded-down
+
+model instance variable by another rounded-up model
+
+instance variable. Since the compensation avoids provision-
+
+Fig. 1. An illustration of application conﬁguration adaption and model ing excessive model instances, the dependent rounding
+
+compression for edge DNN inference serving.
+
+scheme enables a signiﬁcant reduction of the total cost, and
+
+meanwhile maintains the feasibility of the solution.
+
+applications is however nontrivial due to the following dif- Our main contributions are highlighted as follows.
+
+ﬁculties. For each application, its request can be served by multiple DNN models. Take the application of object detection task as an example, its request can be served by DNN model such as YOLO [13], SSD [14], or R-FCN [15], and such different models have a diverse resource-accuracy tradeoff. While for different applications, their requests can also share the same DNN model. For trafﬁc analytic applications such as object counting (e.g., pedestrians, cars, bikes), trafﬁc violations detection (e.g., jaywalking), and collision analysis (e.g., the collision between vehicles and pedestrians), they can share the same model instance (e.g., a container or a VM) for object detection to reduce the resource cost. To balance accuracy improvement brought by different models and resource cost saved by model sharing, how to choose the best model for each application and dynamically provision the number of model instances for each DNN model? Besides, launching a new model instance (e.g., a container or a VM) would incur instance switching cost which is associated with the hardware wear-and-tear. When the request arrival diminishes, destroying an idle model instance does not necessarily improve the cost-efﬁciency, as it would surge the instance switching cost if the request arrival grows shortly after.
+To address the above difﬁculties, in this paper we advocate an online optimization framework EdgeAdaptor for joint conﬁguration adaption, model selection and resource provisioning for cost-efﬁcient edge DNN inference serving at scale. It minimizes the long-term resource cost and cumulative accuracy loss under predeﬁned real-time performance requirements. In particular, such a problem can be formulated as a mixed integer linear programming (MILP). However,
+
+ We cast the joint problem of conﬁguration adaption, model selection, and resource provisioning for edge DNN inference serving as a mixed integer linear programming, which judiciously arbitrates the threeway tradeoff between resource cost, performance (i.e., service latency), and inference accuracy.
+ We propose a regularization-based algorithm to address the challenge of uncertain future information by time-coupling switching cost. Through a carefully designed randomized dependent rounding scheme, the feasibility of the solution is maintained without introducing expensive cloud outsourcing costs.
+ We rigorously analyze and derive a parameterized competitive ratio for our proposed online algorithms, by incorporating the competitive ratio of the online regularization method as well as the rounding gap of the randomized dependent rounding scheme. Extensive experiments driven by realistic workload traces further verify that the empirical value of the parameterized competitive ratio is no larger than 1.40 in typical scenarios.
+The rest parts of the paper are organized as follows. Section 2 reviews the related literature on edge intelligence model inference. Section 3 introduces the system model and problem formulation for cost-efﬁcient edge DNN inference serving at scale. Section 4 presents an online optimization algorithm and we analyze its worst-case performance rigorously in Section 5. Section 6 conducts extensive trace-driven simulations to empirically assess the performance of the proposed online optimization algorithm. Finally, Section 7 concludes this paper.
+
+solving the above MILP problem is rather challenging. On
+
+the one hand, as the switching cost is incurred when launching new model instances, the resource provisioning deci-
+
+2
+
+RELATED WORK
+
+sions are temporally coupled over consecutive time slots. To push the AI capabilities from the centralized cloud to the
+
+This temporal correlation makes the long-term cost minimi- network edge which is in closer proximity to the wide-
+
+zation time-coupling and involving future system informa- spread IoT users and devices, an essential problem is how
+
+tion. On the other hand, even with an ofﬂine setup in which to facilitate low-latency and energy-efﬁcient DNN model
+
+the future system parameters are given beforehand, the inference at edge nodes that are typically limited by both
+
+long-term problem is still proven to be NP-hard.
+
+energy and resource capacity. To answer this problem in
+
+By exploiting the structural properties of the problem, we the positive, Neurosurgeon [17] attempts to partition the
+
+simultaneously cope with the above dual challenges via fus- DNN model layers into two parts and ofﬂoading the more
+
+ing the regularization method for online algorithm design resource-demanding part from the IoT device to the power-
+
+and a dependent rounding technique for approximation ful cloud for inference acceleration. Following Neuro-
+
+algorithm design. In particular, by leveraging the regulari- surgeon, Edgent [10] augments model right-sizing to model
+
+zation method from the online learning literature [16], we partitioning to further reduce the inference latency. By
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+5872
+Notation I ; J ; K; T i; j; k; t AiðtÞ; Li ej; Ej aijk djk; fjk bjðtÞ; ci; sj
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+TABLE 1 Main Notations
+Describtion
+sets of applications, models, conﬁgurations, and time slots indexes of applications, models, conﬁgurations, and time slots workload and average latency requirement for application i in time slot t workload capacity and resource capacity for DNN model j accuracy loss for application i served by model j with conﬁguration k inference latency and resource consumption for model j serving with conﬁguration k instance operational cost, unit cloud outsourcing cost, and switching cost
+
+pre-training a master AI model embedding with multiple formulated as a set of continuous rather than discrete varia-
+
+sizes (each size corresponds to a branch of the master bles, and thus the optimization problem does not necessar-
+
+DNN), Edgent adaptively selects the best model size to opti- ily to be NP-hard. Besides, the DRL method is difﬁcult to
+
+mize the latency-accuracy tradeoff against varying compu- converge during the training phase, especially for continu-
+
+tation resources and network bandwidth.
+
+ous variables with a large action space, which is still an
+
+For model partitioning approaches, the vulnerable wire- open problem at present. Our online algorithm can directly
+
+less network link between the device and the edge server obtain the online decision without the training phase and
+
+may become the performance bottleneck of model inference. provide performance guarantees through rigorous theoreti-
+
+To cope with this issue, the recent works CLIO [11] and cal analysis compared to DRL method. The most related
+
+SPINN [12] further compress the DNN layer corresponds to work to us is probably [23], in which Wang et al. leverage
+
+the partitioning points, and thus reduce the transmission Lyapunov optimization to jointly optimize the video conﬁg-
+
+latency of the intermediate model data transfer between the uration and network bandwidth allocation to balance the
+
+device and the edge server.
+
+three-way tradeoff between accuracy, latency and energy
+
+Different from the above research attempts which consumption. Our work is different from and complemen-
+
+relieves resource mismatch at the model serving side, tary to [23] in at least the following three aspects. First, we
+
+another stream of recent efforts exploit conﬁguration adap- further consider model selection and model sharing to opti-
+
+tion at the application request side to accelerate DNN infer- mize the holistic system cost. Second, unlike [23] assumes
+
+ence. For computer vision-based applications such as video ﬁxed amount of computation resource, we further considers
+
+analytics and image recognition, the application conﬁgura- the problem of dynamical resource provisioning. Finally, in
+
+tion — frame rates and resolution ratio for videos, compres- [23], the challenge of time-coupling is incurred by the long-
+
+sion ratio and frame size for images — can be adaptively term time-averaged latency constraint, while in our work,
+
+optimized to balance the tradeoff between inference latency, the challenge of time-coupling is incurred by the switching
+
+accuracy, and resource quota [18]. For large-scale edge- cost of dynamically resource provisioning. Note that how-
+
+coordinated video analytics, Yang et al. [19] jointly optimize ever, Lyapunov optimization is unable to address the time-
+
+the video conﬁguration and edge resource allocation to coupling term in the objective function and thus is not
+
+maximize the long-term inference accuracy, while satisfying applicable to our problem.
+
+the real-time delay requirement of various video streams,
+
+by applying deep reinforcement learning (DRL). For the real-world implementation, Crankshaw et al. [20] propose a inference serving system with a two-layer architecture, which contains the model selection and the model abstraction to achieve low latencies, high throughputs, and improved accuracy. And Francisco et al. [21] propose a distributed inference serving system, which selects appropriate
+
+3 SYSTEM MODEL AND PROBLEM FORMULATION
+In this section, we present the system model for multi-application and multi-model edge inference serving at scale, and formulate the problem which navigates the three-way tradeoff between inference accuracy, latency, and resource cost. Table 1 lists the main notations in our paper.
+
+model variants for each query with different service level
+
+objectives (SLOs), i.e., latency requirements, to achieve a 3.1 Overview of Edge DNN Inference
+
+trade-off between accuracy, latency and cost.
+
+Serving System
+
+While existing efforts on edge intelligence has mostly We consider a realistic edge intelligence paradigm as illus-
+
+focused on energy-efﬁcient DNN inference serving for a sin- trated in Fig. 2. The edge server which is typically attached
+
+gle user or DNN application, the problem of scaling edge to an access point serves diverse emerging AIoT applica-
+
+DNN inference serving to multi-user and multi-application tions as exempliﬁed by smart retail, intelligent transporta-
+
+deployment has been largely overlooked. Recently, Wu tion and smart factory. These AIoT applications persistently
+
+et al. [22] investigate collaborative DNN inference between sense the surroundings of IoT devices and generate huge
+
+device and edge server for multiple AI services. To mini- amounts of multi-modal data such as streams of videos,
+
+mize the service delay under a time-averaged accuracy audios and images. To extract knowledge from the sensed
+
+requirement, the authors apply DRL method to jointly opti- data, it is required to perform model inference (such as
+
+mize the knobs of task sampling rate selection, task ofﬂoad- VGG [4], YOLO [24] for object recognition in intelligent
+
+ing, and edge computing resource allocation. Our work is transportation). Considering the resource scarcity of the IoT
+
+different from [22], since the resource allocation decision is devices, such DNN model inference service is deployed at
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5873
+
+application conﬁguration adaption [18] is also widely applied
+
+to ﬂexibly navigate the resource-latency-accuracy tradeoff in
+
+edge computing paradigm. For example, for inference request
+
+with image input, the resolution can be adapted (e.g., from
+
+1080p to 480p) to tune the resource consumption, inference
+
+latency and accuracy. While for inference request with video
+
+input, the frame rate can be further adjusted (e.g., from 30fps
+
+to 10fps) to balance the resource-latency-accuracy tradeoff. In
+
+this paper, we use a set K ¼ f1; 2; . . . ; Kg to denote the set of
+
+conﬁgurations can be chosen for each application. Then, to
+
+model the resource-latency-accuracy tradeoff, we use aijk, djk
+
+Fig. 2. An illustration of multi-application and multi-model edge DNN and fjk to denote the accuracy loss, inference latency and
+
+inference serving system.
+
+resource consumption (i.e., the CPU FLOPS) of using DNN
+
+model j 2 J to serve the inference request of application i 2
+
+I with conﬁguration k 2 K.
+
+the edge servers (e.g., Huawei Atlas 500 Edge Server) which For the envisioned edge DNN inference serving system
+
+is equipped with moderate computing capacity and AI as shown in Fig. 2, it also incorporates collaborative model
+
+accelerators such as GPU and NPU (neural processing inference between the edge server and the remote public
+
+units). To fully utilize the expensive edge server resources, cloud, i.e., an inference request can be served either by the
+
+an edge server is typically virtualized into a set of contain- edge server or the public cloud, due to the following consid-
+
+ers or virtual machines (VM) to co-locate multiple DNN erations. First, the price of the edge resource typically ﬂuc-
+
+models to serve diverse AIoT applications.
+
+tuates over time, since the time-varying electricity price
+
+Based on the above setup, we use a set I ¼ f1; 2; . . . ; Ig to dominates the operational cost. This indicates that when the
+
+denote diverse AIoT applications served by the edge server. edge resource price peaks, we can ofﬂoad the inference
+
+Considering the fact that the inference requests of some request to the public cloud for processing. Second, the
+
+diverse applications can share the same DNN model, and arrival of inference requests also ﬂuctuates over time, which
+
+the inference requests of a speciﬁc application can be even may overwhelm the capacity of the edge server. For each
+
+served by different DNN models, we use another set J ¼ inference request ofﬂoaded to the cloud, it is often served
+
+f1; 2; . . . ; Jg to denote the DNN models held on the edge by the most accurate but resource-demanding model, due
+
+server. The model set J contains different types of DNN to the powerful computing capacity of the cloud.
+
+models (e.g., VGG [4], ResNet [5]), as well as model variants
+
+with different sizes (e.g., VGG-16 and VGG-19), as a result of the aforementioned model compression technique in the 3.2 Decision Variables
+
+second paragraph of Section 1. Without loss of generality, to For the edge DNN inference serving system, its primary
+
+capture the system dynamics such as time-varying inference objective is to jointly optimize the inference accuracy, latency
+
+request arrivals, we assume that the edge DNN inference and monetary cost. Towards this goal, it should judiciously
+
+serving system works in a time-slotted fashion within a exploit the model heterogeneity as well as resource heteroge-
+
+large time span of T . Each time slot of t 2 T ¼ f1; 2; . . . ; T g neity (i.e., edge versus cloud) to make the following deci-
+
+represents a decision interval that matches the change of the sions: (i) application conﬁguration adaption, for each
+
+system dynamics. In practice, the length of a time slot (i.e., application type of inference requests, which conﬁgurations
+
+10 minutes) is much longer than a typical end-to-end delay (e.g., the resolution of a input image) it should choose? (ii)
+
+of DNN model inference. Then we use AiðtÞ to denote the DNN model selection, for the inference requests of each
+
+number of inference requests generated by the AIoT appli- application, which set of DNN models should be chosen to
+
+cation i 2 I . For each DNN model j 2 J we assume that serve them? (iii) resource provisioning, for each DNN model,
+
+each DNN model j 2 J is instantiated in a VM or container how many instances should be provisioned for it? We now
+
+on the edge server, and this VM or container running a formulated the above decisions in the following.
+
+DNN model is referred to a DNN model instance. Deter- Joint Conﬁguration Adaption and Model Selection. While it is
+
+mined by the resource capacities of the underlying physical feasible to introduce two independent variables of conﬁgura-
+
+resources (e.g., CPU, GPU and memory), the workload tion adaption and model selection for each inference request,
+
+capacity of each instance of DNN model j 2 J in each time it would greatly complicate our problem. Instead, a more
+
+slot is denoted as ej, i.e., the amount of CPU FLOPS can be straightforward and simple way is to use a joint conﬁguraoffered by an instance of DNN model j 2 J in each time tion adaption and model selection variable xijkðtÞ to denote
+
+slot. Considering the limited amount of the resources on the amount of inference request of application i 2 I and
+
+edge server, we further use Ej to denote the resource capac- with conﬁguration k 2 K to be served by DNN model j 2 J ity, i.e., the maximal number of available instances of DNN at time slot t. Note that this simpliﬁcation beneﬁts from the
+
+model j 2 J on the edge server.
+
+identity of different inference requests by a given application
+
+In serving a speciﬁc inference request, different DNN type. Furthermore, given the potentially huge amount of
+
+models offer varying resource-latency-accuracy tradeoff. inference request arrival AiðtÞ, the decision variable xijkðtÞ
+
+Therefore, for each inference request, we should choose the can be relaxed to a continuous variable. Such relaxation is in
+
+best model to improve the accuracy with low inference consistent with the recent litÀeratureÁ on data center power
+
+latency
+
+and
+
+resource
+Authorized
+
+footprint.
+licensed use
+
+In addition to
+limited to: KAUST.
+
+model selection,
+Downloaded on January
+
+3m0,a2n02a4gaetm12e:3n2t:5[82U5T].CLfreotmxIðEtEÞE¼Xploxreij.kðRteÞst8riic2tiIo;n8sj2aJpp;8lyk.2K;8t2T
+
+be the
+
+5874
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+
+set of joint conﬁguration adaption and model selection variables, then it satisﬁes:
+
+&
+
+XX
+
+X ¼ xðtÞ j
+
+xijkðtÞ
+
+j2J k2K
+
+AiðtÞ and xijkðtÞ ! 0; '
+
+8i 2 I ; 8j 2 J ; 8k 2 K; 8t 2 T . (1)
+
+Here xijkðtÞ AiðtÞ indicates that part of the inference requests can be ofﬂoaded to the cloud.
+Resource Provisioning. We use yjðtÞ to denote the number of model instances launched for DNN model j 2 J at time slot t. Since the resource capacity on edge server is highly
+
+limited, it is impractical to relax the non-negative integer yjðtÞ to a continuous one. Instead we enforce that yjðtÞ 2 f0; 1; . . . ; Ejg, where Ej is the aforementioned maximal numbeÀr of aÁvailable instances for DNN model j 2 J . Let yðtÞ ¼ yjðtÞ 8j2J ;8t2T be the set of feasible resource provisioning variables, then it satisﬁes:
+
+n
+
+o
+
+Y ¼ yðtÞ j yjðtÞ 2 f0; 1; . . . ; Ejg; 8j 2 J ; 8t 2 T .
+
+(2)
+
+3.3 Cost Structure
+
+Given the above decision variables, we are now ready to formulate the overall cost incurred by the edge DNN inference serving system, which includes the edge operational cost,
+
+cloud outsourcing cost and instance switching cost. Edge Operational Cost. Edge service providers rent server
+
+resources to run DNN model instances, and multiple inference requests in the same time slot will be processed con-
+
+currently in a model instance. For an edge server, it is widely recognized that its operational cost is dominated by the energy cost and the amortized capital expenditure [26].
+
+Moreover, since the electricity price in the real-time electricity market typically ﬂuctuates over time, we use bjðtÞ to denote the operational cost of running an instance of DNN model j 2 J at time slot t. It contains the processing cost of multiple inference requests and is jointly determined by
+
+DNN size and electricity price. Then the total edge operational cost in each time slot t is given by:
+
+X
+
+CEOðyðtÞÞ ¼ bjðtÞyjðtÞ.
+
+(3)
+
+j2J
+
+are served by the most accurate model under the highest
+
+application conﬁguration. Here we use ci to denote the
+
+aggregated cost of outsourcing one inference request of
+
+application i 2 I from the edge server to the remote central
+
+cloud. The unit cloud outsourcing cost ci uniﬁes the process-
+
+ing cost (resource usage) of the remote cloud, the transmis-
+
+sion cost (bandwidth usage) and the performance penalty
+
+incurred by the latency of the WAN connecting to the remote
+
+cloud. Measurements by internet giants suggest that there is
+
+the numerical relationship betweePn servPice latency and price [28]. Given the amount AiðtÞ À j2J k2K xijkðtÞ of inference requests of application i 2 I outsourced to the public
+
+cloud from edge server, the total cloud outsourcing cost in
+
+time slot t can be computed by:
+
+" X
+
+# XX
+
+CCOðxðtÞÞ ¼ ci AiðtÞ À
+
+xijkðtÞ .
+
+(4)
+
+i2I
+
+j2J k2K
+
+Instance Switching Cost. Note that when we launch new models instance when updating the instance provisioning decisions, another type of cost which is referred to as instance switching cost would be incurred. Speciﬁcally, launching a new instance in practical systems (e.g., Docker) involves ﬁrst loading the image ﬁle and booting it to a new VM instance, and then loading the model parameters to the instance. This process not only incurs additional delay and energy consumption for preparing resources but also brings hardware wear-and-tear which is often very costly. In practice, the instance switching cost can be on a par with the edge operation cost [29]. We use sj to denote the cost of launching a new instance of DNN model j 2 J , then the total instance switching cost at time slot t is given by:
+
+CItS
+
+ðyðtÞ;
+
+yðt
+
+À
+
+1ÞÞ
+
+¼
+
+X
+
+Â sj yjðtÞ
+
+À
+
+yjðt
+
+À
+
+1ÞÃþ;
+
+(5)
+
+j2J
+
+where
+
+Â yjðtÞ
+
+À
+
+yjðt
+
+À
+
+1ÞÃþ
+
+¼
+
+È max yjðtÞ
+
+À
+
+yjðt
+
+À
+
+1Þ;
+
+É 0,
+
+denot-
+
+ing the number of newly launched instances of DNN model
+
+j 2 J in time slot t. Without loss of generally, we let yjð0Þ ¼ 0. In summary, the overall cost incurred in time slot t in the
+
+system is:
+
+CðxðtÞ; yðtÞÞ ¼ CEOðyðtÞÞ þ CCOðxðtÞÞ þ CItSðyðtÞ; yðt À 1ÞÞ.
+
+(6)
+
+Cloud Outsourcing Cost. As we discussed in Section 3.1, the
+
+edge server itself is unable to serve all the inference request 3.4 Inference Accuracy and Latency
+
+arrival when the latter burst suddenly, or un-economical to Application conﬁguration adaption and DNN model selec-
+
+serve all the inference request arrival when the real-time tion pose a three-way tradeoff among inference accuracy,
+
+electricity price peaks and overweighs the cost of the cloud. latency and resource consumption. Recall that in Section 3.1
+
+In these two cases, the edge DNN inference serving system we use aijk and djk to denote the accuracy loss and inference
+
+can exploit the cloud resource to improve robustness and latency when using DNN model j 2 J to serve the inference
+
+cost-efﬁciency. Following the recent trend on large-scale request of application i 2 I with conﬁguration k 2 K. More-
+
+DNN model inference serving with serverless resource in over, since we assume that the outsourced inference
+
+the cloud [27], we also consider serving the outsourced infer- requests are served by the most accurate model under the
+
+ence request with serverless (e.g., AWS Lambda and Google highest conﬁguration, their accuracy loss is thus zero. Then
+
+Cloud Functions). A salient feature of serverless is that it is the total accuracy loss of all inference request at each time
+
+charged in a “pay-as-you-go” manner, i.e., we pay for the slot t can be expressed as:
+
+actual resource usage rather than the resource occupation
+
+XXX
+
+(like VM). Considering the powerful computing capacity of
+
+AccðtÞ ¼
+
+aijkxijkðtÞ:
+
+(7)
+
+the cloud, we assume that the outsourced inference requests
+
+i2I j2J k2K
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5875
+
+In practice, requests’ latency typically follows the “long-
+
+tail” effect [30], [31], and a predeﬁned hard-deadline for
+
+each request is non-trivial to satisfy, due to the unpredict-
+
+able reliability issues of the underlying hardware platform
+
+as well as the operating system. At the edge, the latency dis-
+
+tribution has a longer tail than the cloud, and it has shown
+
+that given the same latency constraints, the average latency
+
+guarantee is more beneﬁcial to improve CPU utilization
+
+[32]. For different AIoT applications, they usually have dif-
+
+ferent latency requirements. For example, object detection
+
+tasks for dynamic recognition (e.g., pedestrian or vehicle)
+
+often have a high real-time requirement. Therefore, we use
+
+Li to denote the average inference latency requirements of each applications i 2 I in each time slot. Therefore, the
+
+latency constrPaint Pcondition on edge server can be
+
+expressed as
+
+Pj2J Pk2K xijkðtÞdjk
+j2J k2K xijkðtÞ
+
+Li; 8i 2 I . For inference
+
+requests processed by cloud outsourcing, the latency con-
+
+straint is implicitly concluded in the unit cost ci. Speciﬁcally,
+
+applications with a stricter latency requirements have a
+
+higher unit cost.
+
+3.5 Problem Formulation
+By jointly consider the holistic cost, inference accuracy and latency, we aim at minimizing the long-term holistic cost and inference accuracy loss over the time horizon T , and under the real-time latency requirement Li. Formally, this problem can be cast as:
+
+P: min s.t.
+
+XT 
+
+
+
+CðxðtÞ; yðtÞÞ þ v Á AccðtÞ ;
+
+X t¼1 X
+
+xijkðtÞ AiðtÞ;
+
+X j2J X k2K xijkðtÞfjk
+
+yjðtÞej;
+
+Pi2I k2KP
+
+Pj2J Pk2K xijkðtÞdjk j2J k2K xijkðtÞ
+
+Li;
+
+xijkðtÞ ! 0;
+
+yjðtÞ 2 f0; 1; . . . ; Ejg;
+
+8t; 8i;
+
+(8a)
+
+8t; 8j;
+
+(8b)
+
+8t; 8i;
+
+(8c)
+
+8t; 8i; 8j; 8k; (8d)
+
+8t; 8j:
+
+(8e)
+
+dynamics which typically ﬂuctuates over time and thus hard to precisely estimate. 2) Even if the future information is known as a priori knowledge, the minimization problem P is also NP-hard. Speciﬁcally, we can reduce the classical minimum knapsack problem (MKP) [33] which is known to be NP-hard to our problem. The detailed reduction from the MKP can be found in Appendix A, which can be found on the Computer Society Digital Library at http://doi. ieeecomputersociety.org/10.1109/TMC.2022.3189186. These challenges call for an online approach that can jointly optimize conﬁguration adaption, model selection and resource provision for application requests without requiring future information.
+
+4 ONLINE ALGORITHM DESIGN
+We now present the online optimization framework of EdgeAdaptor. Speciﬁcally, to address the dual challenges of time-coupling effect and NP-hardness of long-term objective value minimization problem P, we ﬁrst relax the integer variables yjðtÞ and regularize the switching cost CItS, then decouple the long-term problem into a series of single-shot fractional problems. These problems can be easily solved through our fractional algorithm in Section 4.1. In order to satisfy the integer constraints in reality, we design a rounding algorithm in Section 4.2 to obtain a near-optimal solution to the original problem with a bounded optimality gap. Finally, we use the characteristics of the rounding algorithm to obtain the re-selected model variables to meet the capacity constraints changed after the rounding scheme in Section 4.3.
+
+4.1 Fractional Algorithm for Joint Conﬁguration Adaption and Model Selection
+
+In order to overcome the challenge of the NP-hardness of mixed-integer programming problem, we ﬁrst relax the integer constraint (8e), obtaining the fractional optimization problem PR as follow:
+
+Xh
+
+i
+
+PR : min
+
+v Á AccðtÞ þ CEOðtÞ þ CCOðtÞ þ CItS ;
+
+t2T
+
+s.t. Constraint (8a) to (8d);
+
+yjðtÞ 2 ½0; Ej; 8t 2 T ; 8j 2 J :
+
+To solve the above long-term fractional problem PR, a natu-
+
+The weighted parameter v controls the tradeoff between ral online approach would be greedily adopting the best
+
+resource cost and inference accuracy. Constraint (8a) decision for the relaxed problem in each independent time
+
+ensures that the amount of requests processed on edge slot. However, the instance switching cost CItS temporally server do not exceed the total number of inference requests couples yjðtÞ across the time span, this na¨ıve approach per-
+
+received in each time slot. Constraint (8b) is the workload haps deviates greatly from the global optimum for the long-
+
+capacity constraint which enforces that for each DNN term cost.
+
+model j, the number of inference requests processed by To decouple the term of switching cost without drastic
+
+DNN model j does not exceed the provisioned processing shifts in the solution between time slot t and t À 1, and thus
+
+capacity yjðtÞej. Constraint (8c) enforces that the average to obtain a good and provable competitive bound (through
+
+edge-side latency of each application i does not exceed the the primal-dual approach in Section 5.2), we exploit the
+
+performance threshold Li. Constraint (8d) is the non-nega- algorithmic technique of regularization in online learning
+
+tive constraint for the decision variables. Finally, constraint [16]. Regularization is a way to stabilize the solution and
+
+(8e) is the integer constraint for the number of launched allows the online algorithm to avoid blindly following the
+
+DNN model instances.
+
+best decision given the past data [34]. The basic idea of regu-
+
+Solving the above optimization problem faces the follow- larization is to solve the relaxed problem PR wÂ ith a smooth
+
+ing challenges: 1) The long-term optimization problem P is a time-coupling problem that involves future system
+
+c1oÞÃnþv,exwfeunecmtiopnlotyo
+
+substitute the intractable yjðtÞ the widely adopted convex
+
+À yjðt À relative
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+5876
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+
+entropy function [16] as follow:
+
+Algorithm 1. Fractional Algorithm for Joint Conﬁgura-
+
+tion Adaption and Model Selection — FAAS
+
+DðyjðtÞjjyjðt
+
+À
+
+1ÞÞ
+
+¼
+
+yjðtÞ
+
+ln
+
+yjðtÞ yjðt À 1Þ
+
+þ
+
+yjðt
+
+À
+
+1Þ
+
+À
+
+yjðtÞ:
+
+(9)
+
+Input: I ; J ; K; E; L; a; c; d; e; f ; s; h; ; v Output: exðtÞ; eyðtÞ
+
+This smooth convex function is the sum of the relative
+
+entropy
+
+term
+
+yj
+
+ðtÞ
+
+ln
+
+yj ðtÞ yj ðtÀ1Þ
+
+and
+
+a
+
+linear
+
+term
+
+denoting
+
+the
+
+movement cost yjðt À 1Þ À yjðtÞ. To ensure that the frac-
+
+tion is still valid when no instance of DNN model j is
+
+deployed at time slot t À 1 (i.e., yjðt À 1Þ ¼ 0), we add a
+
+positive constant term  to both yjðtÞ and yjðt À 1Þ in (9).
+
+1: Initialization: exð0Þ ¼ 0; eyð0Þ ¼ 0; 2: for each time slot t 2 T do 3: Observe AðtÞ; bðtÞ and eyðt À 1Þ;
+4: Invoke the interior-point method to solve the regularized problem PRrt;
+5: returnthe optimal fractional solution exðtÞ; eyðtÞ;
+6: end for
+
+Moreover, we deﬁne an approximation weight factor
+
+hj ¼ lnð1 þ EjÞ and multiply the improved relative
+
+entropy
+
+function
+
+with
+
+1 hj
+
+to
+
+normalize
+
+the
+
+switching
+
+cost
+
+by regularization.
+
+Let PRr represent the relaxed and regularized problem by
+
+using the above enhanced regularizer DðyjðtÞjjyjðt À 1ÞÞ to approximate the time-coupling term ½yjðtÞ À yjðt À 1Þþ in
+
+(5). Though PRr is still time-coupling, the Karush-Kuhn-
+
+Tucker (KKT) optimality conditions [35] of the regularized
+
+4.2 Rounding Algorithm for Resource PrÀovisioninÁg The Algorithm 1 obtains a fractional solution exðtÞ; eyðtÞ of problem PRrt, where the integer constraint (8e) is relaxed to
+yjðtÞ 2 ½0; Ej; 8t 2 T ; 8j 2 J . In order to satisfy the practical physical meaning of the variable yjðtÞ, i.e., the number of model instances launched for DNN model j, we now design
+
+problem in each time slot yield a lower bound on the perfor- a rounding algorithm that rounds the optimal fractional
+
+mance of the online algorithm for solving a series of single- solution eyðtÞ to an integer solution yðtÞ. A straightforward
+
+shot problems. So we temporally decouple PRr into a series solution is the independent randomized rounding scheme of single-shot convex programs PRrt, which can be solved in [37], whose basic idea is to round up each fractional eyðtÞ to
+
+each individual time slot t based the solution obtained from the previous time slot t À 1. Speciﬁcally, the decomposed subproblem PRrt for each time slot t 2 T can be denoted as
+follow:
+
+the nearest integer yðÈtÞ ¼ deyðtÞe wÉith the probability of eyðtÞ À beyðtÞc, i.e., Pr yðtÞ ¼ deyðtÞe ¼ eyðtÞ À beyðtÞc, and round down eyðtÞ to the nearest integer yðtÞÈ¼ beyðtÞc withÉ the probability of deyðtÞe À eyðtÞ, i.e., Pr yðtÞ ¼ beyðtÞc
+
+PRrt :
+
+min
+
+vX j2ÁJAhscjjcðtÀÞyþjðtCÞ EþO
+
+ðtÞ þ CCOðtÞþ
+
+Á 
+
+ln
+
+yj yjðt
+
+ðtÞ þ À 1Þ
+
+ þ
+
+
+
+À
+
+yj
+
+ ðtÞ ;
+
+s.t. Constraint (8a) to (8d);
+
+¼ deyðtÞe À eyðtÞ. Although the above independent rounding scheme can
+always generate a feasible integer solution, since the central cloud can cover all the unserved requests incurred by rounding down yejðtÞ, directly applying this scheme may incur high edge operational cost (round up all fractional
+
+yjðtÞ 2 ½0; Ej; 8j 2 J :
+
+yejðtÞ) or cloud outsourcing cost (round down all fractional yejðtÞ). To solve the above challenge, we develop a random-
+
+We design FAAS - Fractional Algorithm for joint conﬁguration ized and dependent pairwise rounding scheme [38] which
+
+Adaption and model Selection as shown in Algorithm 1. Our can exploit the inherent dependence of the variables yejðtÞ. Algorithm 1 FAAS solves a standard convex problem PRrt in The basic idea is that, each rounded-down variable will be
+each slot and outputs the fractional solution exðtÞ; eyðtÞ. compensated by another rounded-up variable, ensuring
+
+Therefore, the time complexity analysis of Algorithm 1 is that all requests received by the edge server could be fully
+
+equivalent to the time complexity of solving the convex processed even after the rounding phase. Such a dependent
+
+problem PRrt. Since the problem PRrt is a standard convex pairwise rounding scheme can more reasonably round vari-
+
+optimization with linear constraints, it can be optimally ables to satisfy the edge server capacity constraint, reducing
+
+solved in polynomial time by taking existing convex optimi- the cost of the expensive cloud outsourcing or launching an
+
+zation techniques such as interior-point method [36]. And excessive amount of DNN instances at the edge.
+
+the complexity analysis of interior-point method is given in Based on the above analysis, we design RARP - Rounding
+
+Section 11.5 of reference [35].
+
+Algorithm for Resource Provisioning which rounds the frac-
+
+In our online scenario, future information includes the tional solution and is shown in Algorithm 2, it runs in each
+
+ﬂuctuating operational cost bjðtÞ caused by real-time electricity price and inference request arrivals AiðtÞ. At the same time, the online algorithm also utilizes the solu-
+tion of the previous time slot. Therefore, FAAS ﬁrst observes AðtÞ; bðtÞ and eyðt À 1Þ at each time slot t 2 T , where eyðt À 1Þ has been obtained when solving PRrtÀ1 at
+time slot t À 1. TÀhen, FAÁAS computes the optimal fractional solution exðtÞ; eyðtÞ for the current time slot t.
+Obviously, the optimal solution of the relaxed and regularized problem PRrt is a feasible solution of the relaxed
+
+time slot and returns the integer result of the fractional solu-
+
+tion sets
+
+JeyðþttÞ¼oÈbjtajiyenjeðdtÞ
+
+b2yZFÉAaAndS.JFÀtirs¼t,
+
+Èwe jj
+
+yeijnðttrÞo2duRcþeÉtwtoodienndoetxe
+
+the set of DNN models with integral yejðtÞ and the set of
+
+sDloNt,NsomothdaetlswweithhafvreacJtioþt nSal
+
+yejðtÞ respectively for each time
+
+J
+
+À t
+
+¼
+
+J
+
+in
+
+each
+
+time
+
+slot.
+
+For
+
+each element j 2 J Àt , we further introduce a probability
+
+coefﬁcient pj and a weight coefﬁcient vj associated with it. Here we deﬁne pj ¼ yejðtÞ À byejðtÞc and vj ¼ ej; 8j 2 J Àt .
+
+Next, the algorithm runs a series of rounding iterations. At
+
+problem PR. Later, we will derive the competitive ratio each iteration, it randomly selects two elements j1 and j2
+
+of FAAS in Section 5.2.
+
+from J Àt , and let the probability of these two elements
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5877
+
+round to 0 or 1, which is decided by the coupled coefﬁcient
+
+’1
+
+and
+
+’2.
+
+Finally,
+
+if
+
+J
+
+À t
+
+has
+
+only
+
+one
+
+element
+
+in
+
+the
+
+last
+
+iter-
+
+ation, we directly round it up to integer.
+
+È
+
+É
+
+È
+
+É
+
+Pr yjðÀtÞ ¼ dyejðtÞe ¼ÁyejðtÞ À byejðtÞc and Pr yjðtÞ ¼ byejðtÞc
+
+¼ 1 À yejðtÞ À byejðtÞc . Based on this marginal distribution
+
+property which has been proven in [38], we can further
+
+derive:
+
+Algorithm 2. Rounding Algorithm for Resource Provisioning — RARP
+
+Input: J ; e; eyðtÞ
+
+Output: yðtÞ
+
+1:
+
+Let
+
+J
+
+þ t
+
+¼
+
+È j
+
+j
+
+yejðtÞ
+
+2
+
+É Z;
+
+J
+
+À t
+
+¼
+
+È j
+
+j
+
+yejðtÞ
+
+2
+
+Rþ
+
+É ;
+
+2:
+
+for each edge DNN model j
+
+2
+
+J
+
+þ t
+
+do
+
+3: Set yjðtÞ ¼ yejðtÞ;
+
+4: end for
+
+5:
+
+for each DNN model j
+
+2
+
+J
+
+À t
+
+do
+
+6: Let pj ¼ yeiðtÞ À byejðtÞc; vj ¼ ej;
+
+7: end for
+
+8:
+
+while
+
+jJ
+
+À t
+
+j
+
+>
+
+1 do
+
+9: 10: ’2 ¼ 11:
+
+mDWRiaeninﬁtÈhdnpotejh1m’;evv1lpyjj21¼rsðoe1mblÀeaincbtpÈiljt1i2wtÞÀyÉo;’pe1’jþl12e’;m2vvjjse21enpttjs2 Éj,1;
+
+j2
+
+from
+
+J
+
+Àt ;
+
+12:
+
+pj1
+
+¼
+
+pj1
+
+þ
+
+’1; pj2
+
+¼
+
+pj2
+
+À
+
+vj1 vj2
+
+’1;
+
+13:
+
+With
+
+the
+
+probability
+
+’1 ’1 þ’2
+
+set
+
+14:
+
+pj1
+
+¼
+
+pj1
+
+À
+
+’2; pj2
+
+¼
+
+pj2
+
+þ
+
+vj1 vj2
+
+’2;
+
+15: If pj1 2 f0; 1g, then set yj1 ðtÞ ¼ byej1 ðtÞc þ pj1 ,
+
+16:
+
+J
+
+þ t
+
+¼
+
+J
+
+þ t
+
+[
+
+fj1g;
+
+J
+
+À t
+
+¼
+
+J
+
+À t
+
+n
+
+fj1g;
+
+17: If pj2 2 f0; 1g, then set yj2 ðtÞ ¼ byej2 ðtÞc þ pj2 ,
+
+18:
+
+J
+
+þ t
+
+¼
+
+J
+
+þ t
+
+[
+
+fj2g;
+
+J
+
+À t
+
+¼
+
+J
+
+À t
+
+n
+
+fj2g;
+
+È ÉÀ
+
+Á
+
+E yjðtÞ ¼ yeÂjðtÞ À byejðtÞc dyejðtÞeÃ
+
+þÀ 1 À ðyejðtÞ À ÁbyejðtÞcÞ byejðtÞc
+
+¼ yeÂjðtÞ À byejðtÞc ðbyejðtÞcÃ þ 1Þ
+
+þ 1 À ðyejðtÞ À byejðtÞcÞ byejðtÞc ¼ yejðtÞ:
+
+The above equation shows that the expectation of each
+
+rounded solution is exactly the value of the original frac-
+
+tional solution. This property indicates that additional costs
+
+with launching new DNN instances would not be incurred
+
+after rounding the fractional solution.
+
+Our Algorithm 2 RARP rounds the fractional solution
+
+eyðtÞ obtained by Algorithm 1 to the integer in each slot
+
+through the iterations of the main loop. The main loop of
+
+RARP
+
+in
+
+each
+
+time
+
+slot
+
+needs
+
+to
+
+be
+
+executed
+
+at
+
+most
+
+jJ
+
+À t
+
+j
+
+times, and jJ Àt j J. Thus, the time-complexity of Algo-
+
+rithm 2 is OðJÞ, which is independent of the scale of the
+
+requests arrival. Later, we will discuss the optimality gap
+
+between the rounded solution and the optimal fractional
+
+solution in Section 5.3.
+
+4.3 Fractional Solution Relocation
+After performing the Algorithm 2 at each time slot t, the resource provision decision yðtÞ produced by RARP together with the model selection decision exðtÞ may well not be a feasible solution of the original problem P. This means
+
+19: end while
+
+20:
+
+if
+
+jJ
+
+À t
+
+j
+
+¼
+
+1 then
+
+21:
+
+Set
+
+yiðtÞ
+
+¼
+
+dyeiðtÞe
+
+for
+
+the
+
+only
+
+element
+
+j
+
+2
+
+J
+
+À t
+
+;
+
+22: end if
+
+that we further need to modify the fractional model selection decision exðtÞ to maintain the solution feasibility.
+In order to obtain the model selection decision after rounding fractional solution eyðtÞ, a naive approach is to bring the feasible rounded solution yðtÞ back to the original
+
+The proposed pairwise rounding scheme would not
+aggressively launch new DNN instances or outsource
+unserved requests to the central cloud, and this is achieved
+by maintaining three desirable properties in the main loop
+of each iteration.
+1) Continuous Reduction Property. At least one of two selected variables yej1 ðtÞ and yej2 ðtÞ is rounded into integer. For example, if ’1 ¼ 1 À pj1 and ’2 ¼ pj1 (line 10), then pj1 ¼ 1 if line 12 is executed or pj1 ¼ 0 if line 14 is executed. In both two cases, yej1 ðtÞ will be rounded to an integer.
+2) Weight Conservation Property. After the main loop of
+each iteration, the total weighted resource capacity of the
+selected two elements (i.e., DNN instances) remains
+
+problem P, and solve the degradedÀ relocatioÁn problem to obtain a complete feasible solution xðtÞ; yðtÞ . After bringing the rounded solution yðtÞ, the edge operational cost and instance switching cost in the objective function of the original problem become constant. However, if we further consider the weight conservation property maintained by the rounding scheme in RARP, we could obtain a complete feasible solution more simply. Speciﬁcally, the weight conservation property ensurPes that the total resource capacity of the rounded solPution j ejyjðtÞ is equal to that of the fractional solution j ejyejðtÞ. Therefore, we can solve the following simpliﬁed relocation problem without considering the cloud outsourcing cost to obtain xðtÞ.
+
+unchanged, in other words, the sum of yej1 ðtÞej1 þ yej2 ðtÞej2 SsÂe’yteri2amtjÃ1yyeðisjtl1iaÞncþrþodlyniÂ’c,syea1tjiaÃt2feeðnstjt1lÞ.itnþþFheoaeeÂrtjjye121jea’32xdð2taÃdiÞesmijÀt2pieo¼eexlnjjee12,ayce’liuj1f1ÃtcðleeltiodjÞn2eu,ej¼d11wþ1yeoejuiye1sðjta2stelðÞosxteouÞeje1rcjchuþ2i.anteyvegTdje1h,cðitwoÂsÞyeseejtj1p2hðw.rtaoÞivptÀhe-
+
+capacity reduction would not be incurred after rounding
+
+the fractional solution.
+
+3) Marginal Distribution Property. In each iteration of the
+
+main loop, the probability of rounding up or down each ele-
+
+ment
+
+j
+
+2
+
+J
+
+À t
+
+is
+
+determined
+
+by
+
+the
+
+fractional
+
+part
+
+yejðtÞ À
+
+byejðtÞc of the fractional solution yejðtÞ. More speciﬁcally,
+
+PRet :
+
+min AccðtÞ XX
+
+s.t.
+
+xijkðtÞ AiðtÞ;
+
+X j2J X k2K
+
+xijkðtÞfjk yjðtÞej;
+
+Pi2I k2KP
+
+Pj2J Pk2K xijkðtÞdjk j2J k2K xijkðtÞ
+
+Li;
+
+xijkðtÞ ! 0;
+
+8i; (10a) 8j; (10b)
+8i; (10c) 8i; 8j; 8k:
+(10d)
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+5878
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+
+Fig. 3. An illustration of the basic idea of the performance analysis.
+Since the above problem is a linear programming, therefore its optimal solution can be readily obtained in polynomial time. Our relocation scheme can work as a bridge to analyze the performance bound of the aforementioned na¨ıve approach, as we will discuss later in Section 5. The rounded solution yðtÞ obtained by RARP and the relocation solution obtained by solving the above problem together constitute the ﬁnal solution of our online approach. In the next section, we will discuss the competitive ratio between the proposed online approach and the theoretical optimal solution in ofﬂine case.
+5 PERFORMANCE ANALYSIS
+
+techniques used in competitive analysis [40]. Speciﬁcally, the inequality PoRpt ! DoRpt holds due to the celebrated Weak Duality in convex optimization theory [35], where DoRpt denotes the objective value of the dual problem achieved by the optimal solution. To connect the dual problem DR and the regularized problem PRr, we construct a feasible solution for DR mapped from the optimal fractional solution for PRrt. Based on such mapping, we can derive the competitive ratio r1 by applying Karush-Kuhn-Tucker (KKT) conditions [35] in Section 5.2. Finally, based on the three desirable properties maintained by the rounding scheme and the constraints in relocation problem PRe, we can further prove (11a) (11b) and characterize the competitive ratio r2 between the optimal fractional solution and the rounded solution after relocation in Section 5.3.
+Theorem 1. PoRpt Popt since PR is a relaxed problem after relaxing the integer constraint in the original minimization problem P.
+
+Proof. See Appendix B, available in the online supplemen-
+
+tal material.
+
+tu
+
+In this section, we rigorously analyze the theoretical performance of the proposed online framework of EdgeAdaptor via competitive analysis. As a standard approach to quantifying the performance of online algorithms [39], the basic idea of the competitive analysis is to compare the performance of the online algorithm to the theoretical optimal solution in the ofﬂine case, where all the future information is given as prior knowledge. In particular, we prove that the proposed online algorithm has guaranteed performance, which is quantiﬁed by a worst-case parameterized competitive ratio.
+
+5.1 The Basic Idea
+
+As illustrated in Fig. 3, we introduce the dual problem of the relaxed problem DR to act as the bridge that connects the original problem and regularized problem. We formally prove that the objective value of the original problem evaluated with solutions produced by our proposed online approach, which is denoted as P , is upper-bounded by a parameterized constant multiple the ofﬂine optimum of the original problem. We will establish the following chain of inequalities:
+
+À
+
+Á
+
+P xðtÞ; yðtÞ
+
+r2 r1
+
+PeÀexðtÞ;
+
+Á eyðtÞ
+
+r2DeR
+
+À nj
+
+ðtÞ;
+
+aiðtÞ;
+
+bjðtÞ;
+
+g
+
+i
+
+ðtÞ;
+
+j
+
+Á ðtÞ
+
+r1r2PoRpt
+
+r1r2Popt;
+
+(11a) (11b) (11c) (11d) (11e)
+
+5.2 Competitive Ratio of FAAS
+
+We establish (11b) (11c) and derive the competitive ratio
+
+r1 of FAAS in this subsection. Speciﬁcally, we ﬁrst transform the relaxes problem equivalently to drive its Lagrange
+
+problem. Then, we characterize the optimality conditions for a series of regularized problems PRrt. Finally, we con-
+struct a feasible solution for DR mapped from the optimal primal and dual solutions for PRrt.
+An Equivalent Problem Transformation. Due to the timecoupling switching cost CItS and the boxing constraints of decision variables yjðtÞ, directly deriving the Lagrange dual
+problem DR for the relaxed problem PR is not straightfor-
+ward. In response, we ﬁrst introduce a set of auxiliary varia-
+
+bles wjðtÞ which satisfy wjðtÞ ! yjðtÞ À yjðt ÂÀ 1Þ; 8j 2 J ;
+
+18yjÞtðÃ2tþÀ.TT1hÞtÃeoþ
+
+replace the transformed is equivalent
+
+time-coupling switching cost to the original
+
+term CItS ¼
+
+yPjðtÞ ÀÂ yjðt j sj yjðtÞ
+
+À À
+
+expression since the
+
+additional constraints wjðtÞ ! 0; 8j 2 J ; 8t 2 T . For the box-
+
+ing constraints yjðtÞ 2 ½0; Ej, as suggested by the literature
+
+[P16], we replace it by a setPofPknaPpsack cover (KC) constraints j02J yj0 ðtÞej0 À yjðtÞej ! i j k xijkðtÞfjk À Ejej; 8j 2 J ;
+
+8t 2 T . With the above transformations, we rewrite the
+
+relaxed problem in the following equivalent form.
+
+X&
+
+X
+
+'
+
+min
+
+v Á AccðtÞ þ CEOðtÞ þ CCOðtÞ þ sjwjðtÞ
+
+t2T
+
+j
+
+where r ¼ r1r2 is the overall competitive ratio. Here Popt and s.t. wXjðtX Þ ! yjðtÞ À yjðt À 1Þ; 8t; j;
+
+PoRpt denote the objective value achieved by the optimal solu-
+
+xijkðtÞ À AiðtÞ 0; 8t; i;
+
+tion of the original problem P and the relaxed problem PR, respectively. And DeR denotes the objective value of PR’s
+
+X j2J X k2K xijkðtÞfjk yjðtÞej; 8t; j;
+
+dual problem DR, achieved by a feasible solution mapped from the optimal fractional solution and dual solution of the single-shot regularized problem PRrt. Finally, Pe and P denote the objective value of the original problem P achieved by the optimal fractional solution and the rounded solution after
+
+X i2I X k2K
+
+XX
+
+xijkðtÞdjk
+
+xijkðtÞLi; 8t; i;
+
+X j2J kX 2K X
+
+j2J k2K
+
+X i j
+
+k xijkðtÞfjk þ yjðtÞej
+
+relocation, respectively. We ﬁrst prove (11d) (11e) in Theorem 1. Next, the proof
+of (11b) (11c) (11d) is based on the online primal-dual
+
+À j02J yj0 ðtÞej0 À Ejej 0; 8t; j; xijkðtÞ; yjðtÞ; wjðtÞ ! 0; 8t 2 T ; j 2 J :
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+(12a) (12b) (12c) (12d)
+(12e) (12f)
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5879
+
+Deriving the Lagrange Dual Problem. We use njðtÞ, aiðtÞ, bjðtÞ, giðtÞ, jðtÞ to denote the corresponding dual variables for the constraints (12a) to (12e). Now we can derive the
+Lagrange dual problem DR of the above transformed prob-
+lem (and also equally the problem PR) as follows.
+
+X&X
+
+À
+
+ÁX
+
+'
+
+DR : max
+
+AiðtÞ ci À aiðtÞ À jðtÞEjej
+
+t2T i2I
+
+j2J
+
+s.t. sj À njðtÞ ! 0; 8t 2 T ; j 2 J ;
+
+aijk À ci þ aiðtÞ þ bjðtÞfjk
+
+þ giðtÞðdjk À LiÞ þ jðtÞfjk ! 0; 8t; i; j; k;
+
+bjðtÞ
+
+þ njðtÞ X
+
+À
+
+nj
+
+ðt
+
+þ
+
+1Þ
+
+À !
+
+bjðtÞej
+
+À ej j0 j0 ðtÞ À jðtÞ ! 0; 8t; j;
+
+(13a) (13b)
+
+All the dual variables ! 0:
+
+(13c)
+
+Characterizing the Optimality of the Regularized Problem.
+
+Recall that in Section 4.1, we regularize the relaxed problem
+
+PR to a solvable Àconvex prÁoblem PRr, so that the optimal fractional solution exðtÞ; eyðtÞ obtained by Algorithm 1 FAAS
+
+satisﬁes the Karush-Kuhn-Tucker (KKT) conditions, i.e., the
+
+ﬁÀaersiðtt-Þo;rbedjeðrtÞn; geeciðetsÞs;aerjyðtcÞÁontodidtieonnostefotrheopotpimtimalaitlys.oHluetrioenwteo
+
+use the
+
+dual problem of the regularized problem PRrt, correspond-
+
+ing to constraints (12b) to (12e) respectively. To simplify the
+
+presentation, we write some KKT conditions in the disjunc-
+
+tive form, where a?b is equivalent to a; b ! 0 and ab ¼ 0.
+
+Therefore, the KKT conditions of the optimal fractional
+
+solution can be readily obtained as follows.
+
+in which we let
+
+njðtÞ
+
+¼
+
+sj hj
+
+ln
+
+Ej þ  yejðt À 1Þ þ
+
+
+
+;
+
+aiðtÞ
+
+¼
+
+aeiðtÞ;
+
+bjðtÞ ¼ bejðtÞ; giðtÞ ¼ egiðtÞ; jðtÞ ¼ ejðtÞ:
+
+Lemma
+
+1.
+
+The
+
+mapping
+
+È P exðtÞ;
+
+eyðtÞ;
+
+aeiðtÞ;
+
+bejðtÞ;
+
+egiðtÞ;
+
+ej
+
+É ðtÞ
+
+obtains a feasible solution of the relaxed dual problem DR.
+
+Proof. See Appendix C, available in the online supplemen-
+
+tal material.
+
+tu
+
+Due to this feasibility, we know that the objective value DeR of the relaxed dual problem DR is no larger than the optimal objective value DoRpt. Recall the inequality PoRpt ! DoRpt based on the Weak Duality in convex optimization theory, we can derive (11c) (11d). Meanwhile, through the KKT conditions, we can also derive the optimality gap between DeR and Pe. To further obtain the competitive ratio r1 of the proposed Algorithm 1 FAAS, we ﬁrst show that the total non-switching cost (i.e., the objective value excludes the switching cost) is upper bounded by the objective value DeR of the relaxed dual problem DR, as shown by the following Lemma 2.
+
+Lemma 2. The sum of edge operational cost, cloud outsourcing cost and cumulative accuracy loss achieved by Algorithm 1 FAAS is no larger than the objective value of the relaxed dual problem DR achieved by the constructed feasible solution P, i.e.,
+X ðAccðtÞ þ CEOðtÞ þ CCOðtÞÞ DeR:
+t2T
+
+
+
+XX
+
+
+
+aeiðtÞ? AiðtÞ À 
+
+Xj
+
+Xk xeijkðtÞ
+
+; 8t; i 
+
+ebjðtÞ? yejðtÞej À X X
+
+i
+
+k
+
+xeijk
+
+ðtÞfjk 
+
+; 8t; j
+
+egeijððttÞÞ??XXjj0
+
+kðLi À djkÞxeijkðtÞ ; 8t;
+
+yej0 ðtÞej0 þ Ejej À yejðtÞej
+
+XX
+
+
+
+i
+
+À i j k xeijkðtÞfjk ; 8t; j
+
+aijk À ci þ aeiðtÞ þ bejðtÞfjk þ egjðtÞðdjk À LiÞ
+
+(14a) (14b) (14c)
+(14d)
+
+The instance switching cost is also bounded, as shown by
+
+the following Lemma 3.
+
+Lemma
+
+3.
+
+The
+
+total
+
+instance
+
+switching
+
+cost
+
+P
+t
+
+CItS
+
+of
+
+the
+
+frac-
+
+ttihoannal½lnsoÀl1uþtioEnmÈaaxcÁhþievEemddaxb ytimAelsgÉoorfitDehRm,
+
+1 FAAS is no larger where Emax ¼ maxjEj
+
+and d ¼ mint;j yejðtÞ; yejðtÞ > 0
+
+X CItS
+t2T
+
+À ln 1
+
+þ
+
+EmaxÁ 
+
+þ
+
+!
+
+Emax d
+
+DeR:
+
+þ ejðtÞ ¼ 0; 8t; i; j; k
+
+(14e)
+
+We give a detailed proof of Lemmas 2 and 3 in Appendix
+
+bjðtÞ
+
+þ
+
+sj hj
+
+ln
+
+yej yejðt
+
+ðtÞ þ  À 1Þ þ X
+
+
+
+À
+
+bej
+
+ðtÞej
+
+
+
+À ej
+
+j0 ej0 ðtÞ À ejðtÞ ¼ 0; 8t; j
+
+(14f)
+
+D and Appendix E respectively, available in the online supplemental material.
+Theorem 2. The objective value Pe of problem P through the optimal fractional solution achieved by our proposed Algorithm 1
+
+FAAS is no larger than r1 times of the ofﬂine optimum Popt,
+
+Constructing the Mapping. After characterizing the optimality conditions for a series of regularized problems PRrt, we now construct a mapping to jointly map PRrt’s optimal
+primal and dual solutions to a feasible solution of the
+
+where r1 is given by:
+
+
+
+
+
+r1 ¼ ln
+
+1 þ Emax 
+
+þ Emax þ 1: d
+
+relaxed dual problem DR as follows:
+
+Proof. Since the objective value of the original problem P is
+
+È P exðtÞ;
+
+eyðtÞ;
+
+aeiðtÞ;
+
+bej
+
+ðtÞ;
+
+egi
+
+ðtÞ; À
+
+ejðtÞÉ
+
+Á
+
+¼ njðtÞ; aiðtÞ; bjðtÞ; giðtÞ; jðtÞ ;
+
+the sum of edge operational cost, cloud outsourcing,
+
+instance switching cost and cumulative accuracy loss.
+
+According to Lemmas 2 and 3, we can directly derive
+
+Theorem 2.
+
+tu
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+5880
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+
+5.3 Integrality Gap of RARP and Relocation
+
+In this subsection, we establish (11a) (11b) and study the
+
+rounding gap incurred by Algorithm 2 RARP and reloca-
+
+tion, in terms of competitive ratio r2 of the objective value P achieved by the ﬁnal rounded solution to the objective value Pe achieved by the fractional solution. Recall the relationship between eyðtÞ and yðtÞ, which has been characterized by the
+
+weight conservation property in Section 4.2. Speciﬁcally,
+
+after the main loop of each iteration, the total resource
+
+capacity
+
+of
+
+the
+
+two
+
+selected
+
+elements
+
+j1;
+
+j2
+
+2
+
+J
+
+À t
+
+keeps
+
+unchanged, i.e., yej1 ðtÞej1 þ yej2 ðtÞej2 ¼ yj1 ðtÞej1 þ yj2 ðtÞej2 .
+
+Based on this equation, we know that after the execution of
+
+RARP, for the integral elements j 2 J þt , we have the deter-
+
+ministic equation
+
+X
+
+X
+
+yjðtÞej ¼
+
+yejðtÞej:
+
+j2J
+
+þ t
+
+j2J
+
+þ t
+
+Then, we further take this connection as a bridge to
+
+bound the terms in the objective function of the original
+
+problem P. There is at most one element remaining in the
+
+fractional
+
+set
+
+J
+
+À t
+
+after
+
+the
+
+execution
+
+of
+
+RARP,
+
+i.e.,
+
+jJ
+
+Àt j
+
+1.
+
+Speciﬁcally,
+
+if
+
+jJ Àt j ¼ 1,
+
+for
+
+the
+
+only
+
+element
+
+in
+
+J
+
+À t
+
+,
+
+by
+
+deﬁning kt ¼ PimPaxjj2PJ EkjexeijjkðtÞ , we have
+
+X
+
+j2J
+
+À t
+
+yjðtÞej XX
+
+max
+j2J
+X
+
+Ej
+
+ej
+
+¼ kt
+
+xeijkðtÞ
+
+i jk
+
+X kt yejðtÞej:
+j
+
+Note that when there is no elementPin J Àt , i.e., jJ Àt j ¼ 0, the
+
+above inequality still holds since
+
+j2J
+
+À t
+
+yjðtÞej
+
+¼
+
+0.
+
+Com-
+
+bining the above equation and inequality, we further have
+
+X
+
+X
+
+X
+
+yjðtÞej ¼
+
+yjðtÞej þ
+
+yjðtÞej
+
+j2J
+
+jX 2J þt
+
+j2JX Àt
+
+yejðtÞej þ kt yejðtÞej
+
+jX 2J þt
+
+j2J
+X
+
+yejðtÞej þ kt yejðtÞej
+
+j2J
+
+X
+
+j2J
+
+¼ ð1 þ ktÞ yejðtÞej:
+
+j2J
+
+By summing over the above inequality over all the time slots t 2 T and deﬁning k ¼ maxt2T kt, we ﬁnally have
+
+XX
+
+X
+
+X
+
+yjðtÞej
+
+ð1 þ ktÞ yejðtÞej
+
+t2T j2J
+
+t2T
+
+X X j2J
+
+ð1 þ kÞ
+
+yejðtÞej:
+
+(15)
+
+t2T j2J
+
+X
+t2T
+
+X
+j2J
+
+yjðtÞbjðtÞ
+
+¼
+
+X
+t2T
+
+X
+j2J
+
+yjðtÞej
+
+bjðtÞ ej
+
+max
+t;j
+
+bjðtÞ ej
+
+X
+t2T
+
+X
+j2J
+
+yjðtÞej
+
+max
+t;j
+
+bjðtÞ ej
+
+ð1
+
+þ
+
+kÞ
+
+X
+t2T
+
+X
+j2J
+
+yej
+
+ðtÞbj
+
+ðtÞ
+
+ej bjðtÞ
+
+ð1
+
+þ
+
+kÞ
+
+max
+t;j
+
+bjðtÞ ej
+
+max
+t;j
+
+ej bjðtÞ
+
+X
+t2T
+
+X
+j2J
+
+yejðtÞbj
+
+ðtÞ
+
+(16)
+
+Upper Bound of the Instance Switching Cost. Based on the
+
+inequality (15), we bound the instance switching cost as fol-
+
+lows:
+
+X
+
+X
+
+sj
+
+Â yj
+
+ðtÞ
+
+À
+
+yjðt
+
+À
+
+1ÞÃþ
+
+t2T j2J
+
+X
+t2T
+
+X
+j2J
+
+sjyjðtÞ
+
+¼
+
+X
+t2T
+
+X
+j2J
+
+ejyjðtÞ
+
+sj ej
+
+max
+j
+
+sj ej
+
+X
+t2T
+
+X
+j2J
+
+yjðtÞej
+
+ð1
+
+þ
+
+kÞ
+
+max
+j
+
+sj ej
+
+X
+t2T
+
+X
+j2J
+
+yejðtÞbjðtÞ
+
+ej bjðtÞ
+
+ð1
+
+þ
+
+kÞ
+
+max
+t;j
+
+ej bjðtÞ
+
+max
+j
+
+sj ej
+
+X
+t2T
+
+X
+j2J
+
+yej
+
+ðtÞbjðtÞ:
+
+(17)
+
+Upper Bound of the Cumulative Accuracy Loss. Based on the constraint (10b) in relocation problem PRet and the inequal-
+ity (15), the cumulative accuracy loss can be bounded as fol-
+
+lows:
+
+XXXX
+
+aijkxijkðtÞ
+
+t ijk
+
+max
+i;j;k
+
+aijk
+
+X
+t
+
+X
+i
+
+X Xj
+
+X Xk
+
+xijk
+
+ðtÞfjk
+
+1 fjk
+
+max aijk min fjk
+
+i;j;k
+
+j;k
+
+t
+
+yjðtÞej
+j
+
+ð1
+
+þ
+
+kÞ
+
+max
+i;j;k
+
+aijk
+
+min
+j;k
+
+fjk
+
+X
+t
+
+X
+j
+
+yej
+
+ðtÞbjðtÞ
+
+ej bjðtÞ
+
+ð1
+
+þ
+
+kÞ
+
+max
+t;j
+
+ej bjðtÞ
+
+max
+i;j;k
+
+aijk
+
+min
+j;k
+
+fjk
+
+X
+t
+
+X
+j
+
+yejðtÞbjðtÞ:
+
+(18)
+
+Theorem 3. The objective value P of problem P through the ﬁnal rounded solution achieved by our Algorithm 2 RARP and relocation scheme is no larger than r2 times of Pe achieved by the optimal fractional solution, where r2 ¼ 1 þ 2 þ 3, and
+
+1
+
+¼
+
+ð1
+
+þ
+
+kÞ max
+t;j
+
+bjðtÞ max ej t;j
+
+ej bjðtÞ
+
+;
+
+2
+
+¼
+
+ð1
+
+þ
+
+kÞ max
+t;j
+
+ej max bjðtÞ j
+
+sj ej
+
+;
+
+3
+
+¼
+
+ð1
+
+þ
+
+kÞ
+
+max
+t;j
+
+ej bjðtÞ
+
+max
+i;j;k
+
+aijk
+
+min fjk:
+j;k
+
+Proof. Recall the weight conservation property in Section 4.2,
+
+Upper Bound of the Edge Operational Cost. Based on the the total resource capacity of the rounded solution is no
+
+inequality (15), we bound the edge operational cost as fol- smaller than that of the optimal fractional solution. There-
+
+lows.
+
+fore, when relocating the decision variables exðtÞ after
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5881
+
+rounding decision variables eyðtÞ, we do not outsource additional requests to the central cloud, meaning that the
+
+TABLE 2 Accuracy Loss aijk
+
+cloud outsourcing cost of the ﬁnal rounded solution is the
+
+same with that of the optimal fractional solution. Combin-
+
+ing the upper bounds of several other terms in the objec-
+
+tive function (16) to (18), we can derive the competitive
+
+ratio of the ﬁnal rounded solution after the rounding
+
+scheme and relocation.
+
+tu
+
+J YOLOv2
+
+I K
+240p 360p 540p 720p
+
+people
+0.287 0.238 0.195 0.187
+
+car
+0.329 0.283 0.242 0.235
+
+bus
+0.300 0.252 0.210 0.202
+
+bike
+0.281 0.231 0.188 0.180
+
+dog
+0.216 0.163 0.116 0.107
+
+5.4 The Overall Competitive Ratio
+Theorem 4. The objective value P of problem P achieved by the ﬁnal rounded solution is no larger than r1r2 times of the ofﬂine optimum, where r1 and r2 are derived in Theorem 1 and Theorem 2, respectively. That is, our proposed online scheme for problem P achieves a competitive ratio of r1r2.
+Proof. Based on the inequality (11a) to (11e) and the com-
+
+SSD R-FCN
+
+240p 360p 540p 720p
+240p 360p 540p 720p
+
+0.206 0.184 0.167 0.164
+0.242 0.197 0.156 0.149
+
+0.239 0.201 0.185 0.182
+0.272 0.229 0.189 0.183
+
+0.206 0.199 0.183 0.180
+0.267 0.224 0.184 0.178
+
+0.199 0.193 0.177 0.174
+0.251 0.207 0.166 0.160
+
+0.130 0.134 0.116 0.112
+0.167 0.118 0.073 0.066
+
+petitive ratio given in Theorem 2 and Theorem 3, we can
+
+directly derive the overall competitive ratio of our pro-
+
+posed online approach.
+
+tu
+
+The overall gap between our proposed online algorithms
+
+and the ofﬂine optimum mainly comes from two parts: 1)
+
+The long-term optimization problem is solved online in each
+
+time slot without future information such as operational cost
+
+bjðtÞ and inference request arrivals AiðtÞ, which is reﬂected
+
+in the competition ratio r1 of Algorithm 1. 2) Rounding the
+
+fractional solution to the integer solution for practical physi-
+
+cal meaning incurs additional edge operational cost (round
+
+up yejðtÞ) or cloud outsourcing cost (round down yejðtÞ), which
+
+is reﬂected in the competition ratio r2 of Algorithm 2. Intui-
+
+tively, our online approach stabilizes the solution by avoid-
+
+ing drastic shifts in the solution between adjacent time slots,
+
+thus addressing the online scenario with the unknown future
+
+information. Meanwhile, the online algorithm obtains a good
+
+competitive bound as shown in Theorem 4.
+
+For the overall competitive ratio given in Theorem 4, we
+
+now discuss some insights as follows: 1) The ﬁnal competi-
+
+tive ratio r1r2 decreases with the increasing of the parameter
+
+. By increasing  to be large enough, we can obtain the com-
+
+petitive
+
+ratio
+
+r1
+
+that
+
+is
+
+arbitrarily
+
+close
+
+to
+
+Emax d
+
+þ
+
+1,
+
+but
+
+at
+
+the
+
+same time with the increasing of the time complexity of the
+
+regularized problem PRr. 2) Compared to the naive approach
+
+that directly brings yðtÞ back to the original problem P to
+
+obtain the complete feasible solution, our relocation scheme
+
+has lower time complexity but also reduced optimality. How-
+
+ever, in a realistic edge-cloud system, the cloud outsourcing
+
+cost is far more expensive than edge-based processing.
+
+detection targets, we deﬁne ﬁve types of inference requests are people, car, bus, bike, and dog respectively (I ¼ 5). For the convex problem PRrt at each time slot, we solve it with CVXPY [41] based on Python 3 by invoking the interiorpoint solver MOSEK [42].
+Request Traces. Since edge intelligence is still in a very early stage, there is no publicly accessible inference request trace from the edge server. Moreover, for the protection of user data privacy, there is also no similar request trace with speciﬁc task type information. Therefore, in line with the recent work [27] on DNN model inference serving, we adopt workload trace of computing clusters to simulate the number of different types of inference requests arriving at the edge server. Speciﬁcally, we randomly select ﬁve different jobs from the 24-hour traces of Alibaba production cluster [43], and then expand these ﬁve kinds of workload traces in different proportions to a reasonable range according to the actual situation of each type of inference request in the real world.
+Accuracy and Delay. To obtain the accuracy and delay parameters of the object detection task at the edge server, we select three currently popular object detection models YOLOv2 [13], SSD [14], R-FCN [15]. Speciﬁcally, for each DNN model, we calculate the parameters aijk based on the accuracy of different targets (i.e., people, car, etc.) and the parameters djk based on the FPS (frames per second) of images with different conﬁgurations (i.e., 240p, 360p, etc.) through the curve ﬁtting method [23]. The service latency constraints Li of different object detection tasks are increased from 30ms to 150ms according to actual demands. Speciﬁc parameters are listed in Tables 2 and 3.
+
+6 PERFORMANCE EVALUATION
+In this section, we evaluate the practical performance of the proposed online optimization framework through tracedriven simulations. The simulations are based on real-world request traces and inference accuracy and delay of object detection tasks.
+
+Cost Parameters. We simulate the DNN instance running cost bjðtÞ through the parameter amount of each DNN model and the electricity price with temporal diversities. As we mentioned in Section 3.3, there is the numerical relationship between service latency and price [28]. On the basis of the price of the serverless scheme (i.e., AWS Lambda [44]), we add the penalty incurred by the latency of data transmission
+
+6.1 Experimental Setup
+
+to the unit cloud outsourcing cost ci, and the value of the penalty depends on the service latency constraints of different
+
+We simulate an edge server with three DNN models object detection tasks. Speciﬁcally, every 30ms corresponds (J ¼ 3), corresponding to each model, the input images con- to 20% of the base price. Inspired by the experimental setup
+
+tain different conﬁguration resolution of 240p, 360p, 540p, in [45] and [46], we normalize the unit switching cost sj by and 720p (K ¼ 4). According to different types of object using the mean of the operational cost bjðtÞ. Speciﬁcally, we
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+5882
+DNN Model YOLOv2 SSD R-FCN
+
+TABLE 3 Instance Latency djk
+
+240p
+11.0 ms 21.7 ms 76.9 ms
+
+Conﬁguration
+
+360p
+
+540p
+
+12.3 ms 24.6 ms 77.7 ms
+
+16.9 ms 52.6 ms 85.0 ms
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+720p 25.0 ms 80.4 ms 92.7 ms
+
+ÈÉ set sj ¼ E bjðtÞ , which corresponds to the operational cost to running one model instance in each time slot.
+Capacity Constraints. The computing capability of different DNN model instances is difﬁcult to actually measure, so we refer to the model size of three DNN models and design the workload capacity ej of each DNN model instance based on this ratio in simulation experiment. The intuitive insight is that all containers with different DNN model have the same physical resources (e.g., CPU and memory). Therefore, the larger parameters amount of the loaded model in the container, the fewer requests processed per time slot. The degraded parameter ej represents the maximum number of requests processed by DNN model j in one time slot. As for Ej, the maximal number of available instances of DNN model j, we set it according to the peak-arrival of request traces at the edge server. Specially, we summary the DNN capacity conﬁgurations in Table 4.
+Benchmarks. To demonstrate the efﬁcacy of the proposed online framework (FAAS+RARP), we compare it to the Online Lazy Switching Algorithm (OLSA) [47]. The basic idea of OLSA is to tolerate as much non-switching cost (i.e., the sum of edge operational cost, cloud outsourcing cost and cumulative accuracy loss) as possible until the non-switching cost signiﬁcantly exceeds the switching cost. OLSA is a stateof-the-art online algorithm with competitive analysis [48], which has been extensively applied to tackle problems with switching cost in recent literature [49], [50], [51]. However, the characteristic of OLSA is lazy switching, which makes it unable to cope well with the frequently changing request arrivals in the dynamic environment. Furthermore, to demonstrate the efﬁcacy of the rounding scheme RARP, we compare it to another two benchmarks: 1) EO-Greedy approach directly rounds up all the fractional solutions to process all received inference requests at the edge server. 2) CO-Greedy approach directly rounds down all the fractional solutions with the help of the central cloud to serve the inference requests which can not be covered by the edge server.
+6.2 Evaluation Results
+We use the competition ratio to measure the performance of the online algorithm, which is equal to the objective value achieved by the online algorithm divided by the ofﬂine
+
+Fig. 4. Total cost versus T .
+optimal value. In addition, we also use the following more intuitive quantitative indicators to measure the performance of our online algorithms: i) total cost, i.e., objective value in each time slot, ii) average total cost, i.e., total objective value over the entire time horizon averaged by T .
+Efﬁciency of the Online Framework. We ﬁrst plot the total cost of the proposed online framework (FAAS+RARP) as well as the benchmark OLSA in each time slot as shown in Fig. 4, and we mark the average total cost of these two methods in 144 time slots. To further show the gap between our online algorithm and the ofﬂine optimal solution, we also plot the competitive ratio of the two online approaches in Fig. 5. From these two ﬁgures, we observe that: 1) The proposed online approach (FAAS+RARP) has lower long-term total cost than OLSA, demonstrating the effectiveness of our proposed EdgeAdaptor. 2) The proposed online algorithm (FAAS+RARP) achieves a competition ratio of no more than 1.4 in different time horizons T , which is signiﬁcantly lower than that of OLSA, and achieves a maximum reduction of 30.8%. 3) As the number of total time slots varies, EdgeAdaptor has stable performance against uncertain inﬂuence caused by time-varying parameters (i.e., ﬂuctuating workload and electricity price). The total cost of OLSA exhibits violent ﬂuctuations in some time slots due to its lazy switching characteristic. The “laziness” of OLSA limits it to be unable to cope well with the frequently changing request arrivals in the dynamic environment compared to our proposed online approach.
+Efﬁciency of the Rounding Scheme. For a more intuitive comparison of rounding scheme, we plot the average total cost of three different rounding approaches under varying numbers of total time slots in Fig. 6. It demonstrates that the average total cost of our proposed RARP outperforms those of the two benchmarks. However, the performance of RARP is not obvious compared with EO-Greedy. This is mainly because the number of DNN models is only 3 in our simulation setup, even if all the fractional solutions are rounded up, the
+
+TABLE 4 DNN Model Instance Conﬁguration
+
+DNN Model Workload Capacity ej Resource Capacity Ej
+
+YOLOv2 SSD R-FCN
+
+180
+
+40
+
+200
+
+30
+
+190
+
+20
+
+Fig. 5. Competitive ratio versus T .
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5883
+
+Fig. 6. Average total cost versus T in rounding.
+
+Fig. 8. Various cost versus resource capacity Ej.
+
+additional instance running cost would not be too large. Actually, this gap will inevitably be further enlarged as the scale of edge servers increases. We also note that the average total cost gradually decreases with the increase of the total number of time slots. The reason for this phenomenon is that the decision variables are initialized to 0 in our simulation setup, thus a huge switching cost is generated in the ﬁrst time slot while algorithm running. In a reality system, we can preheat the system (e.g., implement some instances in advance) to avoid this terrible cold start phenomenon.
+Effect of the Switching Cost. We next investigate the effect of the instance switching cost (i.e., sj in our formulation) on the average total cost of our online approach (FAAS+RARP) and OLSA, by multiplying the switching cost of each DNN instance with a various scaling ratio. The results are plotted in Fig. 7, which shows that as the switching cost increases, the average total cost of both our online approach and OLSA increase dramatically. The rationale is that, by increasing the scaling ratio of switching cost, the algorithms would pay more attention to minimize the total switching cost. However, since the switching cost term is time-coupling and involves future stochastic information, the optimality gap incurred by any online algorithm would increase as the switching cost sj grows. Nevertheless, we mark the ratio of the average total cost between two online approaches, which indicates that our proposed EdgeAdaptor can suppress these deteriorating increase compared to OLSA until the scaling ratio extends to 10.
+Effect of the Edge Capacity. Recall that in Section 3.1, we use Ej to denote the resource capacity at the edge server, i.e., the maximal number of available instances of DNN models. Fig. 8 depicts the impact of Ej on the average total cost under different scaling ratios, especially the impact on edge operational cost, from which we observe that: 1) Increasing resource capacity of edge server can effectively reduce the proportion of expensive cloud outsourcing cost in the total system cost. 2) The average total cost of the
+
+system is the smallest, when the scaling ratio is 0.5, i.e., the edge resource capacity is further limited. This is because that almost all containers on the edge server are running to provide inference services, so ﬂuctuating workload will not generate switching cost (as shown by the green column in Fig. 8). Despite the high cost of cloud outsourcing, the rapid expansion of serverless technology makes it possible to reduce cold starts. 3) As the edge server resource capacity increases, the average total cost has a downward trend, however, this decline is quickly ﬁlled by increased cumulative accuracy loss. Because compared with cloud outsourcing which does not consider the inference accuracy loss, increasing inference requests served at the edge server will inevitably lead to an increase on the cumulative accuracy loss.
+Cost, Latency, and Accuracy. Fig. 9 shows the three-way tradeoff between resource cost, service latency, and inference accuracy. As the scaling ratio of Li increases (i.e., the tolerance for inference service latency increases), all three curves indicate that the total cost of the system decreases. And as the parameter v increases (i.e., the accuracy requirement of inference service increases), the total cost of the system increases between three curves. Although the plotted curves are in line with our intuitive perception, there is also an abnormal data point when v ¼ 5 and 0:5 Â Li. The reason may be that the algorithm tends to choose the cloud outsourcing policy under the ﬂuctuating workload due to the dual effect of higher latency requirement and lower accuracy requirement, the expensive switching cost is avoided as a result. The convex relationship between the total cost and the inference service latency also brings inspiration for the deployment of realistic edge inference systems. In the range of 0.1 to 0.3, we can appropriately relax the latency requirement of inference service in exchange for a substantial reduction in system cost, while in the range of 0.5 to 3.0, we can choose a more stringent latency requirement without incurring much cost.
+
+Fig. 7. Average total cost versus scaling ratio of sj.
+
+Fig. 9. Cost versus Latency versus Accuracy.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+5884
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+
+Fig. 10. Distribution of execution time of our proposed online algorithms.
+Algorithm Execution Time. Fig. 10 shows the distribution of execution time of our proposed online algorithms and OLSA. We observe that the empirical cumulative distribution function (CDF) curve of RARP is almost a vertical line, because its execution time in each slot is less than 1ms. The execution time of FAAS varies from 90ms to 200ms, and its average execution time over all 144 time slots is about 106ms. Our FAAS takes relatively much longer time to run than the rounding algorithm, because it involves a regularized convex problem to be solved. Our RARP takes negligible time to ﬁnish, as it has a linear time complexity by design. Our online approach (FAAS+RARP) is extremely efﬁcient and scalable because the overall running times are much less than the commonly adopted length of 15 minutes of a time slot (recall that our algorithm runs once at each time slot), which indicates the real-time responses of our online algorithms to large-scale requests.
+7 CONCLUSION
+In this work, we propose an online optimization framework EdgeAdaptor for edge DNN inference serving at scale. It jointly optimizes the application conﬁguration adaption, DNN model selection and edge resource provisioning to judiciously navigate the three-way tradeoff between resource cost, inference accuracy and latency. Since the formulated optimization problem is NP-hard and involves future uncertain information, we carefully fuse the power of an online optimization technique and an approximate optimization method. Speciﬁcally, with a regularization technique, we ﬁrst decompose the long-term problem into a series of one-shot fractional problems which can be readily solved. Then, applying a randomized dependent scheme, we round the fractional solutions to a near-optimal feasible solution of the original problem. Rigorous theoretical analysis and extensive trace-driven simulations demonstrate the efﬁcacy of our proposed framework.
+REFERENCES
+[1] J. Zhang and D. Tao, “Empowering things with intelligence: A survey of the progress, challenges, and opportunities in artiﬁcial intelligence of things,” IEEE Internet Things J., vol. 8, no. 10, pp. 7789–7817, May 2021.
+[2] Z. Zhou, X. Chen, E. Li, L. Zeng, K. Luo, and J. Zhang, “Edge intelligence: Paving the last mile of artiﬁcial intelligence with edge computing,” Proc. IEEE, vol. 107, no. 8, pp. 1738–1762, Aug. 2019.
+
+[3] W. Shi, J. Cao, Q. Zhang, Y. Li, and L. Xu, “Edge computing: Vision and challenges,” IEEE Internet Things J., vol. 3, no. 5, pp. 637–646, Oct. 2016.
+[4] K. Simonyan and A. Zisserman, “Very deep convolutional networks for large-scale image recognition,” 2014, arXiv:1409.1556.
+[5] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., 2016, pp. 770–778.
+[6] B. Reagen et al., “Minerva: Enabling low-power, highly-accurate deep neural network accelerators,” in Proc. IEEE/ACM 43rd Annu. Int. Symp. Comput. Archit., 2016, pp. 267–278.
+[7] S. Liu, Y. Lin, Z. Zhou, K. Nan, H. Liu, and J. Du, “On-demand deep model compression for mobile devices: A usage-driven model selection framework,” in Proc. ACM Annu. Int. Conf. Mobile Syst. Appl. Serv., 2018, pp. 389–400.
+[8] S. Han, H. Mao, and W. J. Dally, “Deep compression: Compressing deep neural networks with pruning, trained quantization and Huffman coding,” 2015, arXiv:1510.00149.
+[9] X. Ran, H. Chen, X. Zhu, Z. Liu, and J. Chen, “DeepDecision: A mobile deep learning framework for edge video analytics,” in Proc. IEEE Conf. Comput. Commun., 2018, pp. 1421–1429.
+[10] E. Li, Z. Zhou, and X. Chen, “Edge intelligence: On-demand deep learning model co-inference with device-edge synergy,” in Proc. ACM Workshop Mobile Edge Commun., 2018, pp. 31–36.
+[11] J. Huang, C. Samplawski, D. Ganesan, B. Marlin, and H. Kwon, “CLIO: Enabling automatic compilation of deep learning pipelines across IoT and cloud,” in Proc. 26th Annu. Int. Conf. Mobile Comput. Netw., 2020, Art. no. 58.
+[12] S. Laskaridis, S. I. Venieris, M. Almeida, I. Leontiadis, and N. D. Lane, “SPINN: Synergistic progressive inference of neural networks over device and cloud,” in Proc. 26th Annu. Int. Conf. Mobile Comput. Netw., 2020, Art. no. 37.
+[13] J. Redmon and A. Farhadi, “YOLO9000: Better, faster, stronger,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., 2017, pp. 6517–6525.
+[14] W. Liu et al., “SSD: Single shot multibox detector,” in Proc. Eur. Conf. Comput. Vis., 2016, pp. 21–37.
+[15] J. Dai, Y. Li, K. He, and J. Sun, “R-FCN: Object detection via regionbased fully convolutional networks,” 2016, arXiv:1605.06409.
+[16] N. Buchbinder, S. Chen, and J. Naor, “Competitive analysis via regularization,” in Proc. 25th Annu. ACM-SIAM Symp. Discrete Algorithms, 2014, pp. 436–444.
+[17] Y. Kang et al., “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge,” in Proc. 22nd Int. Conf. Architect. Support Program. Lang. Operating Syst., 2017, pp. 615–629.
+[18] J. Jiang, G. Ananthanarayanan, P. Bodik, S. Sen, and I. Stoica, “Chameleon: Scalable adaptation of video analytics,” in Proc. Conf. ACM Special Int. Group Data Commun., 2018, pp. 253–266.
+[19] P. Yang, F. Lyu, W. Wu, N. Zhang, L. Yu, and X. S. Shen, “Edge coordinated query conﬁguration for low-latency and accurate video analytics,” IEEE Trans. Ind. Informat., vol. 16, no. 7, pp. 4855–4864, Jul. 2020.
+[20] D. Crankshaw, X. Wang, G. Zhou, M. J. Franklin, J. E. Gonzalez, and I. Stoica, “Clipper: A low-latency online prediction serving system,” in Proc. 14th USENIX Symp. Netw. Syst. Des. Implementation, 2017, pp. 613–627.
+[21] F. Romero, Q. Li, N. J. Yadwadkar, and C. Kozyrakis, “INFaaS: Automated model-less inference serving,” in Proc. USENIX Annu. Tech. Conf., 2021, pp. 397–411.
+[22] W. Wu, P. Yang, W. Zhang, C. Zhou, and X. Shen, “Accuracyguaranteed collaborative DNN inference in industrial IoT via deep reinforcement learning,” IEEE Trans. Ind. Informat., vol. 17, no. 7, pp. 4988–4998, Jul. 2021.
+[23] C. Wang, S. Zhang, Y. Chen, Z. Qian, J. Wu, and M. Xiao, “Joint conﬁguration adaptation and bandwidth allocation for edgebased real-time video analytics,” in Proc. IEEE Conf. Comput. Commun., 2020, pp. 257–266.
+[24] J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, “You only look once: Uniﬁed, real-time object detection,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit., 2016, pp. 779–788.
+[25] Z. Zhou, F. Liu, R. Zou, J. Liu, H. Xu, and H. Jin, “Carbon-aware online control of geo-distributed cloud services,” IEEE Trans. Parallel Distrib. Syst., vol. 27, no. 9, pp. 2506–2519, Sep. 2016.
+[26] Z. Zhou, Q. Wu, and X. Chen, “Online orchestration of cross-edge service function chaining for cost-efﬁcient edge computing,” IEEE J. Sel. Areas Commun., vol. 37, no. 8, pp. 1866–1880, Aug. 2019.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+ZHAO ET AL.: EDGEADAPTOR: ONLINE CONFIGURATION ADAPTION, MODEL SELECTION AND RESOURCE PROVISIONING FOR EDGE
+
+5885
+
+[27] C. Zhang, M. Yu, W. Wang, and F. Yan, “MArk: Exploiting cloud services for cost-effective, SLO-aware machine learning inference serving,” in Proc. USENIX Annu. Tech. Conf., 2019, pp. 1049–1062.
+[28] A. Singla, B. Chandrasekaran, P. B. Godfrey, and B. Maggs, “The internet at the speed of light,” in Proc. 13th ACM Workshop Hot Topics Netw., 2014, pp. 1–7.
+[29] Z. Liu, M. Lin, A. Wierman, S. Low, and L. L. H. Andrew, “Greening geographic load balancing,” in Proc. ACM SIGMETRICS Joint Int. Conf. Meas. Model. Comput. Syst., 2011, pp. 233–244.
+[30] J. Dean and L. A. Barroso, “The tail at scale,” Commun. ACM, vol. 56, no. 2, pp. 74–80, 2013.
+[31] L. Suresh, M. Canini, S. Schmid, and A. Feldmann, “C3: Cutting tail latency in cloud data stores via adaptive replica selection,” in Proc. 12th USENIX Symp. Netw. Syst. Des. Implementation, 2015, pp. 513–527.
+[32] A. Ali-Eldin, B. Wang, and P. Shenoy, “The hidden cost of the edge: A performance comparison of edge and cloud latencies,” in Proc. Int. Conf. High Perform. Comput. Netw. Storage Anal., 2021, pp. 1–12.
+[33] J. Csirik, “Heuristics for the 0-1 min-knapsack problem,” Acta Cybernetica, vol. 10, no. 1–2, pp. 15–20, 1991.
+[34] A. Rakhlin, J. Abernethy, A. Agarwal, P. Bartlett, E. Hazan, and A. Tewari, “Lecture notes on online learning draft,” 2009. [Online]. Available: http://www.mit.edurakhlin/papers/onlinelearning.pdf
+[35] S. Boyd and L. Vandenberghe, Convex Optimization. Cambridge, U.K.: Cambridge Univ. Press, 2004.
+[36] Y. Nesterov and A. Nemirovskii, Interior-Point Polynomial Algorithms in Convex Programming. Philadelphia, PA, USA: SIAM, 1994.
+[37] P. Raghavan and C. D. Tompson, “Randomized rounding: A technique for provably good algorithms and algorithmic proofs,” Combinatorica, vol. 7, no. 4, pp. 365–374, 1987.
+[38] R. Gandhi, S. Khuller, S. Parthasarathy, and A. Srinivasan, “Dependent rounding and its applications to approximation algorithms,” J. ACM, vol. 53, no. 3, pp. 324–360, 2006.
+[39] M. Lin, Z. Liu, A. Wierman, and L. L. H. Andrew, “Online algorithms for geographical load balancing,” in Proc. Int. Green Comput. Conf., 2012, pp. 1–10.
+[40] N. Buchbinder et al., “The design of competitive online algorithms via a primal–dual approach,” Found. Trends Theor. Comput. Sci., vol. 3, no. 2/3, pp. 93–263, 2009.
+[41] S. Diamond and S. Boyd, “CVXPY: A Python-embedded modeling language for convex optimization,” J. Mach. Learn. Res., vol. 17, no. 83, pp. 1–5, 2016.
+[42] Mosek Optimizer. Accessed: 2022. [Online]. Available: https:// www.mosek.com/
+[43] Alibaba Production Cluster Trace Data. Accessed: 2022. [Online]. Available: https://github.com/alibaba/clusterdata
+[44] AWS Lambda Price. Accessed: 2022. [Online]. Available: https:// aws.amazon.com/cn/lambda/pricing/
+[45] M. Lin, A. Wierman, L. L. H. Andrew, and E. Thereska, “Dynamic right-sizing for power-proportional data centers,” IEEE/ACM Trans. Netw., vol. 21, no. 5, pp. 1378–1391, Oct. 2013.
+[46] Y. Zeng, Y. Huang, Z. Liu, and Y. Yang, “Joint online edge caching and load balancing for mobile data ofﬂoading in 5G networks,” in Proc. IEEE 39th Int. Conf. Distrib. Comput. Syst., 2019, pp. 923–933.
+[47] B. Gao, Z. Zhou, F. Liu, and F. Xu, “Winning at the starting line: Joint network selection and service placement for mobile edge computing,” in Proc. IEEE Conf. Comput. Commun., 2019, pp. 1459–1467.
+[48] L. Zhang, C. Wu, Z. Li, C. Guo, M. Chen, and F. C. M. Lau, “Moving big data to the cloud: An online cost-minimizing approach,” IEEE J. Sel. Areas Commun., vol. 31, no. 12, pp. 2710–2721, Dec. 2013.
+[49] B. Gao, Z. Zhou, F. Liu, F. Xu, and B. Li, “An online framework for joint network selection and service placement in mobile edge computing,” IEEE Trans. Mobile Comput., early access, Mar. 9, 2021, doi: 10.1109/TMC.2021.3064847.
+[50] X. Qi, H. Xu, Z. Ma, and S. Chen, “Joint network selection and task ofﬂoading in mobile edge computing,” in Proc. IEEE/ACM 21st Int. Symp. Cluster Cloud Internet Comput., 2021, pp. 475–482.
+[51] Q. Zhang, F. Liu, and C. Zeng, “Online adaptive interferenceaware VNF deployment and migration for 5G network slice,” IEEE/ACM Trans. Netw., vol. 29, no. 5, pp. 2115–2128, Oct. 2021.
+
+Kongyange Zhao received the BE degree from the South China University of Technology, China, in 2020. He is currently working toward the master’s degree with Sun Yat-sen University, China. His research interests include edge computing, edge intelligence, and serverless computing.
+Zhi Zhou (Member, IEEE) received the BS, ME, and PhD degrees from the School of Computer Science and Technology, Huazhong University of Science and Technology, Wuhan, China, in 2012, 2014, and 2017, respectively. He is currently an Associate Professor with the School of Data and Computer Science, Sun Yat-sen University, Guangzhou, China. In 2016, he was a visiting scholar with the University of Go€ttingen. He was nominated for the 2019 China Computer Federation CCF Outstanding Doctoral Dissertation Award, the sole recipient of the 2018 ACM Wuhan & Hubei Computer Society Doctoral Dissertation Award, and a recipient of the Best Paper Award of IEEE UIC 2018. His research interests include edge computing, cloud computing, and distributed systems.
+Xu Chen (Senior Member, IEEE) received the PhD degree in information engineering from the Chinese University of Hong Kong, in 2012. He is a full professor with Sun Yat-sen University, Guangzhou, China, and the vice director of National and Local Joint Engineering Laboratory of Digital Home Interactive Applications. He worked as a postdoctoral research associate with Arizona State University, Tempe, USA, from 2012 to 2014, and a Humboldt scholar fellow with the Institute of Computer Science, University of Goettingen, Germany from 2014 to 2016. He received the prestigious Humboldt research fellowship awarded by the Alexander von Humboldt Foundation of Germany, 2014 Hong Kong Young Scientist Runner-up Award, 2017 IEEE Communication Society Asia-Paciﬁc Outstanding Young Researcher Award, 2017 IEEE ComSoc Young Professional Best Paper Award, Honorable Mention Award of 2010 IEEE international conference on Intelligence and Security Informatics (ISI), Best Paper Runner-up Award of 2014 IEEE International Conference on Computer Communications (INFOCOM), and Best Paper Award of 2017 IEEE Intranational Conference on Communications (ICC). He is currently an area editor of the IEEE Open Journal of the Communications Society, an associate editor of the IEEE Transactions Wireless Communications, IEEE Internet of Things Journal and IEEE Journal on Selected Areas in Communications (JSAC) Series on Network Softwarization and Enablers.
+Ruiting Zhou (Member, IEEE) received the PhD degree from the Department of Computer Science, University of Calgary, Canada, in 2018. She has been an associate professor with the School of Cyber Science and Engineering, Wuhan University since June 2018. Her research interests include cloud computing, machine learning, and mobile network optimization. She has published research papers in top-tier computer science conferences and journals, including IEEE INFOCOM, ACM MobiHoc, ICDCS, the IEEE/ACM Transactions on Networking, IEEE Journal on Selected Areas in Communications, IEEE Transactions on Mobile Computing. She also serves as a reviewer for journals and international conferences such as the IEEE Journal on Selected Areas in Communications, IEEE Transactions on Mobile Computing, IEEE Transactions on Cloud Computing, IEEE Transactions on Wireless Communications, and IEEE/ACM IWQoS.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+
+5886
+
+IEEE TRANSACTIONS ON MOBILE COMPUTING, VOL. 22, NO. 10, OCTOBER 2023
+
+Xiaoxi Zhang (Member, IEEE) received the BE degree in electronics and information engineering from the Huazhong University of Science and Technology, in 2013, and the PhD degree in computer science from the University of Hong Kong, in 2017, advised by Prof. Chuan Wu and Prof. Francis C.M. Lau. She is an Associate Professor with the School of Computer Science and Engineering, Sun Yat-sen University. Before joining SYSU, she was a postdoctoral researcher with the Department of Electrical and Computer Engineering, Carnegie Mellon University, advised by Prof. Carlee Joe-Wong. Her research interests lie in the broad area of optimization and algorithm design for networked systems, including edge computing networks, and distributed machine learning systems.
+Shuai Yu (Member, IEEE) received the BS degree from the Nanjing University of Post and Telecommunications, Nanjing, China, in 2009, the MS degree from the Beijing University of Post and Telecommunications, Beijing, China, in 2014, and the PhD degree from the University Pierre and Marie Curie (now Sorbonne Universite), Paris, France, in 2018. He is currently an associate professor with Sun Yat-sen University, Guangzhou, China. His research interests include edge computing, mobile computing, machine learning, and spaceair-ground integrated networks.
+
+Di Wu (Senior Member, IEEE) received the BS degree from the University of Science and Technology of China, Hefei, China, in 2000, the MS degree from the Institute of Computing Technology, Chinese Academy of Sciences, Beijing, China, in 2003, and the PhD degree in computer science and engineering from the Chinese University of Hong Kong, Hong Kong, in 2007. He was a postdoctoral researcher with the Department of Computer Science and Engineering, Polytechnic Institute of New York University, Brooklyn, NY, USA, from 2007 to 2009, advised by Prof. K. W. Ross. He is currently a professor and the associate dean with the School of Computer Science and Engineering, Sun Yat-sen University, Guangzhou, China. He was the recipient of the IEEE INFOCOM 2009 Best Paper Award, IEEE Jack Neubauer Memorial Award, and etc. His research interests include edge/cloud computing, multimedia communication, Internet measurement, and network security.
+" For more information on this or any other computing topic, please visit our Digital Library at www.computer.org/csdl.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:32:58 UTC from IEEE Xplore. Restrictions apply.
+

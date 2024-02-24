@@ -1,0 +1,1791 @@
+arXiv:2104.13997v2 [cs.AR] 30 Apr 2021 SG
+
+Domain-speciﬁc Genetic Algorithm for Multi-tenant DNN Accelerator Scheduling
+
+Sheng-Chun Kao1 and Tushar Krishna1 1Georgia Institute of Technology
+1skao6@gatech.edu, tushar@ece.gatech.edu
+
+ABSTRACT
+As Deep Learning continues to drive a variety of applications in datacenters and HPC, there is a growing trend towards building large accelerators with several sub-accelerator cores/chiplets. This work looks at the problem of supporting multi-tenancy on such accelerators. In particular, we focus on the problem of mapping layers from several DNNs simultaneously on an accelerator. Given the extremely large search space, we formulate the search as an optimization problem and develop a specialized genetic algorithm called G# with custom operators to enable structured sample-efﬁcient exploration. We quantitatively compare G# with several common heuristics, state-of-the-art optimization methods, and reinforcement learning methods across different accelerator settings (large/small accelerators) and different sub-accelerator conﬁgurations (homogeneous/heterogeneous), and observe G# can consistently ﬁnd better solutions. Further, to enable real-time scheduling, we also demonstrate a method to generalize the learnt schedules and transfer them to the next batch of jobs, reducing schedule compute time to ∼zero.
+1. INTRODUCTION
+Accelerators for Deep Neural Network (DNN) models are commonplace today in datacenters. As AI workloads continue to drive up the demand for compute, there is a trend towards building large accelerators housing several subaccelerator/arrays (summarized in Table 1). Key examples include MCM-based SIMBA [94], wafer-scale Cerebras [8] or scaled-out platforms [3, 30]. Some recent studies have also explored heterogeneous multi-accelerator designs enabled via reconﬁguration [46] or separate sub-accelerators [55].
+With the emergence of such platforms, enabling multitenancy is a natural use-case. This is driven by two trends. First, end applications (such as AR/VR [55] or self-driving [16, 117]) and cloud services (such as search [36, 124] and translation [58, 62]) often rely on several DNN models internally. Second, running queries from several users simultaneously can help enhance throughput and meet SLA requirements. While there has been signiﬁcant prior work on scheduling a single DNN model efﬁciently over one (or more distributed) accelerators [65, 95, 100, 102, 115, 122], scheduling multiple models simultaneously is relatively unexplored, and is the focus of this work. Some recent works on multi-tenant DNN accelerators such as Prema [15], AI-MT [3] and Herald [55] use heuristics (SJF, random, greedy) [3, 15, 55]. However, they often work under the premise of homogeneity in the underlying accelerator-modules [3, 15] or pre-deﬁned heterogeneous sub-accelerators [55]. In other words, the scheduling
+
+Multi-tenant system
+
+Schedule
+
+BW alloc. at each time frame SW
+
+Job S-Accel Order BWt
+
+A
+
+2
+
+B
+
+1
+
+1 1, 2, 1, 3…. 1 2, 1, 2, 1…
+
+Shedule
+
+DMA
+
+C
+
+1
+
+2 3, 3, 3, 2…
+
+……
+
+…
+
+…
+
+Host CPUs
+
+Descr. of jobs
+
+Job Type
+
+Shape
+
+A CONV 128,64,32,32,3,3
+
+B CONV 64,64,224,224,3,3
+
+C FC
+
+1024, 512
+
+.. …
+
+…
+
+Shedule Descr. of jobs
+Schedule Optimizer (G-SHARP)
+
+Server Memory BW (HBM/ DRAM)
+
+HW
+
+SubAccel 1
+
+PE PE
+
+SubAccel 2
+
+PE PE
+
+SubAccel 3
+
+…
+
+SL
+
+SubAccel n
+
+MAC
+⊗⊕
+
+Accelerator
+
+Mem BW
+
+Mem
+
+Mem
+
+Multi-Sub-Accels
+
+Workload timeframe 1:
+
+with shared system BW
+
+Sub-Accels assigned diﬀerent task
+
+(BW not used before workloads) and scheduled diﬀerent BWs
+
+Workload timeframe 2: Some tasks ﬁnished, new tasks launched on Sub-Accels, and new BW schedule is made
+
+Figure 1: Multi-tenant accelerator with schedule optimizer.
+
+Table 1: The comparisons of related works on multi-tenancy and multi-subaccelerators.
+
+Scale-out Accelerators
+
+Sub Accelerators
+
+Dataflow flexibility across sub-accelerators
+
+Multi-Tenancy Support
+
+Multi-Tenancy Scheduler
+
+SIMBA[94]
+
+Homogeneous (36 onpackage chiplets)
+
+No
+
+No
+
+NA
+
+TPUv3 Node [30] Homogeneous (4 128x128
+
+No
+
+No information in
+
+NA
+
+TPU cores on-chip)
+
+public domain
+
+Cerebras [8]
+
+Homogeneous
+
+Yes
+
+No
+
+NA
+
+AI-MT [3]
+
+Homogeneous (multiple systolic arrays)
+
+No
+
+Yes
+
+Manual
+
+PREMA [15]
+
+Single systolic array
+
+No
+
+Yes
+
+Manual
+
+Planaria [46]
+
+Reconfigurable systolic array
+
+No
+
+Yes
+
+Manual
+
+Herald [55]
+
+Heterogeneous dataflow sub-accelerators
+
+Yes
+
+Yes
+
+Design-time configured
+
+Platforms evaluated
+
+Homogeneous and
+
+Yes
+
+in this work
+
+Heterogeneous
+
+Yes
+
+G-SHARP
+
+(optimization based)
+
+algorithms are heavily tied to the designed multi-module accelerator. While this might be reasonable for an edge accelerator running a known set of models [55], enabling multi-tenancy in datacenters needs a scheduler that can work across evolving hardware platforms.
+In this work, we propose a multi-tenant DNN scheduler called (G-SHARP1 or G#) for multi-module accelerators housing multiple homogeneous or heterogeneous sub-accelerators, as shown in Fig. 1. We break the multi-tenant schedule into two components: sub-accelerator selection and job prioritization. Sub-accelerator selection is where we assign each job an accelerator to execute; job prioritization is where we order the jobs that are assigned to an sub-accelerator. Each component creates an immense design space by itself. The full design space is the combinatorial probability of both, which becomes as large as O(10157) (discussed in Section 3). The constraint in this optimization problem is the memory and interconnect
+
+1Genetic algorithm-based Scheduler for Heterogeneous Accelerator Platforms
+
+1
+
+bandwidth shared across the sub-accelerators. Given a multitenant schedule, each sub-accelerator then schedules the job assigned to it via its own internal scheduler (which is the problem of mapping a DNN layer on a single PE array for which several solutions exist [11, 77]).
+Compared to prior work on multi-tenant DNN scheduling [3, 15, 55], this work expands the scope of the problemspace in the following ways:
+• We optimize both job scheduling across sub-accelerators, and execution order of jobs on each of them, while prior works primarily focus on the former.
+• We target both homogeneous and heterogeneous DNN accelerator platforms.
+• We target a diverse spectrum of models across vision, language and recommendation which exhibit different bandwidth requirements.
+Our solution, G#, includes the following novel features:
+• 1 an encoding format for the scheduling problem to formulate it as an optimization problem. This enables our scheduling framework2 to leverage any black-box optimizer [84], including G#.
+• 2 several domain-speciﬁc operators to enable structured exploration of the large mapping space. This makes G# orders of magnitude faster and more sample-efﬁcient than baseline optimization methods [21, 34, 37, 38, 51, 80, 85], baseline genetic algorithm (GA), and Reinforcementlearning (RL)-based methods [72, 93]. From our comprehensive experiments across 42 widely-used models across vision, language and recommendation running over several (simulated) hardware platforms, G# achieves 86.4x to 610.7x speedup over schedules generated by other methods.
+• 3 a method to generalize and transfer the scheduling knowledge to future jobs without re-running the scheduling algorithm. This enables G# to perform runtime scheduling without requiring any search, unlike other optimization methods. In this mode, we observe 10.2x speedup over top-performing heuristics with the same (near zero) search time.
+2. BACKGROUND
+2.1 Characteristics of DNN Models
+In this paper, we consider three kinds of applications that are common in DNN-based cloud services: Vision, deep recommendation system (Recom), and language model (Lang).
+Vision. Most of Vision models [35, 54, 90, 98, 105] are dominated by convolution layers (2D/depth-wise/point-wise) (CONV) and many of them have a MultiLayer Perceptron (MLP) or fully connected layer (FC) at the end [54, 98].
+Recom. Recommendation models are either dominated by MLP, attention, or embedding lookup layers [13, 31, 36, 74]. With respect to the compute and HW cost, the MLPs and the attention layers are modeled as several FCs. We assume the embedding lookups are kept in the CPU host.
+Lang. Language models are often dominated by MLPs and attention layers with word embedding dimension. Their
+2to be open-sourced upon acceptance of this work.
+
+Vision: CONV dom. CONV(K, C, Y, X, R, S)
+
+S R
+
+C K
+Y X
+
+Recom: I
+FC dom. FC (O, I)
+
+I
+
+O
+
+Lang:
+
+E
+
+FC-E dom.
+
+FC-E(O, I, E)
+
+E
+
+O
+
+I
+
+…
+…
+…
+
+Figure 2: The dominant layers of three applications and the dimension deﬁnitions of different layer types. CONV: K/C: size of output/input channels, Y/X: height/width of activations, R/S: height/width of weight. FC: O: Output nodes, I: Input nodes, FC-E: E: Embedding sizes.
+compute/HW cost are modeled by what we deﬁned as FCembedded (FC-E) layer, a fully connected layer with embedding dimension. FC-Es are often used as hidden layers of RNNs or MLPs and attention layers of transformer-based models [22, 24, 79, 82].
+Different applications and their dominant layer types are summarized in Fig. 2, where the dimension notations used throughout this paper are included.
+2.2 Multi-tenant Acceleration Platform
+
+2.2.1 Accelerator Architecture
+As shown in Fig. 1, all sub-accelerators share the “system BW" via an interconnection network. We deﬁne system BW as the minimum of main memory (e.g., HBM/DRAM) BW and host-accelerator (e.g., PCIe) BW. The speciﬁc interconnection network architecture can vary depending on the target technology (on-chip [3] versus on-package [94] versus waferscale [8]) and the scheduler is agnostic to this. In this work, we target accelerators with both homogeneous and heterogeneous sub-accelerators. The motivation for heterogeneity among sub-accelerators comes from diverse dataﬂow preferences for different kinds of layers [56]. For instance, certain sub-accelerators could be optimized for convolutions [11, 75] to service vision models, some for GEMM [47, 76] to service NLP models, and some for and embeddings to service recommendation models [42].
+
+2.2.2 Sub-Accelerator Architecture and Schedule
+Each sub-accelerator in our system is a conventional DNN accelerator that is comprised of an array of Processing Elements (PE). Each PE has a MAC to compute partial sums, and local scratchpad (called SL in this paper) to store weights, activations, and partial sums. Each sub-accelerator also houses a shared global scratchpad (SG) to prefetch activations and weights from HBM/DRAM for the next tile of computation that will be mapped over the PEs and SLs. Networks-on-Chip (NoCs) are used to distribute operands from the SG to the SLs and write the outputs back to the SG.
+Local Schedule. Given a DNN layer, each sub-accelerator employs what we call as a local schedule (to distinguish it from the global schedule determined by G#). The local schedule (aka mapping [56]) determines the loop order, parallelism dimensions, and tile sizes for running the layer on the subaccelerator. From the data movement perspective, a tile is a basic data movement unit from DRAM/HBM to the SG. The tile sizes are bound by the size of the SG buffer. The SG is double-buffered [12, 56] to try and hide the data-fetching latency of the current tile from DRAM/HBM behind the compute latency. However, if the bandwidth to main memory is
+
+2
+
+insufﬁcient to hide the fetch latency (based on the bandwidth allocation determined by the scheduler), the accelerator will stall. The local schedule depends on the dataﬂow [11, 56] strategy of the accelerator. For instance, the NVDLA [75] dataﬂow keeps weights in the outermost loop (i.e., weightstationary) and schedules the weight tiles spatially over the array along the input and output channels for parallelism.
+3. PROBLEM FORMULATION
+The focus of this paper is designing a scheduling optimization method for multi-tenant heterogeneous DNN accelerator. We formulate the scheduling problem as an optimization problem and discuss details here. In Section 4, we provide speciﬁc details of our proposed algorithm.
+3.1 Scheduler Overview
+In this paper, we refer to a “job" in layer granularity (i.e., each DNN layer is a job instance). Fig. 1 shows an overview of the multi-tenant schedule optimizer. The CPU host packs independent jobs (layers) into a ready-batch and queries the optimizer for schedule, making it a static scheduling problem, whose procedure is consistent with the assumption in many resource scheduling works [14, 23, 66]. The host’s query consists of a description of a batch of jobs as shown in Fig. 1.
+The optimizer takes the job query as input and outputs a schedule for the batch. The schedule consists of two key components:
+• Sub-accelerator selection: the assignment of each job to a speciﬁc sub-accelerator.
+• Job prioritization: execution order of a batch of jobs on a given sub-accelerator.
+The schedule gets appended with the portion of the system bandwidth that is allocated to each sub-accelerator for each job (Section 3.6). The ﬁnal schedule is leveraged by the DMA controller to manage data movement from the system memory to the sub-accelerator scratchpads. While the current batch is running, the host optimizes the schedule for subsequent batches.
+Optimization Framework. In this work, we develop a technique to optimize for both components of the schedule simultaneously. The structure of our proposed schedule optimizer called G# is shown in Fig. 3. We follow a genetic algorithm ﬂow. At a high-level, in each time epoch, G# generates multiple valid schedules, evaluates them using a cost model, picks the best ones and uses those to generate better schedules for the next time epoch. The optimization loop ﬁnishes when the targeting objective value (e.g., latency) converges and the constraint (e.g., bandwidth utilization) is met, or can be stopped after a ﬁxed set of time epochs (if there is a constraint on the amount of time available for scheduling). We provide more details about the G# algorithm in Section 4. Our proposed ﬂow can also work with other optimization methods as we show in Section 4.4.
+We use previously proposed heuristics for both jobs priority and sub-accelerator selection, along with optimization methods that can solve for both together as baselines in our evaluations (Table 5).
+3.2 Search Space
+
+The full search space of the proposed scheduling problem is the combinatorial combination of the choices for subaccelerator selection and job priority. In this paper, we assume the maximum batch size of 100 jobs, which is 100 parallel jobs to be ofﬂoaded. Assuming we are scheduling for a platform with 4 sub-accelerators, and each sub-accelerator assigned approximately 100/4=25 jobs. The full possible combinations become (100!)/(25!)4 × (25!)4 = 100! = O(10157) which is extremely massive. Therefore the sample efﬁciency3 of the optimization methods, which decides the convergent rate, becomes a key factor.
+
+3.3 Objective and Constraints
+We examine the performance of the schedule by the makespan latency4 of the batched job, which is the most critical condition of the tail latency5, as described below:
+makespan = max(TS−Accel1 , TS−Accel2 , ...TS−AccelN ) (1)
+
+TS−Acceln , n = 1, 2..., N, is the runtime of S − Acceln (SubAccelerator n) to run all jobs that assigned to it. The goal is to
+
+distribute the jobs and make all the working sub-accelerators
+
+as compact as possible. However, they would interfere with
+
+each other’s performance by competing for the system BW.
+
+The total accelerator BW usage at any time t, should not
+
+exceed the BWsys constraint, shown below:
+
+∑ BWSt−Acceln < BWsys
+
+(2)
+
+1≤n≤N
+
+Therefore, the schedule optimizer is not only tasked to schedule the sub-accelerator allocation and job order but also to generate a BW allocation schedule across the runtime.
+Alternate Objectives. In this paper, we demonstrate our algorithm with the objective of minimizing the makespan latency of the batch of jobs targeting maximum system throughput. However, different objectives such as system energy, system power, energy-delay-product, and so on can all be valid objectives for different applications/scenarios and easily applied. We present a case study on latency sensitive applications or batch with DNN layer dependency in Section 5.7 and provide the formulated objective.
+The makespan latency, which is the objective, could also be set as a “soft" constraint6 for applications with tight inference latency goals. The optimizer will approach the constraint as much as possible. Once the constraint is met, the optimizer can terminate early.
+Alternate Constraints. In addition to the system BW constraint, which is essential in our task, G# can support other constraints such as latency, energy, and power. The search time (optimizer runtime) can also be set as a constraint and serve as a stopping criteria for the algorithm.
+
+3.4 Optimization Algorithm Flow
+Set-up: At the start, the host sets up the optimizer by feeding in the conﬁgurations (number of PEs, local schedule)
+
+3Performance improvement over the number of sampling budget. 4Makespan latency is the duration elapses from the start of jobs to the end of the latest ﬁnished job. 5Tail latency is the completion time of the 95th, 98th, 99th, or 100th percentile of the batched jobs. Makespan latency is the most critical condition (100th percentile) of the tile latency. 6The constraints that are allowed to be violated with certain penalty.
+
+3
+
+Scheduler Setup:
+
+Accels Conﬁg. (PEs, mapping)
+
+Constraint (Cluster BW)
+
+Objective (makespan Latency)
+
+Host CPUs
+
+Query
+Descr. of jobs
+
+Init.
+
+Encode Gene
+
+encoder
+
+Generalized Sol.
+
+Shedule Sol.
+Job Analyzer Analysis Table
+Generator HW cost model
+(MAESTRO)
+
+Crossover-gen
+S-Accel Job Sel. Prio.
+
+Evolution
+
+Crossover-Rg
+S-Accel Job Sel. Prio.
+
+Crossover-Accl S-Accel Job
+Sel. Prio.
+
+Mutate S-Accel Job
+Sel. Prio.
+
+Parents Select
+
+Elites Evaluation
+
+Children
+
+Fitness Function
+Extract Obj. (Makespan Lat.)
+
+Jobs BW Allocator
+Jobs Analysis
+Table
+
+Decode Gene
+decoder
+
+G-SHARP (No-stall Latency, Req. BW)
+
+Job S-Accel1 S-Accel2
+
+A (3k, 5) (10k, 1)
+
+B (1k, 2) (2k, 3)
+
+C (1k, 10) (1k,30)
+
+..
+
+…
+
+…
+
+Figure 3: The structure and ﬂow† of G#.
+
+†Set-up: Host sets up optimizer by Accel. conﬁg., Constraint., and Objective. Pre-process:Job Analyzer: Prepare the job analysis table. Init.: Initialize random genes by putting random values into encoder. The outputted genes consist of two genomes (features) representing: Accel Sel. and Job Prio.
+Optimization Loop:Evolution block: Genetic operators: Accel. sel. and Job prio., represented by two genomes, respectively, are evolved by generic operators. Evaluation block: Decoder: Decode the genes into a descr. of schedule in Fig. 4(a). Job BW allocator: using the descr. to manage/allocate the BW to each accel at each time step. Fitness: Extract and set makespan latency as ﬁtness value. Select: Select the parents of the next generation.
+
+Decoded
+
+Schedule
+
+Subaccel 1
+
+J1, J4
+
+Subaccel 2
+
+J5, J3, J2
+
+Sub-accel Alloc Sub-accel 1 Sub-accel 2
+BW Alloc
+System BW BW
+
+: Job1
+
+: Job2
+
+: Job3
+
+: Job4
+
+: Job5
+
+Available BW > Req. BW time
+
+Order
+
+0
+
+Makespan latency
+
+time
+
+(a) Schedule description (b) Detail BW and Sub-accel schedule from jobs BW allocator
+
+Figure 4: (a) Schedule description from the decoder. (b) The BW and the corresponding sub-accels schedule from the jobs BW allocator.
+
+of each sub-accelerators, the system constraint (system BW), and objective (e.g., latency).
+Pre-process: Job analyzer receives job descriptions from the host and prepares a job analysis table as shown in Fig. 3. Init creates random genes by putting random values into genetic encoder. The encoded genes represent two features: the schedule for sub-accelerator selection and job prioritizing (Section 4.2.2). The genes are sent into the optimization loop.
+Optimization Loop: • Evolution block: Genetic operators. The genes repre-
+senting sub-accelerator selection and job prioritizing are evolved by four designed genetic operators, described in Section 4.2.3.
+• Evaluation block: Decoder decodes genes into a schedule description as shown in Fig. 4(a). Job BW allocator takes in the schedule description and allocates the BW for each sub-accelerator. Fitness function extracts the objective and sets it as ﬁtness value. Select function selects the individuals (i.e., schedules) with the highest ﬁtness as the parents for the next generation.
+This ﬁnishes one generation/epoch of algorithm7. The solution, which is a detailed schedule, as shown in Fig. 4(b) is output to the host.
+
+3.5 Job Analyzer
+The job analyzer takes the jobs (layers) description as input 7The generalized solution block is described later in Section 4.3.
+
+and estimates the no-stall latency and its required BW for each sub-accelerator using a cost model (described below) to generate a job analysis table as Fig. 3 shows. This table serves as a performance lookup table by the Job BW allocator (Section 3.6) within the optimization loop.
+3.5.1 HW cost model for Sub-Accelerators
+In G#, we leverage MAESTRO [1] as our underlying cost model for each sub-accelerator because of its ability to support diverse accelerator dataﬂows and conﬁgurations8. It supports most of the common DNN layers such as CONV, depth-wise CONV, and fully connected. Given a DNN layer, a HW resource conﬁguration (PE, SL size, SG size, NoC latency, and BW), and a mapping/dataﬂow strategy, MAESTRO estimates the statistics such as latency, energy, runtime, power, and area.
+3.5.2 Job Analysis Table
+No-stall Latency. We deﬁne no-stall latency as the latency for running each job on each sub-accelerator, assuming it has sufﬁcient memory bandwidth (i.e., not memory-bound). This value is computed by running each job through the MAESTRO cost-model for all sub-accelerators, which internally estimates the mapping (i.e., local-schedule). We assume double buffering at tile-granularity in the sub-accelerator to hide the tile fetch latency (except for the ﬁrst tile).
+No-stall Bandwidth. We deﬁne no-stall bandwidth as the minimum bandwidth requirement from each sub-accelerator to make it stay compute-bound, not memory-bound. As described in Section 2.2.2, the local schedule for each subaccelerator will decide the basic data movement unit (i.e., tiles) and their movement pattern from main memory to the accelerator, and within the accelerator. A full compute of a layer (job) consists of multiple tiles. For example, the second layer of VGG16 [98] has the shape (K=64, C=64, Y=224, X=224, R=3, S=3). Assuming a tiling strategy that makes a tile of dimension (k=4, c=4, y=8, x=8, r=3, s=3), it leads to 200,704 (=16 × 16 × 28 × 28) tiles, which divide the total data movement of an entire layer into 200K of small basic units. Based on the tile sizes, and the compute time for each tile determined by MAESTRO, we estimate the BW needed to fetch the next tile while the current tile is computing.
+3.6 Jobs BW Allocator
+Jobs BW allocator is the key module that enables the consideration of shared system BW. Receiving the decoded schedule as shown in Fig. 4(a), the jobs BW allocator lookup those jobs’ no-stall latency and required BW from the job analysis table (Section 3.5), and allocates the system BW to each sub-accelerator at each time frame by Algorithm 1. Brieﬂy, it checks the BWtreq, an array describing the (no-stall) BW request of each sub-accelerator, at any time t. If the total request is larger than BWsys, it allocates the BWsys according to the weighting of each sub-accelerator’s BW request. With Algorithm 1, it outputs the detailed BW schedules for each sub-accelerator.
+8In this paper, we explore heterogeneity with the aspect of different specialized DNN accelerators conﬁgurations (PEs, buffer size, dataﬂows). However, G# is general enough, so that it could also consider generic architectures such as CPUs/GPUs/TPUs by plugging in their cost models.
+
+4
+
+Algorithm 1 Job BW Allocator
+
+Input: Schedule description
+
+Output: BWtalloc, t=1,2...T Get Latt , an array of no-stall latency for the parallel jobs at time
+
+t, t=0
+
+Get BWtreq, an array of required BW for the parallel jobs at time
+
+t, t=0
+
+CurJobst = Latt × BWtreq
+
+while CurJobst is not empty do
+
+if sum(BWtreq) < BWsys then
+
+BWtalloc = BWtreq
+
+else
+
+BWtalloc
+
+=
+
+BWtreq ×BWsys sum(BWtreq )
+
+end if
+
+runtimes
+
+=
+
+CurJobst BWtalloc
+
+runtime = min(runtimes)
+
+CurJobst -= runtime × BWtalloc accelnext = argmin(CurJobst )
+
+t += runtime Fetch the next Lat and BW req of sub − accelnext , compute CurJobt and insert into BWtreq, Latt and CurJobst . end while
+
+The makespan latency T = t
+
+For example, from the output BW schedule in Fig. 4, we can tell, jobs J1 and J5 will be launched in Sub-accel-1 and Sub-accel-2, concurrently. Sub-accel-2 will be allocated more BW because it is running a more BW-intensive job (detail in Algorithm 1). When Sub-accel-2 ﬁnishes J5 and launches J3, the BW will be re-scheduled to reﬂect the change of live running jobs in the accelerators, where Sub-accel-1’s BW is reduced and reallocated to Sub-accel-2, as shown in Fig. 4. Finally Fig. 4(b) shows that when the total requesting BW is larger than the system BW (memory-bound), the allocator maximizes the BW usage by fully allocating them to each sub-accelerator. On the other hand, when the system BW is larger than requesting BW (compute-bound), there will be unutilized BW as shown at the right of Fig. 4(b).
+
+4. G# OPTIMIZATION ALGORITHM
+G# is a GA-based search technique. Its key difference from standard GA is (i) it customizes the optimization algorithm’s exploration momentum and mechanism (i.e., genetic operators in GA context) for the target search space, and (ii) provides knowledge transfer support.
+4.1 Why GA?
+Research shows GA reaches competitive performance with deep reinforcement learning [88, 101], and hyper-parameter optimization problem. STOKE [92] and Tensor Comprehensions [113] use GA to search the space of DNN code optimization. From a search time perspective, GA is light and fast [88,101] comparing to many optimizations methods since the optimization mechanism in GA uses simple operations (e.g., crossover and mutations). A key challenge with standard GA however is that it is not sample-efﬁcient. We address this issue using our customized operators (Section 4.2.3).
+4.2 G# Algorithm Details
+4.2.1 Terminology and Basics of GA
+We list the common terminology of GA we use throughout
+
+Term Gene Genome Individual
+Generation
+Crossover Mutation
+
+Table 2: Terminology used in G# Algorithm.
+Description
+An encoded value that represents accel. sel. or job prio. of a job. A series of genes that represent the entire schedule about accel. sel. or job prio. of a batch of jobs. A series of genomes that fully represent the schedule of a batch of jobs. An entire set of individuals forms a generation. The generation evolves with time by mutation/crossover and selection of the well-performing individuals to the next generation. Blend two parents’ genes to reproduce children’s genes.
+Randomly perturb a parent’s genes to reproduce children’s genes.
+
+the paper in Table 2, namely gene, genome, individual, generation. The basic mechanism in GAs is to create a population of individuals in each generation. All individuals are evaluated and sorted based on their ﬁtness. The best performing individuals are used as parents to create a new population of individuals using genetic operators ( Section 4.2.3).
+In the context of this work, an individual is a complete scheduling strategy in our context, a genome represents one of the aspects of the schedule (sub-accel. sel./ job prio.) of an individual, and genes inside a genome represents a schedule decision of a job on either sub-accel. sel. or job prio. The goal of GA is to perturb genes (i.e., components of the schedule) and retain well-performing ones across generations.
+
+4.2.2 Genetic encoding
+The genetic encoding is the interface that bridges the evolution block with the evaluation block in Fig. 3. It describes the joint strategy of job prioritization and sub-accelerator selection, as shown in Fig. 5(a). There are two genomes per individual: the sub-accelerator ID genome and the job prioritizing genome. Each genome has N genes that correspond to N jobs in the batch. In our evaluations, we assume the maximum job batch size to be 100. Therefore an individual has maximum 200 genes. (Smaller batch size is also allowed, and in fact, it introduces shorter genes, and the algorithm converges faster.) The designed genetic encoding is general enough that it is not exclusive for the G# algorithm but could be used as the interface to other optimization as well (described in Section 4.4).
+We describe the genetic encoding and genetic operators in G# using the walkthrough example in Fig. 5 assuming two sub-accelerators and a batch of ﬁve jobs.
+Sub-accel. ID genome. Each gene describes the sub-accel ID for the corresponding job. For example, jobs J1 and J4, are assigned to sub-accel 1, and J2, J3, and J5 are assigned to sub-accel 2 as shown in the sub-accel selection part of the gene decoding in Fig. 5(a).
+Job Prioritizing genome. Each gene describes the priority of the corresponding job. The priority value ranges from 0 to 1, where 0 is the highest priority. We order the job assigned to a certain sub-accelerator by the order of priority value. For example, J1 runs before J4 in sub-accel 1 as shown in the job prioritizing part of the gene decoding in Fig. 5(a).
+
+4.2.3 Genetic operators
+Standard GA Operators. The standard genetic operators in GA consist of mutation and crossover. The standard mutation operator randomly mutates some genes. The standard crossover operator samples a pivot point and exchanges the genes of parents according to that pivot point. The sampling efﬁciency of the GA relies on the efﬁciency of the genetic
+
+5
+
+Jobs
+
+J1
+
+J2
+
+1
+
+J3
+
+J4
+
+J5
+
+J1, J4
+
+J4
+
+0 Decoded Schedule
+
+J1
+
+J4, J1 Accel 1
+
+1 2 2 1 2 0.1 0.8 0.4 0.7 0.3
+
+Genes
+
+J2, J3, J5
+
+J2
+
+J3 J5
+
+J2, J3, J5 Accel 2 Order
+
+Sub-accel sel. Job Prioritizing
+
+Genes Decoding
+
+Gene
+
+J1 J2 J3 J4 J5 J1 J2 J3 J4 J5
+
+1 2 2 1 2 0.1 0.8 0.4 0.7 0.3 Individual
+
+Dad Mom
+
+Sub-accel Sel. Genome Job Prio. Genome
+(a) Genetic encoding and its
+
+Son Daughter
+
+decoding method
+
+Dad
+
+Son Sched.
+
+1 2 2 1 2 0.1 0.8 0.4 0.7 0.3
+
+1 2 1 1 2 0.1 0.2 0.4 0.7 0.3
+
+J2
+
+Son
+
+(b) mutate Mom Sched.
+J5 1 2 2 1 2 0.1 0.8 0.4 0.7 0.3
+
+2 1 1 1 1 0.5 0.3 0.2 0.7 0.9
+Son Sched.
+1 2 2 1 2 0.1 0.8 0.4 0.7 0.9
+
+2 1 1 1 1 0.5 0.3 0.2 0.7 0.3
+
+J5 J2
+
+(c) crossover-gen
+
+Sub-accel 1
+J4 J3 J1 J3 J5 J2
+Sub-accel 2
+
+J4
+
+J2 J3
+
+J1
+
+J4
+
+J1
+
+J3 J5
+
+1 2 2 1 2 0.1 0.8 0.4 0.7 0.3 2 1 1 1 1 0.5 0.3 0.2 0.7 0.9
+1 2 1 1 1 0.1 0.8 0.2 0.7 0.9 2 1 2 1 2 0.5 0.3 0.4 0.7 0.3
+(d) crossover-rg
+1 2 2 1 2 0.1 0.8 0.4 0.7 0.3 2 2 1 1 1 0.5 0.1 0.2 0.7 0.9
+Accel 2
+2 2 2 1 1 0.5 0.1 0.4 0.7 0.3 2 2 2 1 2 0.5 0.8 0.4 0.7 0.3
+(e) crossover-accel
+
+J5
+
+J4
+
+J2 J3
+
+J1
+
+J5 J4 J2
+
+J3 J1 J3 J5
+
+J5
+
+J4
+
+J3
+
+J1
+
+J2
+
+mutate
+
+J4
+
+J5 J1
+
+J2
+
+J1 J3 J5 J2
+
+Figure 5: (a) The genetic encoding and its decoding methods. Genetic operators: (b) mutation, (c) crossover-gen, (d) crossover-rg, and (e) crossover-accel. In (b-e), we show the genes of parents and children at the left and the decoded scheduling of mom and son at the right.
+
+operators to sample high-quality next generation. G# Operators. In G#, we inherit the standard mutation
+mechanism and design three specialized crossover genetic operators. Different crossover operators are designed to preserve different dependency of genes while exploration. They allow us to explore the scheduling problem in a more strategical manner. We describe the genetic operators next.
+Mutation. During mutation, we randomly select multiple genes (according to the mutation rate) and mutate them to random values. Fig. 5(b) shows an example when mutating at the third and second genes of two genomes respectively. On the right side of the ﬁgure, it shows how the son’s genes/schedule are generated by the dad’s mutation. J3 is moved to sub-accel 1 because of the ﬁrst mutation. J2 is moved to a higher priority in sub-accel 2 because of the second mutation. In our experiments, we use a mutation rate of 0.05.
+Crossover-gen. This is a genome-wise crossover. First, we randomly sample a type of genome to crossover. Next, we randomly sample a pivot point and exchange the genes of the genomes. There are two beneﬁts of genome-wise crossover. First, we keep the perturbation to the level of the genome, which potentially keeps the good characteristics of the other un-touched genomes, and therefore is more stable throughout the evolution. Second, we eliminate the order dependency of the genomes. The genomes are independently representing their features, where the order of them provides no information (, i.e., representing Sub-accel Sel. genome ﬁrst and Job Prio. Genome later does not make the J5 of Sub-accel Sel. and J1 of Job Prio. strongly correlated despite their being next to each other.). Therefore, a genome-wise crossover, which operates genomes independently, enables us to perturb the gene without unnecessary assumptions of the genome order. Crossover-gen becomes the major crossover function, which we set the crossover rate as 0.9.
+Fig. 5(c) shows an example that we pick the second genome (Job Prio.) as the crossover region and the third location of the region as the pivot point. With the respect of schedule change after crossovering, in the example, the orders of J4 and J5 in mom’s schedule are passed to son’s schedule.
+Crossover-rg. This is a range crossover mechanism structured to preserve the the dependency of genes across genomes. For example, in Fig. 5(a), the ﬁrst and the sixth genes are dependent, since they are both representing some features for J1. We randomly pick a range of genome (e.g., the 3rd to the 5th locations of each genome) and simultaneously crossover all the genes falling into the picked region from both genomes,
+
+and thus the cross-genome dependency is preserved. With the respect of scheduling change after crossovering, the order and accel selection of J3, J4, and J5 are exchanged between two individuals. Crossover-rg has crossover rate of 0.05.
+Crossover-accel. This is a crossover method to preserve the dependency of job ordering within an sub-accelerator. We randomly select a sub-accelerator and pass the job ordering information of this sub-accelerator to the children. For example, in Fig. 5(e), we select sub-accel 2. Next, we check the Sub-accel Sel. genome of Mom, copy the genes related to sub-accel 2 (the ﬁrst and second genes of both genomes in (e)), and paste them to son’s genomes.
+To increase load balancing, the original jobs assigned to sub-accel 2 in Son will be randomly mutated. Crossover-accel has crossover rate of 0.05.
+4.2.4 Hyper-parameter Tuning
+The above mentioned mutation, crossover rates, populations sizes, and elite ratios are hyper-parameters in G#. We applied a hyper-parameter search via a Bayesian optimization framework [7] to select a set of hyper-parameters that makes G# achieve the highest performance across multiple workloads.
+4.3 Knowledge Transfer of Learnt Schedule
+In this section, we present the method we utilize to make the learnt knowledge transferable/generalizable, i.e., the learnt knowledge could be transferred to a different batch of jobs, as long as they fall within the same application types.
+We add one additional feature extraction function at the start of the optimization process. The feature extraction function takes in the no-stall latency and requested (no-stall) BW of a job from the job analysis table (a row in Fig. 3). Next, our feature function simply calculates the mean latency of a job across different sub-accelerators as the outputting feature value. Finally, we rank the jobs by the feature value and record their ranking order. As an example, suppose the feature values (such as mean latency) of three jobs are 6.5K, 1.5K, and 1K respectively, and thus their ranking orders are 0, 1, 2, assuming only three jobs in a batch. When the optimization process ﬁnishes, we learn two pieces of knowledge: (i) the schedule for the current batch, which we output, and (ii) the schedule of the ranking order, schedrank, which is stored as a generalized knowledge in the generalized solution block in Fig. 3. For e.g.„ schedrank could describe putting the job with ranking order 0 to sub-accel 1 with the highest priority, and so on.
+
+6
+
+Table 3: Evaluated DNNs in different applications.
+
+App
+
+DNN Models
+
+Type
+
+AlexNet [54], DenseNet [41], GoogleNet [106], MnasNet [107],
+
+Vision MobileNet-V2 [90], ResNet50 [35], ResNext50 [118], ResNet18 [35],
+
+WideResNet50 [35], SufﬂeNet-V2 [123], SqueezeNet [43], VGG16 [98]
+
+ALBERT [59], Bart [62], BERT [24], CamemBERT [68], CTRL [52],
+
+DistilBERT [91], ELECTRA [18], FlauBERT [60], GPT2 [82], GPT [81],
+
+Lang LongFormer [6], MarianNMT [49], MobileBERT [103], Reformer [53],
+
+RetriBERT [44], RoBERTa [64], T5 [83], TransformerXL [22], XLM [58],
+
+XLM-RoBERTa [19], XLNet [119]
+
+Recom
+
+DIN [127], DIEN [126], DLRM-MLPerf [71], DLRM-large [50], DLRM-small [74], WideDeep [13], DLRM-RMC1 [31], DLRM-RMC2 [31]
+
+Table 4: Platform setting of the experiments.
+
+Setting Description # of sub-accels (height of PE array, dataflow style, buffer)
+
+S1
+
+Small Homog
+
+4
+
+4x( 32, HB, 146KB)
+
+S2
+
+Small Hetero
+
+4
+
+3x( 32, HB, 146KB), 1x( 32, LB, 110KB)
+
+S3
+
+Large Homog
+
+8
+
+8x(128, HB, 580KB)
+
+S4
+
+Large Hetero
+
+8
+
+7x(128, HB, 580KB), 1x(128, LB, 434KB)
+
+Large Hetero
+
+S5
+
+8
+
+BigLittle
+
+3x(128, HB, 580KB), 1x(128, LB, 434KB) 3x( 64, HB, 291KB), 1x( 64, LB, 218KB)
+
+S6 Large Scale-up
+
+16
+
+7x(128, HB, 580KB), 1x(128, LB, 434KB) 7x( 64, HB, 291KB), 1x( 64, LB, 218KB)
+
+2D PE array: h (height) × w (width) (PEs), w=64, in the experiments
+
+In the transfer learning scenario, we would fetch the schedrank from the generalized solution block in Fig. 3. When the next
+
+brand-new batch of jobs comes, we extract their feature with
+
+the feature extraction function, rank them, and, according to
+
+the ranking value, order them into an initial schedule follow-
+
+ing schedrank. The insight is schedrank preserves the scheduling strategy with respect to the relative distance of the jobs in
+
+the feature domain.
+
+4.4 Leveraging Other Optimization Methods
+
+G# is designed to be general enough to be compatible with other optimization methods. We use the same encoding scheme and algorithm ﬂows. However, we replace the GA evolution block with other optimization operators. The objective is the same as G#, to ﬁnd a series of parameters (genes) that optimizes the ﬁtness value. We evaluate a series of optimization methods listed in Table 5 in Section 5. We include multiple population-based optimizations [21, 32, 33, 34, 37, 38, 51, 69, 80, 85] and two RL methods: A2C [72] which is used in [67, 104] for scheduling and PPO2 [93], which is one of the advanced policy-gradient methods that succeed in many ﬁelds and is used in [9, 87] for resource scheduling.
+
+5. EVALUATIONS 5.1 Methodology
+
+5.1.1 Target DNN Models
+We consider three different kinds of applications: vision, language, and recommendations. The DNN models from each are shown in Table 3.
+
+5.1.2 Job Categories
+We present results with a system batch size of 100. As discussed earlier in Section 3.1, we assume that the host CPU dispatches a batch of independent jobs (i.e., DNN layers from various models) to the scheduler. For our evaluations, the batch of jobs is generated by sampling 100 different layers from the classes of DNN models discussed above. We categorize the jobs into Vision, Lang, Recom and, Mix (i.e., sampling from all three classes).
+
+Table 5: Baseline heuristics and optimization methods. Green rows represent heuristics for job prioritizing or accel selection. A complete schedule algorithm is the combination of two. e.g., FCFS-OLB. HEFT (dark green) is a heuristic-based joint method. Blue rows represent baseline optimization methods, which jointly optimize both aspects.
+
+Alg.
+
+Description
+
+FCFS First-Come-First-Serve. (Job prioritizing)
+
+SJF Shortest-Job-First. (Job prioritizing)
+
+OLB Opportunity-Load-Balancing. Greedily assign job to whichever available accel. (Accel selection)
+
+MET Minimum-Execution-Time. Greedily assign job to accel that can run it the fastest. (Accel selection)
+
+RR Round-Robin. Select the accel rotativity. (Accel selection)
+
+Random Random selection. (Job prioritizing/ Accel selection)
+
+HEFT Heterogenous-Earliest-Finish-Time. Astate-of-the-art joint method.
+
+DE Differential Evolution. Weighting for local DV: 0.8, global DV: 0.8.
+
+(1 +𝜆)-ES (1 +𝜆)-Evolution Strategy. We use (1+1)-ES in the experiment.
+
+CMA-ES Covariance Matrix Adaptation-ES. Elite group ratio: 50%.
+
+TBPSA Test-based Population-Size Adaptation. Initial population:50.
+
+PSO Particle Swarm Optimization. Weighting for global best: 0.8, parent best: 0.8, momentum 𝜔: 1.6.
+
+CLHS S. Cauchy Latin Hypercube Sampling Search. Latin Hypercube sampling in the Cauchy distribution.
+
+Halt. S. Halton Search. We sample in Halton sequences, which are of low discrepancy.
+
+H. S. Hammersley Search. We sample in Hammersley sequences, which are of low-discrepancy.
+
+pPort- Passive Portfolio. We use the passive portfolio of CMA-ES and DE in the experiment. folio
+
+stdGA Standard Genetic Algorithm. Mutation rate: 0.1, crossover rate: 0.1.
+
+RL Advantage Actor-Critic. We use policy and critic networks composed by 3 MLP layers with 128 A2C nodes, discount factor: 0.99, learning rate: 0.0007, RMSProp optimizer.
+
+RL Proximal Policy Optimization. We use policy and critic networks composed by 3 MLP layers with PPO2 128 nodes, discount factor: 0.99, clipping range: 0.2, learning rate: 0.00025, Adam optimizer.
+
+5.1.3 Accelerator Platforms
+We consider two classes of accelerator: Small and Large. For each class, we consider homogeneous and heterogeneous accelerator settings with different PEs and mappings. We construct six different platforms environments as listed in Table 4. We model the platforms with MAESTRO [1].
+Sub-Accelerator Dataﬂow Styles. For our evaluations, we pick two distinct dataﬂow styles for the heterogeneous subaccelerators: High Bandwidth dataﬂow style (HB) (inspired by NVDLA) [75]) and relatively Low Bandwidth dataﬂow style (LB) (inspired by Eyeriss [11]). The HB-style parallelizes across channel dimensions, and shows high-efﬁciency on late layers for CNN-based (vision) models, while the LBstyle parallelize across activations dimensions and excels on the early layers of CNN-based models [56]. For Lang and Recom, we found the HW-style is more compute efﬁcient but BW intensive, while LB-style is less compute efﬁcient (as Lang and Recom models do not have 2D activations) but also less BW demanding (Fig. 6). Therefore we house both these sub-accelerators in a BW constrained accelerator platform to act as a good test for our optimizer to learn and exploit their difference. G# is general enough to run with any heterogeneous combination of two or more accelerator styles.
+Resources: PEs and Buffers. We uniformly set one dimension of the 2D PEs array to 649 and scale the PEs array size by increasing the other dimension. We consider three kinds of PEs conﬁguration: 32 × 64 for Small accelerator [25, 29, 63, 73, 128] platform, 64 × 64 and 128 × 64 for Large accelerator. The dataﬂow strategy (discussed above) and target tile sizes determine the buffer sizes for both SL and SG [56].
+System BW. We assume the accelerator platform is executing under frequency 1GHz, and the inference data width is
+
+9Based on our observation, most of the popular models that we collected, especially language and recommendation ones, are manually designed to have the tensor shape formed by the multiples of 64. Setting one dimension to 64, which aligns with the tensor shape, ensures higher utilization rate.
+
+7
+
+1 byte per element. For the system BW, at the Small accelerator, we consider the BW to be range from 1GB/s to 16GB/s, which is the range of DDR1-DDR4 BW [112] and PCIe1.0 PCIe3.0 [78] BW; at the Large accelerator, we consider the BW to be range from 1GB/s to 256GB/s, which is the range of DDR4-DDR5 [70] and HBM BW [48] and PCIe3.0 PCIe5.0 and upcoming PCIe6.0 BW [78].
+5.1.4 Baseline Heuristics and Optimization Methods
+Table 5 lists our baseline heuristic and optimization methods. Heuristics. A complete job schedule (Section 3) is created
+as a combination of two heuristics - the ﬁrst representing the job prioritizing and the second the sub-accelerator selection. For job prioritizing, heuristics such as FCFS, SJF and others have been dound to be effective [3, 5, 45, 61, 86]. For subaccelerator, Opportunistic Load Balancing (OLB) [28] and Minimum Execution Time (MET) [2,27] are two widely-used greedy methods for heterogeneous platforms. OLB greedily assigns the job to the available sub-accelerator. MET greedily assigns the job to the sub-accelerator that can execute it the fastest. The full scheduling strategy is the combination of both components. For example, a valid strategy could be FCFS-OLB that uses FCFS for job prioritizing and OLB for sub-accelerator selection. We also consider a joint method, Heterogeneous Earliest-Finish-Time (HEFT) [89, 110, 111], as a baseline.
+Optimization Methods and Settings. For all optimization methods, we use the G# encoding scheme, presented in Section 4.2.2, but plug in implementations of optimization schemes from the nevergrad open-source package [84]. The speciﬁc hyper-parameters settings are listed in Table 5. For fair comparisons, all optimization methods are given a sampling budget of 10K data points.
+5.1.5 G# Settings
+For G#, we set the number of individuals in a generation, to be 100, and we ﬁnd 100 generations (epochs) are enough for G# to converge in the listing experiment settings. Therefore, we set G# to run 100 epochs in all experiments, which means we have the sampling budget of 10K datapoints, just like other optimization methods. We run the experiments on a desktop with Intel i9-9820 CPU. G# takes about 0.25 seconds per epoch, and 25 seconds for a full optimization with 100 epochs.
+5.1.6 Evaluation Metric
+In all experiments, we plot the makespan latency for running an entire batch of jobs (which is effectively the reciprocal of the throughput of the current batch) across all four categories (Vision, Lang, Recom and Mix) on the platform under study, based on the schedule determined by the baseline and proposed methods after 100 epochs. For ease of comparisons across different scheduling methods, we concatenate the four independent latency numbers into a stacked bar and show the total latency.
+5.2 Latency-BW Characteristics of DNNs
+We start by showing the latency characteristics and bandwidth requirements of the DNN models from the three application classes when running by itself on two separate dataﬂow styles (HB and LB). We show three of the models from each
+
+Vision
+
+Lang
+
+Ave. no-stall latency
+
+MobileNetv2 Resnet50
+
+(HB,64) 3.1E+05 8.5E+04
+
+(LB,64) 1.1E+06 7.0E+06
+
+Shufflenet Ave. GPT2
+
+9.6E+04 1.7E+05 1.7E+04
+
+4.9E+05 2.8E+06 3.5E+06
+
+MobileBert TransformerXL
+Ave.
+
+5.5E+02 4.5E+03 7.4E+03
+
+1.1E+05 9.2E+05 1.5E+06
+
+DLRM
+
+2.4E+02 9.7E+05
+
+WideDeep NCF Ave.
+
+2.8E+02 4.6E+01 1.9E+02
+
+1.1E+06 1.8E+05 7.6E+05
+
+(a) Jobs analysis
+
+Ave. Req. BW (GB/s)
+(HB,64) (LB,64) 6.8E-01 8.8E-02 5.2E-01 3.6E-04 1.5E+00 2.3E-02 9.0E-01 3.7E-02 3.4E-01 1.6E-05 1.1E+01 5.0E-04 1.3E+00 6.4E-05 4.1E+00 1.9E-04 5.6E+01 2.5E-04 3.0E+01 5.2E-06 3.7E+02 6.4E-05 1.5E+02 1.1E-04
+
+Ave. Req. BW (GB/s)
+
+Ave. No-stall Latency (cycles)
+
+2.0E+06
+1.5E+06
+1.0E+06
+5.0E+05
+0.0E+00 Vision Lang Recom
+(b) Ave. no-stall latency
+8.00E+01 6.00E+01 4.00E+01 2.00E+01 0.00E+00
+Vision Lang Recom
+(c) Ave. BW requirement
+
+4.70E-01 2.00E+00
+
+Recom
+
+Figure 6: (a) The average per-job (i.e., per-layer) no-stall latency and required BW for no-stall across different models on high (HW) and low (LB) bandwidth mapping style (b) average no-stall latency and (c) average BW required for no-stalls across all layers.
+
+class and the average across all the models in that class in
+
+Fig. 6(a). The average values across all model layers across
+
+both accelerators are plotted in Fig. 6(b-c). In general, we
+
+can see that the per-job latency of the Vision models is higher
+
+because more compute is needed in the CONV dominant
+
+models. However, CONV is generally less memory-bound
+
+than FC. The data also shows that usually Vision has the
+
+lowest BW requirement, and Recom has the largest.
+
+5.3 Results on Small Accelerators
+
+5.3.1 Homogeneous Accelerators
+We examined the homogeneous accelerators on the Small accelerator with system BW=16 GB/s. Fig. 7(a) displays the total latency across the heuristics, optimization methods and G# across all four job categories. Fig. 7(a) shows that G# outperforms both heuristic-based and state-of-theart optimization methods. G# can improve the total latency of best-performing heuristics, SJF-RR, by 30.8% and bestperforming optimization method, PSO, by 30.4%.
+
+5.3.2 Heterogeneous Accelerators
+In the heterogeneous setting, we replace the dataﬂow of one of the sub-accelerators from HB-style to LB-style. We can observe that G#’s latency decreases in S2 (blue bar Fig. 7(b)). From our observation on the resulting schedule, the latency decrease is caused by the fact that G# can learn to schedule early-layer of CNNs to LB-style sub-accelerator and others to HB-style ones to exploit different strength of different architectures. The heterogeneity makes scheduling a more complicated problem. Many methods experience serious performance degradation as shown in Fig. 7(b). Overall, G# consistently performs better than all comparisons. On Small accelerator across both S1 and S2 settings, G#’s latency value is smaller than Vision, Language, Recom, and Mix by 5.5x, 17.4x, 297.0x, and 25.9x respectively, and in average 86.4x smaller.
+
+5.4 Results on Large Accelerators
+
+5.4.1 Comparisons with other methods
+In the interest of space, we list the results of two settings: S4 (Hetero) and S5 (Hetero BigLittle) with the Large BW=256(GB/s), in Fig. 7(c-d). Overall, G# can reach the most optimized performance compared to all the methods in all listed scenarios. On Large accelerator across both S4 and S5 settings, G#’s latency value is smaller than Vision,
+
+8
+
+9.9E+06 1.0E+07 9.9E+06 9.4E+06 9.6E+06 9.5E+06 9.0E+06
+
+Total latency (cycles)
+
+FCFS-OLB FCFS-MET
+SJF-MET Rd-OLB Rd-MET
+HEFT RL A2C RL PPO2
+G#
+
+3.0E+07 2.0E+07 1.0E+07 0.0E+00
+
+2.0E+07 1.5E+07 1.0E+07 5.0E+06 0.0E+00
+
+Vision Lang Recom Mix Opt.-based
+
+2.0E+07 1.5E+07 1.0E+07 5.0E+06 0.0E+00
+
+FCFS-OLB FCFS-RR FCFS-MET FCFS-Rd SJF-OLB
+SJF-RR FCSJFFS--OMLEBT
+FCSFJSF--RRRd SRJFRd--d-OOLRLBBR RSdJ-F-MRERT RdR-dO-LRBd
+HHEEFFTT PPSSOO (P1or+t1f)o-lEiSo (1T+B1)P-SEAS HaltoCnMS.A H.DS.E CRTLLBHAPSS2SC.A HRaLltPoPnOS2. H .GS#. stdGA RL A2C RL PPO2
+G#
+
+Heuristic-based 1.20E+09 8.00E+08 4.00E+08 0.00E+00
+
+2.0E+07 1.5E+07 1.0E+07 5.0E+06 0.0E+00
+
+(a) S1(Small, Homog), BW=16 G-SHARP
+
+Vision Lang Recom Mix
+
+(Opt.-based) 1.20E+08
+
+8.00E+07
+
+4.00E+07
+
+0.00E+00
+
+1.6E+07 1.7E+07 1.7E+07 1.4E+07 1.3E+07 1.5E+07 1.1E+07
+
+FCFS-OLB FCFS-RR SJF-OLB SJF-RR Rd-OLB HEFT PSO (1+1)-ES TBPSA Halton S. H. S. RL A2C RL PPO2 G#
+
+Total latency (cycles)
+
+Top-performing alg.
+
+1.0E+07
+
+6.0E+08
+4.0E+08 2.0E+07 1.5E+07
+2.0E+08 1.0E+07 5.0E+06
+0.0E+00 0.0E+00
+
+Vision Lang Recom Mix
+
+2.0E+07 1.5E+07 1.0E+07 5.0E+06 0.0E+00
+
+Top-performing alg.
+
+FCFS-OLB FCFS-RR
+FCFS-MET FCFFCSF-SO-LRBd
+FSCJFF-S-ORLRB SJSFJ-F-OLRBR SJSSFJ-JFF--MRRERdT RRdd--OOLLBB
+RHdE-FRTR Rd-PMSEOT (1+R1d)--ERSd TBHPESFAT HaltonPSS.O PortfH.oliS.o (1R+L1C)A-2MECAS RL PPOD2E
+TBPGS#A CLHS S. Halton S.
+H. S. stdGA RL A2C RL PPO2
+G#
+
+Zoomed-in of Comparisons Top-performing alg.
+
+Top-performing alg.
+
+6.0E+08 4.0E+08 2.0E+08 0.0E+00
+
+2.0E+07 1.5E+07 1.0E+07 5.0E+06 0.0E+00
+
+(c) S4(Large, Hetero), BW=256
+
+Vision Lang Recom Mix
+
+2.5E+07 2.0E+07 1.5E+07
+
+1.0E+07 5.0E+06 0.0E+00
+
+Top-performing alg.
+
+9.8E+06 1.1E+07 1.0E+07 9.6E+06 9.5E+06 9.7E+06 9.0E+06
+
+Total latency (cycles)
+
+Total latency (cycles)
+
+FCFS-OLB FCFS-MET
+SJF-MET Rd-OLB Rd-MET
+HEFT Halton S.
+H. S. RL A2C RL PPO2
+G#
+
+FCFS-OLB FCFS-RR
+FCFS-MET FCFS-Rd SJF-OLB SJF-RR SFJCF-FSM-EOTLB SFJCFF-SR-dRR RdS-JFO-LOBLB RSdJ-FR-RRR Rd-RdM-EOTLB Rd-HREdFT HEFPTSO (1+P1S)-OES P(1or+tf1T)o-BliEPSoSA HalCtoMnAS. HD.ES. TBRLPSAA2C CRLLHSPPS.O2 Halton S.G# H. S. stdGA RL A2C RL PPO2 G#
+
+FCFS-OLB FCFS-MET
+SJF-MET Rd-OLB Rd-MET
+HEFT Portfolio
+DE TBPSA Halton S.
+H. S. RL A2C RL PPO2
+G#
+
+FCFS-OLB FCFS-RR
+FCFS-MET FCFS-Rd SJF-OLB SJF-RR SJF-MET
+FCFSS-JOF-LRBd FCRFdS--ORLRB SJF-RdO-LRBR RSJdF--MRERT Rd-ROd-LRBd HHEEFFTT (P(11o+r+1t)Pf1-)PSo-ElSiEOSSoO TBCPSMAA Halton SD.E THB.PSS.A RCLLHAS2CS. RHLalPtPonO2S. H.G#S. stdGA RL A2C RL PPO2 G#
+
+(b) S2(Small, Hetero), BW=16
+
+(d) S5(Large, Hetero BigLittle), BW=256
+
+Figure 7: The experiment results on small accelerator with (a) S1 and (b) S2 setting, and on large accelerator on (c) S4 and (d) S5 setting.
+
+Total latency (cycles)
+
+Heuristic-based
+
+FCFS-OLB FCFS-RR FCFS-MET
+
+PSO
+
+Portfolio (1+1)-ES
+
+(log)
+
+Opt.-based
+
+5.0E+50.07E+09
+
+FCFS-Rd SJF-OLB
+
+CMA
+
+DE
+
+5.0E+09
+
+5.0E+08
+
+SJF-RR TBPSA
+
+5.0E+07
+
+SJF-MET SJF-Rd CLHS S. Halton S.
+5.0E+08
+
+Rd-OLB H. S.
+
+Rd-RR stdGA
+
+Rd-MET RL A2C
+
+5.0E+08
+
+Rd-Rd RL PPO2
+
+HEFT G#
+
+5.0E+07
+
+5.0E+07
+
+5.0E+50.06E+08 1
+
+G-SHARP 5.0E+06
+
+2 4 8 16
+
+1
+
+BW (GB/s)
+
+(a) S1
+
+2G-S4HA8RP16 5.0E+06 1 BW (GB/s)
+(b) S2
+
+G-SHARP 234
+
+5.0E+06
+
+1
+
+BW (GB/s)
+
+(c) S4
+
+G-2SHARP 4 BW (GB/s)
+(d) S5
+
+Figure5.08E+0:7 Performance comparisons of different methods across different BWs on setting (a)S1, (b)S2, (c) S3, and (d)S4. The total latency is the sum of the methods’ latency on each of the four job categories: Vision, Lang, Recom, and Mix.
+5.0E+06
+Languag1e, Recom,2 and Mix 4by 5.0x, 988 .0x, 123316.0x, and 34.7x respectively, and in average 342.7x smaller. We also experiment on different settings with different system BW, and summarize each comparing method’s total latency across the four job categories in Fig. 8. Across all scenarios, G#
+
+Table 6: The performance of knowledge transferring on (a) Mix, setting S4, BW=1, and (b) the averaged performance across different applications and different settings under BW=1. All the values are normalized by the values of Trf-100-ep of each columns. Raw (highlighted in orange) is the latency without learning or transferred. Trf-0-ep (highlighted in green) is a direct transfer. Trf-1-ep is a transfer with one epoch of re-training, and likewise for Trf-30-ep. Trf-100-ep (highlighted in blue) is a full training.
+
+Mix-S4 Insts0 Insts1 Insts2 Insts3 Insts4 Ave. BW=1 (Trained) (Test) (Test) (Test) (Test) Test
+
+BW=1 Mix Vision Lang Rec
+
+Raw Trf-0-ep Trf-1-ep Trf-30-ep Trf-100-ep
+
+52.37 1.00 1.00 1.00 1.00
+
+25.32 66.21 11.28 20.71 30.88 3.09 1.67 1.29 1.72 1.94 2.30 1.37 1.04 1.14 1.46 1.01 1.02 1.01 1.01 1.01 1.00 1.00 1.00 1.00 1.00
+
+Raw 52.26 Trf-0-ep 2.07 Trf-1-ep 1.50 Trf-30-ep 1.03 Trf-100-ep 1.00
+
+26.65 3.60 2.51 1.08 1.00
+
+72.68 281.12 1.94 1.14 1.27 1.05 1.03 1.01 1.00 1.00
+
+(a) Perf. on MIX, S4, BW=1
+
+(b) Ave. perf, across S1-S6
+
+ber of sub-accelerators, which complicates the problem to the search space of O(10120). Fig. 10 shows G# consistently ﬁnds better solutions, whose latency value is in average 610.7x
+smaller.
+
+consistently ﬁnds better schedules.
+
+Table 7: The comparisons of search time and the makespan speedup over
+
+heuristic methods. The statistics values are averaged across different settings
+
+5.4.2 Comparisons on different platform settings
+In this experiment, we examine the performance change in different settings, S3 (Homog Big), S4 (Hetero Big), S5 (Hetero, BigLittle) of the Large accelerator.
+Homog versus Hetero. The LB-style sub-accelerators usually take larger runtime but lower BW requirements than HB-style in Lang and Recom as shown in Fig. 6(a). The jobs analysis in Fig. 9(a-b) reﬂect the fact that S4, in general,
+
+(S1-S6) of different job categories. G-SHARP-transfer represents G-SHARP with transferred knowledge.
+
+Search time Search
+
+Makespan Makespan
+
+to converge time to 10K Performance Speedup
+
+(secs) datapoints (Latency (cycles)) over
+
+(secs)
+
+Heuristics
+
+Heuristic methods
+
+0*
+
+(manual+heurstics)
+
+0
+
+6.07E+08
+
+1.0
+
+Elite Heuristics †
+
+0
+
+0
+
+5.36E+07
+
+11.3
+
+Opt. methods
+
+X
+
+1,019
+
+6.40E+08
+
+0.95
+
+induces more no-stall latency but requires less BW than S3. Therefore, when BW is limited (BW=1), the hetero setting enables G# to leverage the difference of BW requirement among sub-accelerators to relax the BW contention. Thus S4 reaches better performance than S3 at BW=1 in Fig. 9(c).
+
+Elite Opt. (pPort, DE, HaltS, H.S.) Std GA RL-A2C RL-PPO2 G-SHARP
+
+1,097
+X 1,200 1,100 1.75
+
+1,462
+40 4,000 4,500
+25
+
+1.96E+08
+2.96E+09 3.24E+06 4.26E+06 2.55E+06
+
+3.1
+0.2 187.4 142.5 238.0
+
+However, when the BW is mostly sufﬁcient (BW=256), the
+
+G-SHARP-direct-transfer
+
+0
+
+0
+
+5.27E+06
+
+115.2
+
+performance will reﬂect more of the behavior of the no-stall latency. Thus S3 reaches better performance.
+
+G-SHARP-transfer-
+
+0.25
+
+1-epoch-finetune
+
+0.25
+
+3.82E+06
+
+158.9
+
+Bigs versus BigLittle. We consider a platform with a smaller setting, BigLittle (S5). It is obvious when the BW
+
+5.5 Flexible Accelerator
+
+budget is sufﬁcient (BW=256), BigLittle will perform worse
+
+In this experiment, we consider accelerators where the
+
+than both of the Bigs (S3, S4) as shown in Fig. 9(c), and can PE array dimensions are conﬁgurable, such as FPGAs [17],
+
+be veriﬁed by the jobs analysis in Fig. 9(b). However, BigLit- CGRA [57], or programmable accelerators [4, 120, 125].
+
+tle has smaller BW requirement because of its smaller sub-
+
+Accelerator Conﬁguration. We extend the setting of S1
+
+accelerator size, as shown in Fig. 9(a). Therefore, as shown in (Small, ﬁxed) and S3 (Large, ﬁxed) to have ﬂexible accelera-
+
+Fig. 9(c), when the BW is limited (BW=1), BigLittle reaches tors. The number of PEs in the sub-accelerator are ﬁxed (the
+
+the best performance, with the least amount of resources. same as in Table 4). However, the shape of 2D PE arrays is
+
+The results indicate G# is able to exploit different charac- ﬂexible, that is we can conﬁgure the routing among the PEs.
+
+teristics of sub-accelerators, both sizes of sub-accelerators This enables the sub-accelerator to run various dataﬂows or
+
+and their mappings, to optimize its scheduling while different mappings [57]. The maximum size of SLs are ﬁxed as 1KB
+
+platforms and constraints are provided.
+
+in each PE, and SGs are ﬁxed as 2MB in each sub-accelerator.
+
+Scale-up. We scale up the platform by doubling the num-
+
+Dataﬂow Strategy. We pick the dataﬂow strategy of the
+
+9
+
+Ave. no-stall Latency (cycles)
+Ave. Required BW (GB/s) Total Latency (cycles)
+
+8.0E+06
+6.0E+06
+4.0E+06
+2.0E+06
+0.0E+00 S3(HomBig) S4(HetBig) S5(HetBigLit)
+Vision Lang Rec Mix
+(a) Jobs analysis: Ave. no-stall Latency
+
+500.0 0 400.0 0 300.0 0 200.0 0
+100.0 0 0.00 S3(HomBig) S4(HetBig) S5(HetBigLit)
+Vision Lang Rec Mix
+(b) Jobs analysis: Ave. Req. BW
+
+1.25E+07 1.15E+07 1.05E+07 9.50E+06 8.50E+06
+
+9.03E+06 9.01E+06 9.01E+06 8.992E+06 8.994E+06 9.00E+06
+
+S3
+
+S4
+
+S5
+
+S3
+
+S4
+
+S5
+
+S3
+
+S4
+
+S5
+
+BW:1 (GB/s)
+
+BW:64 (GB/s)
+
+(c) Performance evaluation
+
+BW:256 (GB/s)
+
+Total latency (cycles)
+
+Figure 9: Jobs analysis of (a) the averaged per-job no-stall latency and (b) the averaged per-job required BW. Performance evaluation of G# on S3, S4, and S5
+
+with different BW. The total latency is the sum of G#’s latency on each of the four job categories.
+
+4.0E+08 3.0E+08 2.0E+08 1.0E+08 0.0E+00
+
+2.0E+07 1.5E+07 1.0E+07
+
+Vision Lang Recom Mix
+
+1.1E+09 8.9E+06
+
+G#
+
+Latency
+
+(cycles) 5.0E+07 4.0E+07 3.0E+07 2.0E+07 1.0E+07 0.0E+00
+
+Mut. Mut.+Crs. G#
+
+RL A2C
+
+stdGA
+
+H. S.
+
+5.0E+06
+
+1 3 5 7 9 11 13 15 17 19 21 23 25 27 29
+
+0.0E+00
+
+epoch
+
+Latency
+
+(cycles) 6.0E+07
+
+Mut. Mut.+Crs. G#
+
+4.0E+07
+
+2.0E+07
+
+0.0E+00
+1 3 5 7 9 11 13 15 17 19 21 23 25 27 29 epoch
+
+RL PPO2
+
+RL PPO2 TBPSA G# CLHS S. Halton S.
+
+RL A2C DE
+
+H. S. CMA
+
+Halton S.(1+1)-ES
+
+TBPSAPortfolio
+
+SJF-RR Rd-OLB Rd-OLB Rd-RR
+HPESFOTRdR-Hd-MEREFTTd (1+1)-ES PSO
+
+SJF-OLB SJF-Rd
+
+FCFS-RRSJF-MET
+
+FCFS-OLB SJF-RR
+
+SJF-OLB
+
+FCFS-Rd
+
+FCFS-MET
+
+FCFS-RR
+
+FCFS-OLB
+
+(a) Vision, S3, BW=1
+
+(b)Mix, S3, BW=1
+
+Figure 10: The experiment results on a scale-up platform in S6, BW=256.
+
+Ave. No-stall Latency (cycles)
+
+3.0E+05 2.5E+05 2.0E+05 1.5E+05 1.0E+05 5.0E+04 0.0E+00
+
+Smfoagll
+
+Lcalrogued
+
+Smfoagll
+
+cLlaorugde
+
+Vision
+
+Random
+
+Fixed Flexible
+(a) Jobs analysis: Ave. no-stall latency
+
+300.00 250.00 200.00 150.00 100.00
+50.00 0.00
+
+Sfmogall
+
+Lcalrogued
+
+Smfoagll
+
+cLlaorugde
+
+Vision
+
+Random
+
+Fixed Flexible
+(b) Jobs analysis: Ave. required BW
+
+Latency (cycles)
+
+1.0E+07
+8.0E+06 6.0E+06 4.0E+06
+2.0E+06 0.0E+00
+
+BW:1
+
+BW:16
+
+BW:1 BW:256
+
+Sfomgall
+
+cLlaorugde
+
+Fixed Flexible
+(c) Perf. evaluation: Vision
+
+8.0E+06 6.0E+06 4.0E+06 2.0E+06 0.0E+00
+
+BW:1
+
+BW:16
+
+BW:1 BW:256
+
+Sfmogall
+
+cLloaurgde
+
+Fixed Flexible
+(d) Perf. evaluation: Random
+
+Ave. Required BW (GB/s) 0.87 1.788 4.38 7.79
+Latency (cycles)
+
+Figure 11: Jobs analysis of (a) the averaged per-job no-stall latency and (b) the averaged per-job required BW of ﬁxed and ﬂexible PEs arrays. Performance evaluation of G# with ﬁxed or ﬂexible PEs array on (c) Vision and (d) Random.
+sub-accelerator to maximize the utilization of the PEs array. In order to maximize the utilization, we will align the PEs array dimension to be the factor of the the parallelizing dimension of the tile as much as possible. For example if the parallelizing dimension of the tile is (2, 15), which is going to map over the y and x dimension of the PEs array with 16 PEs. The potential PE array shape could be 2×8 while aligning to the factor of y dimension, or 3×5, 5×3, and 1×15 while aligning to the factor of x dimension. We examine these combinations, evaluate their expected latency by the HW cost model, and pick the lowest latency one as our PE
+
+Figure 12: The convergence curve of G# with three level of genetic oper-
+
+ations: Mutation only, Mutation and Crossover-gen, and G# with all four
+
+genetic operators.
+
+FCFS-OLB
+
+G-SHARP
+
+Lang Vision Rec
+
+Accel alloc.
+
+BW alloc. (GB/s)
+
+(cycles) (a) Latency:5.2e+6 1e-5 2.0 1.0 0.0 4.7 4.9 5.1 1e6
+(cycles) (b)
+
+(c()cyLcaletesn) cy:5.6e+5
+
+Accel-1
+
+Accel-2
+
+Accel-3
+
+Accel-4
+
+Accel-5
+
+Accel-6
+
+Accel-7
+
+(cycles)
+
+Accel-8
+
+(d)
+
+Figure 13: The visualization of found solution by FCFS-OLB and G#. (a)(c) shows the respective sub-accelerator allocations, and (b)(d) shows the respective BW allocations. (Mix, S5, BW=1).
+The results conclude that with ﬂexible accelerators (ASIC of FPGA), we could further increase the expected platform performance without providing additional compute HW resources (PEs) by simply changing the shape of PEs array, and most importantly, G# can learn to leverage this ﬂexibility to reach better performance.
+
+5.6 Deep Dive into G# Algorithm.
+
+array conﬁgurations. Target Jobs to Schedule. We evaluate Vision and Ran-
+dom jobs; Random jobs are similar to Mix jobs, but we randomly change the tensor shape of the layers to simulate the scenario that the accelerator is serving some customized DNNs or the DNNs generated by Neural Architecture Search whose shapes are dynamic [40, 108, 129].
+Evaluations. From the performance analysis in Fig. 11(a-
+
+5.6.1 Ablation study of G#
+Next, we show how different genetic operators affect the performance of G#. We construct three levels of algorithms: mutation only, mutation and crossover-gen, and G# with all four genetic operators. Since the mutation operator is the basic perturbation unit, we encompass mutation for all levels of algorithms. The key difference among three levels
+
+b), we can observe that for both Vision and Random jobs,
+
+ﬂexible outperforms ﬁxed in ave. per-job no-stall latency, owing to its ability to maximizing the utilization rate of the PEs array. However, it would also incur higher BW requirement. It is because the ﬂexible mapping we found is to maximize the PE utilization rate, which also increases the number of data to fetch per tile to keep PEs busy.
+Next, we evaluate G#’s ability to leverage this ﬂexibility. From all scenario in Fig. 11(c-d), ﬂexible outperforms ﬁxed.
+
+SAT Rate
+
+0.9
+
+0.7 0.5
+
+!"#
+
+=
+
+∑%&"&'!
+
+&'()(+,-! " 1(
+
+− +,-# /
+
+< 1$)
+
+0.3 0 20 40 60 80 100
+epoch (a) SAT convergence trace
+
+(b) SAT definition
+
+Figure 14: (a) The SAT convergence trace (Mix, S3, BW=1). (b) The deﬁnition of SAT.
+
+10
+
+of algorithms is the convergent speed. Fig. 12 shows that by adding Crossover-gen, it converges much faster and that by adding all designed operators, it can further increase the convergent speed, showing the effectiveness of each operator.
+5.6.2 Analysis of found solutions
+We visualize one of the found schedules in Fig. 13, which corresponds to the high-level ﬁgure in Fig. 4(b). It shows that G# learns to distribute the BW-intensive layers (Recom, Lang) across the runtime to balance the BW requirement (Fig. 13(e-f)), comparing with one of the widely-used heuristics, FCFS-OLB, (Fig. 13(a-b)). We found G# can highly utilize the BW and achieve better makespan latency.
+5.6.3 Transferring Knowledge, i.e., Generalization.
+In the experiments, we train G# on a random batch of jobs, Insts0. Then, we test, transfer, and re-train on the other four different batches of jobs. Table 6(a) shows that by directly applying transferred knowledge (Trf-0-ep), we could achieve 16x lower latency than the usual starting points, randomly initialization (Raw). By transferring the knowledge and retraining for one epoch (Trf-1-ep), we could already receive 93% of the expected performance gain of a full training (Trf-100-ep). We execute the same experiment for different types of applications and for different setting (S1-S6) (Table 6(b)). We can observe for BW-intensive applications, Lang and Recom, the knowledge of the scheduling become more important, and therefore the performance gain from the direct-transfer become signiﬁcant. Overall, by direct transfer without training, G# can achieve 7.4x to 152x better performance than the the usual starting points (Raws).
+5.7 G# with alternate objective functions
+We used the objective of makespan latency targeting maximum system throughput in previous experiments. However, we could also target different scenarios such as (i) latency sensitive applications, where the jobs have priority and need to be completed as soon as possible, or (ii) batch with job dependency, where some jobs need to be executed before others. In these scenario, users give the system the targeting order of jobs ﬁnish time (owing to the latency sensitiveness, priority or the dependency of jobs). The objective function becomes optimizing the schedule to match the targeting job order. We deﬁne the performance metric of satisfaction (SAT) rate as shown in Fig. 14(b), where NJ, NA is the number of jobs and sub-accelerators; ord f ( j), ordt( j) is the actual and targeting order of jobs ﬁnish time. In Fig. 14(a), we could see that we could boot the SAT rate from 24% to 96%. For the jobs with dependency, the non-satisﬁed jobs (jobs whose scheduled ﬁnish time is out of desired order) would incur sub-accelerator stall at runtime. However, G# will make best effort to schedule jobs ﬁnish time in desired order, which is effectively minimizing the stall time.
+5.8 Comparisons of schedule search time
+We discuss the search time of different methods, next. Topperforming optimization methods (Elite Opt., RLs, G#) can achieve 3.1-238.0x better makespan latency comparing to heuristics, as shown in Table 7. However, they come with a search time overhead. Interestingly, G#’s genetic operators increase its sample efﬁciency, which makes its search-time-
+
+to-converge 626-657x better over Elite Opt. and RLs. G# offers knowledge transfer which allows us to get 10.2x better makespan performance over Elite (top-performing) heuristics with the same (near zero) search time.
+6. RELATED WORKS
+Multi-tenant Scheduling for DNN Accelerators. Most DNN schedulers (heuristics and ML-based) have focused on scheduling one DNN on one accelerator [65,95,100,102,115, 122]. Some recent works look into multi-DNN scheduling: Prophet [10] builds a runtime prediction model for multitenancy on GPU with FCFS scheduling. AI-MT [3] develops a heuristic for DNN job scheduling on a platform with multi-homogeneous systolic arrays. Prema [15] explores preemptive multi-tenancy on a NPU with token-based SJF. Herald [55] and Planaria [46] use manual-designed scheduling for assigning jobs to sub-accelerators or reconﬁgurable PEs array. A learning-based method, SCARL [14] utilizes RL to make a two step action, job selection and machine selection and demonstrates better performance than a widely-used heuristics SJF. In this work, we optimize multi-DNN scheduling with developed learning-based method and conduct a full comparisons with heuristics the RL method used by previous works [3, 10, 14, 15].
+Multi-tenant Scheduling for CPUs and GPUs. Multitenancy has been investigated for decades for multi-tasking on a single CPU and job ordering in CPU clusters [96, 121]. Heuristics such as FCFS is often used in GPUs [5, 45]. GAs are one of the most popular algorithms for the scheduling problem for its lightness and simplicity [20, 39, 97, 99, 114]. PSO [116], CMA-ES [26], and other optimizations have also been used. Some works leverage RL for jobs ordering over clusters such as DeepRM [66], Decima [67] and Thamsen et al. [109]. However, they presume a uniﬁed abstraction of the underlying cluster, where heterogeneity of the system is not considered. HEFTs [89, 110, 111] considered multi-tenancy in heterogeneous system; however, it is a manual-designed algorithm, which is not optimized for DNN workloads.
+7. CONCLUSION AND KEY TAKEAWAYS
+This work presents a schedule optimizer for multi-tenant DNN accelerators. The key takeaways are as follows. (i) Heuristic and optimization methods have been used successfully for the design space of either job scheduling across sub-accelerators or prioritizing the allocated jobs inside one sub-accelerator. However, co-optimization of both of these is needed for upcoming platforms (Table 1). (ii) The search space for this co-optimization is extremely enormous (Section 3.2). The search sample-efﬁciency of baseline optimization methods, including widely-used RLs, is not sufﬁcient to ﬁnd optimized solutions (Fig. 7). (iii) We develop a scheduler called G# that customizes the optimization algorithm’s exploration momentum and mechanism (genetic operators in this work) for the target search space. We design three specialized crossover operators to preserve dependencies between the jobs and sub-accelerators during exploration (Section 4.2.3). Our search method yields faster searches (Table 7) with more optimized solutions (Fig. 7). G# also provides knowledge transfer demonstrating better schedules than SOTA heuristics at zero search overhead. In future, we plan to integrate G# into a compilation framework for real systems.
+
+11
+
+REFERENCES
+[1] “Maestro tool,” http://maestro.ece.gatech.edu/, 2020.
+[2] R. Armstrong, D. Hensgen, and T. Kidd, “The relative performance of various mapping algorithms is independent of sizable variances in run-time predictions,” in Proceedings Seventh Heterogeneous Computing Workshop (HCW’98). IEEE, 1998, pp. 79–87.
+[3] E. Baek, D. Kwon, and J. Kim, “A multi-neural network acceleration architecture,” in 2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture (ISCA). IEEE, 2020, pp. 940–953.
+[4] S. Bang, J. Wang, Z. Li, C. Gao, Y. Kim, Q. Dong, Y.-P. Chen, L. Fick, X. Sun, R. Dreslinski et al., “14.7 a 288µw programmable deep-learning processor with 270kb on-chip weight storage using non-uniform memory hierarchy for mobile intelligence,” in 2017 IEEE International Solid-State Circuits Conference (ISSCC). IEEE, 2017, pp. 250–251.
+[5] T. Beisel, T. Wiersema, C. Plessl, and A. Brinkmann, “Cooperative multitasking for heterogeneous accelerators in the linux completely fair scheduler,” in ASAP 2011-22nd IEEE International Conference on Application-speciﬁc Systems, Architectures and Processors. IEEE, 2011, pp. 223–226.
+[6] I. Beltagy, M. E. Peters, and A. Cohan, “Longformer: The long-document transformer,” arXiv preprint arXiv:2004.05150, 2020.
+[7] J. Bergstra, D. Yamins, and D. D. Cox, “Making a science of model search: Hyperparameter optimization in hundreds of dimensions for vision architectures,” 2013.
+[8] Cerebras, “Cerebras cs-1,” 2020. [Online]. Available: https://www.cerebras.net/
+[9] L.-P. Chen, I.-C. Wu, and Y.-L. Chang, “Reinforcement learning based fragment-aware scheduling for high utilization hpc platforms,” in 2019 International Conference on Technologies and Applications of Artiﬁcial Intelligence (TAAI). IEEE, 2019, pp. 1–7.
+[10] Q. Chen, H. Yang, M. Guo, R. S. Kannan, J. Mars, and L. Tang, “Prophet: Precise qos prediction on non-preemptive accelerators to improve utilization in warehouse-scale computers,” in Proceedings of the Twenty-Second International Conference on Architectural Support for Programming Languages and Operating Systems, 2017, pp. 17–32.
+[11] Y.-H. Chen, J. Emer, and V. Sze, “Eyeriss: A spatial architecture for energy-efﬁcient dataﬂow for convolutional neural networks,” in International Symposium on Computer Architecture (ISCA), 2016.
+[12] Y.-H. Chen, T. Krishna, J. S. Emer, and V. Sze, “Eyeriss: An energy-efﬁcient reconﬁgurable accelerator for deep convolutional neural networks,” IEEE journal of solid-state circuits, vol. 52, no. 1, pp. 127–138, 2016.
+[13] H.-T. Cheng, L. Koc, J. Harmsen, T. Shaked, T. Chandra, H. Aradhye, G. Anderson, G. Corrado, W. Chai, M. Ispir et al., “Wide & deep learning for recommender systems,” in Proceedings of the 1st workshop on deep learning for recommender systems, 2016, pp. 7–10.
+[14] M. Cheong, H. Lee, I. Yeom, and H. Woo, “Scarl: attentive reinforcement learning-based scheduling in a multi-resource heterogeneous cluster,” IEEE Access, vol. 7, pp. 153 432–153 444, 2019.
+[15] Y. Choi and M. Rhu, “Prema: A predictive multi-task scheduling algorithm for preemptible neural processing units,” in 2020 IEEE International Symposium on High Performance Computer Architecture (HPCA). IEEE, 2020, pp. 220–233.
+[16] S. Chowdhuri, T. Pankaj, and K. Zipser, “Multinet: Multi-modal multi-task learning for autonomous driving,” in 2019 IEEE Winter Conference on Applications of Computer Vision (WACV). IEEE, 2019, pp. 1496–1504.
+[17] E. S. Chung, J. Fowers, K. Ovtcharov, M. Papamichael, A. M. Caulﬁeld, T. Massengill, M. Liu, D. Lo, S. Alkalay, M. Haselman, M. Abeydeera, L. Adams, H. Angepat, C. Boehn, D. Chiou, O. Firestein, A. Forin, K. S. Gatlin, M. Ghandi, S. Heil, K. Holohan, A. E. Husseini, T. Juhász, K. Kagi, R. Kovvuri, S. Lanka, F. van Megen, D. Mukhortov, P. Patel, B. Perez, A. Rapsang, S. K. Reinhardt, B. Rouhani, A. Sapek, R. Seera, S. Shekar, B. Sridharan, G. Weisz, L. Woods, P. Y. Xiao, D. Zhang, R. Zhao, and D. Burger, “Serving DNNs in Real Time at Datacenter Scale with Project Brainwave,” IEEE Micro, vol. 38, no. 2, pp. 8–20, 2018. [Online].
+
+Available: https://doi.org/10.1109/MM.2018.022071131
+[18] K. Clark, M.-T. Luong, Q. V. Le, and C. D. Manning, “Electra: Pre-training text encoders as discriminators rather than generators,” arXiv preprint arXiv:2003.10555, 2020.
+[19] A. Conneau, K. Khandelwal, N. Goyal, V. Chaudhary, G. Wenzek, F. Guzmán, E. Grave, M. Ott, L. Zettlemoyer, and V. Stoyanov, “Unsupervised cross-lingual representation learning at scale,” arXiv preprint arXiv:1911.02116, 2019.
+[20] R. C. Corrêa, A. Ferreira, and P. Rebreyend, “Scheduling multiprocessor tasks with genetic algorithms,” IEEE Transactions on Parallel and Distributed systems, vol. 10, no. 8, pp. 825–837, 1999.
+[21] C. C. Cox, “A comparison of active and passive portfolio management,” 2017.
+[22] Z. Dai, Z. Yang, Y. Yang, J. Carbonell, Q. V. Le, and R. Salakhutdinov, “Transformer-xl: Attentive language models beyond a ﬁxed-length context,” arXiv preprint arXiv:1901.02860, 2019.
+[23] C. Delimitrou and C. Kozyrakis, “Quasar: resource-efﬁcient and qos-aware cluster management,” ACM SIGPLAN Notices, vol. 49, no. 4, pp. 127–144, 2014.
+[24] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training of deep bidirectional transformers for language understanding,” arXiv preprint arXiv:1810.04805, 2018.
+[25] H. Du, S. Leng, F. Wu, X. Chen, and S. Mao, “A new vehicular fog computing architecture for cooperative sensing of autonomous driving,” IEEE Access, vol. 8, pp. 10 997–11 006, 2020.
+[26] G. Emadi, A. M. Rahmani, and H. Shahhoseini, “Task scheduling algorithm using covariance matrix adaptation evolution strategy (cma-es) in cloud computing,” Journal of Advances in Computer Engineering and Technology, vol. 3, no. 3, pp. 135–144, 2017.
+[27] R. F. Freund, M. Gherrity, S. Ambrosius, M. Campbell, M. Halderman, D. Hensgen, E. Keith, T. Kidd, M. Kussow, J. D. Lima et al., “Scheduling resources in multi-user, heterogeneous, computing environments with smartnet,” in Proceedings Seventh Heterogeneous Computing Workshop (HCW’98). IEEE, 1998, pp. 184–199.
+[28] R. F. Freund and H. J. Siegel, “Guest editor’s introduction: Heterogeneous processing,” Computer, vol. 26, no. 6, pp. 13–17, 1993.
+[29] F. Fu, Y. Kang, Z. Zhang, F. R. Yu, and T. Wu, “Soft actor-critic drl for live transcoding and streaming in vehicular fog computing-enabled iov,” IEEE Internet of Things Journal, 2020.
+[30] Google, “Cloud tpu,” 2020. [Online]. Available: https://cloud.google.com/tpu/
+[31] U. Gupta, S. Hsia, V. Saraph, X. Wang, B. Reagen, G.-Y. Wei, H.-H. S. Lee, D. Brooks, and C.-J. Wu, “Deeprecsys: A system for optimizing end-to-end at-scale neural recommendation inference,” arXiv preprint arXiv:2001.02772, 2020.
+[32] J. H. Halton, “On the efﬁciency of certain quasi-random sequences of points in evaluating multi-dimensional integrals,” Numerische Mathematik, vol. 2, no. 1, pp. 84–90, 1960.
+[33] J. M. Hammersley, “Monte carlo methods for solving multivariable problems,” Annals of the New York Academy of Sciences, vol. 86, no. 3, pp. 844–874, 1960.
+[34] N. Hansen, “The cma evolution strategy: a comparing review,” in Towards a new evolutionary computation. Springer, 2006, pp. 75–102.
+[35] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2016, pp. 770–778.
+[36] X. He, L. Liao, H. Zhang, L. Nie, X. Hu, and T.-S. Chua, “Neural collaborative ﬁltering,” in Proceedings of the 26th international conference on world wide web, 2017, pp. 173–182.
+[37] M. Hellwig and H.-G. Beyer, “Evolution under strong noise: A self-adaptive evolution strategy can reach the lower performance bound-the pccmsa-es,” in International Conference on Parallel Problem Solving from Nature. Springer, 2016, pp. 26–36.
+[38] J. H. Holland, “Genetic algorithms,” Scientiﬁc american, vol. 267, no. 1, pp. 66–73, 1992.
+
+12
+
+[39] E. S. Hou, N. Ansari, and H. Ren, “A genetic algorithm for multiprocessor scheduling,” IEEE Transactions on Parallel and Distributed systems, vol. 5, no. 2, pp. 113–120, 1994.
+[40] C.-H. Hsu, S.-H. Chang, J.-H. Liang, H.-P. Chou, C.-H. Liu, S.-C. Chang, J.-Y. Pan, Y.-T. Chen, W. Wei, and D.-C. Juan, “Monas: Multi-objective neural architecture search using reinforcement learning,” arXiv preprint arXiv:1806.10332, 2018.
+[41] G. Huang, Z. Liu, L. Van Der Maaten, and K. Q. Weinberger, “Densely connected convolutional networks,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2017, pp. 4700–4708.
+[42] R. Hwang, T. Kim, Y. Kwon, and M. Rhu, “Centaur: A chiplet-based, hybrid sparse-dense accelerator for personalized recommendations,” arXiv preprint arXiv:2005.05968, 2020.
+[43] F. N. Iandola, S. Han, M. W. Moskewicz, K. Ashraf, W. J. Dally, and K. Keutzer, “Squeezenet: Alexnet-level accuracy with 50x fewer parameters and< 0.5 mb model size,” arXiv preprint arXiv:1602.07360, 2016.
+[44] Y. Jernite, “Explain anything like i’m ﬁve: A model for open domain long form question answering,” 2020. [Online]. Available: https://yjernite.github.io/lfqa.html
+[45] W. Joo and D. Shin, “Resource-constrained spatial multi-tasking for embedded gpu,” in 2014 IEEE International Conference on Consumer Electronics (ICCE). IEEE, 2014, pp. 339–340.
+[46] S. G. B. H. A. Joon, K. Kim, S. K. B. R. Yatham, N. Alla, H. Sharma, M. Alian, E. Ebrahimi, N. S. Kim, C. Young, and H. Esmaeilzadeh, “Planaria: Dynamic architecture ﬁssion for spatial multi-tenant acceleration of deep neural networks.”
+[47] N. P. Jouppi, C. Young, N. Patil, D. Patterson, G. Agrawal, R. Bajwa, S. Bates, S. Bhatia, N. Boden, A. Borchers et al., “In-datacenter performance analysis of a tensor processing unit,” in Proceedings of the 44th Annual International Symposium on Computer Architecture, 2017, pp. 1–12.
+[48] H. Jun, J. Cho, K. Lee, H.-Y. Son, K. Kim, H. Jin, and K. Kim, “Hbm (high bandwidth memory) dram technology and architecture,” in 2017 IEEE International Memory Workshop (IMW). IEEE, 2017, pp. 1–4.
+[49] M. Junczys-Dowmunt, R. Grundkiewicz, T. Dwojak, H. Hoang, K. Heaﬁeld, T. Neckermann, F. Seide, U. Germann, A. Fikri Aji, N. Bogoychev, A. F. T. Martins, and A. Birch, “Marian: Fast neural machine translation in C++,” in Proceedings of ACL 2018, System Demonstrations. Melbourne, Australia: Association for Computational Linguistics, July 2018, pp. 116–121. [Online]. Available: http://www.aclweb.org/anthology/P18-4020
+[50] D. Kalamkar, E. Georganas, S. Srinivasan, J. Chen, M. Shiryaev, and A. Heinecke, “Optimizing deep learning recommender systems’ training on cpu cluster architectures,” arXiv preprint arXiv:2005.04680, 2020.
+[51] J. Kennedy and R. Eberhart, “Particle swarm optimization,” in Proceedings of ICNN’95-International Conference on Neural Networks, vol. 4. IEEE, 1995, pp. 1942–1948.
+[52] N. S. Keskar, B. McCann, L. R. Varshney, C. Xiong, and R. Socher, “Ctrl: A conditional transformer language model for controllable generation,” arXiv preprint arXiv:1909.05858, 2019.
+[53] N. Kitaev, Ł. Kaiser, and A. Levskaya, “Reformer: The efﬁcient transformer,” arXiv preprint arXiv:2001.04451, 2020.
+[54] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “Imagenet classiﬁcation with deep convolutional neural networks,” in Advances in neural information processing systems, 2012, pp. 1097–1105.
+[55] H. Kwon, L. Lai, T. Krishna, and V. Chandra, “Herald: Optimizing heterogeneous dnn accelerators for edge devices,” arXiv preprint arXiv:1909.07437, 2019.
+[56] H. Kwon, M. Pellauer, and T. Krishna, “An analytic model for cost-beneﬁt analysis of dataﬂows in dnn accelerators,” arXiv preprint arXiv:1805.02566, 2018.
+[57] H. Kwon, A. Samajdar, and T. Krishna, “Maeri: Enabling ﬂexible dataﬂow mapping over dnn accelerators via reconﬁgurable interconnects,” ACM SIGPLAN Notices, vol. 53, no. 2, pp. 461–475, 2018.
+[58] G. Lample and A. Conneau, “Cross-lingual language model pretraining,” arXiv preprint arXiv:1901.07291, 2019.
+
+[59] Z. Lan, M. Chen, S. Goodman, K. Gimpel, P. Sharma, and R. Soricut, “Albert: A lite bert for self-supervised learning of language representations,” arXiv preprint arXiv:1909.11942, 2019.
+[60] H. Le, L. Vial, J. Frej, V. Segonne, M. Coavoux, B. Lecouteux, A. Allauzen, B. Crabbé, L. Besacier, and D. Schwab, “Flaubert: Unsupervised language model pre-training for french,” arXiv preprint arXiv:1912.05372, 2019.
+[61] S. T. Leutenegger and M. K. Vernon, “The performance of multiprogrammed multiprocessor scheduling algorithms,” in Proceedings of the 1990 ACM SIGMETRICS conference on Measurement and modeling of computer systems, 1990, pp. 226–236.
+[62] M. Lewis, Y. Liu, N. Goyal, M. Ghazvininejad, A. Mohamed, O. Levy, V. Stoyanov, and L. Zettlemoyer, “Bart: Denoising sequence-to-sequence pre-training for natural language generation, translation, and comprehension,” arXiv preprint arXiv:1910.13461, 2019.
+[63] X. Li, Y. Qin, H. Zhou, D. Chen, S. Yang, and Z. Zhang, “An intelligent adaptive algorithm for servers balancing and tasks scheduling over mobile fog computing networks,” Wireless Communications and Mobile Computing, vol. 2020, 2020.
+[64] Y. Liu, M. Ott, N. Goyal, J. Du, M. Joshi, D. Chen, O. Levy, M. Lewis, L. Zettlemoyer, and V. Stoyanov, “Roberta: A robustly optimized bert pretraining approach,” arXiv preprint arXiv:1907.11692, 2019.
+[65] W. Lu, G. Yan, J. Li, S. Gong, Y. Han, and X. Li, “Flexﬂow: A ﬂexible dataﬂow accelerator architecture for convolutional neural networks,” in International Symposium on High Performance Computer Architecture (HPCA), 2017.
+[66] H. Mao, M. Alizadeh, I. Menache, and S. Kandula, “Resource management with deep reinforcement learning,” in Proceedings of the 15th ACM Workshop on Hot Topics in Networks, 2016, pp. 50–56.
+[67] H. Mao, M. Schwarzkopf, S. B. Venkatakrishnan, Z. Meng, and M. Alizadeh, “Learning scheduling algorithms for data processing clusters,” in Proceedings of the ACM Special Interest Group on Data Communication, 2019, pp. 270–288.
+[68] L. Martin, B. Muller, P. J. O. Suárez, Y. Dupont, L. Romary, É. V. de la Clergerie, D. Seddah, and B. Sagot, “Camembert: a tasty french language model,” arXiv preprint arXiv:1911.03894, 2019.
+[69] M. D. McKay, R. J. Beckman, and W. J. Conover, “A comparison of three methods for selecting values of input variables in the analysis of output from a computer code,” Technometrics, vol. 42, no. 1, pp. 55–61, 2000.
+[70] Micron, “Ddr5 sdram,” 2020. [Online]. Available: https://www.micron.com/products/dram/ddr5-sdram
+[71] MLPerf, “Mlperf,” 2020. [Online]. Available: https://www.mlperf.org/
+[72] V. Mnih, A. P. Badia, M. Mirza, A. Graves, T. Lillicrap, T. Harley, D. Silver, and K. Kavukcuoglu, “Asynchronous methods for deep reinforcement learning,” in International conference on machine learning, 2016, pp. 1928–1937.
+[73] A. Mseddi, W. Jaafar, H. Elbiaze, and W. Ajib, “Intelligent resource allocation in dynamic fog computing environments,” in 2019 IEEE 8th International Conference on Cloud Networking (CloudNet). IEEE, 2019, pp. 1–7.
+[74] M. Naumov, D. Mudigere, H.-J. M. Shi, J. Huang, N. Sundaraman, J. Park, X. Wang, U. Gupta, C.-J. Wu, A. G. Azzolini et al., “Deep learning recommendation model for personalization and recommendation systems,” arXiv preprint arXiv:1906.00091, 2019.
+[75] NVIDIA, “NVIDIA Deep Learning Accelerator (NVDLA),” https://nvldla.org, 2018.
+[76] NVIDIA, “Nvidia volta, tensor core gpu architecture,” 2020. [Online]. Available: https://www.nvidia.com/en-us/data-center/volta-gpu-architecture/
+[77] A. Parashar, P. Raina, Y. S. Shao, Y.-H. Chen, V. A. Ying, A. Mukkara, R. Venkatesan, B. Khailany, S. W. Keckler, and J. Emer, “Timeloop: A systematic approach to dnn accelerator evaluation,” in 2019 IEEE international symposium on performance analysis of systems and software (ISPASS). IEEE, 2019, pp. 304–315.
+[78] PCI-SIG, “Pce spec,” 2020. [Online]. Available: https://pcisig.com/newsroom
+
+13
+
+[79] M. E. Peters, M. Neumann, M. Iyyer, M. Gardner, C. Clark, K. Lee, and L. Zettlemoyer, “Deep contextualized word representations,” arXiv preprint arXiv:1802.05365, 2018.
+[80] K. V. Price, “Differential evolution,” in Handbook of Optimization. Springer, 2013, pp. 187–214.
+[81] A. Radford, K. Narasimhan, T. Salimans, and I. Sutskever, “Improving language understanding by generative pre-training,” 2018.
+[82] A. Radford, J. Wu, R. Child, D. Luan, D. Amodei, and I. Sutskever, “Language models are unsupervised multitask learners,” OpenAI Blog, vol. 1, no. 8, p. 9, 2019.
+[83] C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena, Y. Zhou, W. Li, and P. J. Liu, “Exploring the limits of transfer learning with a uniﬁed text-to-text transformer,” arXiv preprint arXiv:1910.10683, 2019.
+[84] J. Rapin and O. Teytaud, “Nevergrad - A gradient-free optimization platform,” https://GitHub.com/FacebookResearch/Nevergrad, 2018.
+[85] I. Rechenberg, “Evolutionsstrategie: Optimierung technischer systeme nach prinzipien der biologischen evolution. frommann-holzbog, stuttgart, 1973,” Step-Size Adaptation Based on Non-Local Use of Selection Information. In PPSN3, 1994.
+[86] S. Rixner, W. J. Dally, U. J. Kapasi, P. Mattson, and J. D. Owens, “Memory access scheduling,” ACM SIGARCH Computer Architecture News, vol. 28, no. 2, pp. 128–138, 2000.
+[87] H. Rummukainen and J. K. Nurminen, “Practical reinforcement learning-experiences in lot scheduling application,” IFAC-PapersOnLine, vol. 52, no. 13, pp. 1415–1420, 2019.
+[88] T. Salimans, J. Ho, X. Chen, S. Sidor, and I. Sutskever, “Evolution strategies as a scalable alternative to reinforcement learning,” arXiv preprint arXiv:1703.03864, 2017.
+[89] Y. Samadi, M. Zbakh, and C. Tadonki, “E-heft: enhancement heterogeneous earliest ﬁnish time algorithm for task scheduling based on load balancing in cloud computing,” in 2018 International Conference on High Performance Computing & Simulation (HPCS). IEEE, 2018, pp. 601–609.
+[90] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen, “Mobilenetv2: Inverted residuals and linear bottlenecks,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp. 4510–4520.
+[91] V. Sanh, L. Debut, J. Chaumond, and T. Wolf, “Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter,” arXiv preprint arXiv:1910.01108, 2019.
+[92] E. Schkufza, R. Sharma, and A. Aiken, “Stochastic superoptimization,” ACM SIGARCH Computer Architecture News, vol. 41, no. 1, pp. 305–316, 2013.
+[93] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov, “Proximal policy optimization algorithms,” arXiv preprint arXiv:1707.06347, 2017.
+[94] Y. S. Shao et al., “Simba: Scaling deep-learning inference with multi-chip-module-based architecture,” in MICRO, 2019, pp. 14–27.
+[95] Y. Shen, M. Ferdman, and P. Milder, “Maximizing cnn accelerator efﬁciency through resource partitioning,” in 2017 ACM/IEEE 44th Annual International Symposium on Computer Architecture (ISCA). IEEE, 2017, pp. 535–547.
+[96] J. Sherwani, N. Ali, N. Lotia, Z. Hayat, and R. Buyya, “Libra: a computational economy-based job scheduling system for clusters,” Software: Practice and Experience, vol. 34, no. 6, pp. 573–590, 2004.
+[97] P. Shroff, D. W. Watson, N. S. Flann, and R. F. Freund, “Genetic simulated annealing for scheduling data-dependent tasks in heterogeneous environments,” in 5th Heterogeneous Computing Workshop (HCW’96), 1996, pp. 98–117.
+[98] K. Simonyan and A. Zisserman, “Very deep convolutional networks for large-scale image recognition,” arXiv preprint arXiv:1409.1556, 2014.
+[99] H. Singh and A. Youssef, “Mapping and scheduling heterogeneous task graphs using genetic algorithms,” in 5th IEEE heterogeneous computing workshop (HCW’96), 1996, pp. 86–97.
+[100] A. Stoutchinin, F. Conti, and L. Benini, “Optimally scheduling cnn convolutions for efﬁcient memory access,” arXiv preprint
+
+arXiv:1902.01492, 2019.
+[101] F. P. Such, V. Madhavan, E. Conti, J. Lehman, K. O. Stanley, and J. Clune, “Deep neuroevolution: Genetic algorithms are a competitive alternative for training deep neural networks for reinforcement learning,” arXiv preprint arXiv:1712.06567, 2017.
+[102] N. Suda, V. Chandra, G. Dasika, A. Mohanty, Y. Ma, S. Vrudhula, J.-s. Seo, and Y. Cao, “Throughput-optimized opencl-based fpga accelerator for large-scale convolutional neural networks,” in Proceedings of the 2016 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays, 2016, pp. 16–25.
+[103] Z. Sun, H. Yu, X. Song, R. Liu, Y. Yang, and D. Zhou, “Mobilebert: a compact task-agnostic bert for resource-limited devices,” arXiv preprint arXiv:2004.02984, 2020.
+[104] T. T. Sung, J. Ha, J. Kim, A. Yahja, C.-B. Sohn, and B. Ryu, “Deepsocs: A neural scheduler for heterogeneous system-on-chip (soc) resource scheduling,” Electronics, vol. 9, no. 6, p. 936, 2020.
+[105] C. Szegedy, S. Ioffe, V. Vanhoucke, and A. A. Alemi, “Inception-v4, inception-resnet and the impact of residual connections on learning,” in Thirty-ﬁrst AAAI conference on artiﬁcial intelligence, 2017.
+[106] C. Szegedy, W. Liu, Y. Jia, P. Sermanet, S. Reed, D. Anguelov, D. Erhan, V. Vanhoucke, and A. Rabinovich, “Going deeper with convolutions,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2015, pp. 1–9.
+[107] M. Tan, B. Chen, R. Pang, V. Vasudevan, M. Sandler, A. Howard, and Q. V. Le, “Mnasnet: Platform-aware neural architecture search for mobile,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2019, pp. 2820–2828.
+[108] M. Tan, B. Chen, R. Pang, V. Vasudevan, M. Sandler, A. Howard, and Q. V. Le, “Mnasnet: Platform-aware neural architecture search for mobile,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2019, pp. 2820–2828.
+[109] L. Thamsen, B. Rabier, F. Schmidt, T. Renner, and O. Kao, “Scheduling recurring distributed dataﬂow jobs based on resource utilization and interference,” in 2017 IEEE International Congress on Big Data (BigData Congress). IEEE, 2017, pp. 145–152.
+[110] Z. Tong, X. Deng, H. Chen, J. Mei, and H. Liu, “Ql-heft: a novel machine learning scheduling scheme base on cloud computing environment,” Neural Computing and Applications, pp. 1–18, 2019.
+[111] H. Topcuoglu, S. Hariri, and M.-y. Wu, “Performance-effective and low-complexity task scheduling for heterogeneous computing,” IEEE transactions on parallel and distributed systems, vol. 13, no. 3, pp. 260–274, 2002.
+[112] Transcend, “The tranfer rate of ddr1, ddr2, ddr3, and ddr4,” 2020. [Online]. Available: https://www.transcend-info.com/Support/FAQ-292
+[113] N. Vasilache, O. Zinenko, T. Theodoridis, P. Goyal, Z. DeVito, W. S. Moses, S. Verdoolaege, A. Adams, and A. Cohen, “Tensor Comprehensions: Framework-Agnostic High-Performance Machine Learning Abstractions,” arXiv preprint arXiv:1802.04730, 2018.
+[114] L. Wang, H. J. Siegel, and V. P. Roychowdhury, “A genetic-algorithm-based approach for task matching and scheduling in heterogeneous computing environments,” in Proc. Heterogeneous Computing Workshop, 1996, pp. 72–85.
+[115] X. Wei et al., “Automated systolic array architecture synthesis for high throughput cnn inference on fpgas,” in DAC, 2017, pp. 1–6.
+[116] Z. Wu, Z. Ni, L. Gu, and X. Liu, “A revised discrete particle swarm optimization for cloud workﬂow scheduling,” in 2010 International Conference on Computational Intelligence and Security. IEEE, 2010, pp. 184–188.
+[117] Y. Xiao, F. Codevilla, A. Gurram, O. Urfalioglu, and A. M. López, “Multimodal end-to-end autonomous driving,” IEEE Transactions on Intelligent Transportation Systems, 2020.
+[118] S. Xie, R. Girshick, P. Dollár, Z. Tu, and K. He, “Aggregated residual transformations for deep neural networks,” in Proceedings of the IEEE conference on computer vision and pattern recognition, 2017, pp. 1492–1500.
+[119] Z. Yang, Z. Dai, Y. Yang, J. Carbonell, R. R. Salakhutdinov, and Q. V. Le, “Xlnet: Generalized autoregressive pretraining for language understanding,” in Advances in neural information processing systems, 2019, pp. 5753–5763.
+
+14
+
+[120] S. Yin, P. Ouyang, S. Zheng, D. Song, X. Li, L. Liu, and S. Wei, “A 141 uw, 2.46 pj/neuron binarized convolutional neural network based self-learning speech recognition processor in 28nm cmos,” in 2018 IEEE Symposium on VLSI Circuits. IEEE, 2018, pp. 139–140.
+[121] M. Zaharia, D. Borthakur, J. S. Sarma, K. Elmeleegy, S. Shenker, and I. Stoica, “Job scheduling for multi-user mapreduce clusters,” Technical Report UCB/EECS-2009-55, EECS Department, University of California . . . , Tech. Rep., 2009.
+[122] C. Zhang, P. Li, G. Sun, Y. Guan, B. Xiao, and J. Cong, “Optimizing fpga-based accelerator design for deep convolutional neural networks,” in Proceedings of the 2015 ACM/SIGDA International Symposium on Field-Programmable Gate Arrays, 2015, pp. 161–170.
+[123] X. Zhang, X. Zhou, M. Lin, and J. Sun, “Shufﬂenet: An extremely efﬁcient convolutional neural network for mobile devices,” in Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp. 6848–6856.
+[124] Y. Zhang, X. Chen, Q. Ai, L. Yang, and W. B. Croft, “Towards conversational search and recommendation: System ask, user respond,” in Proceedings of the 27th acm international conference on information and knowledge management, 2018, pp. 177–186.
+
+[125] S. Zheng, P. Ouyang, D. Song, X. Li, L. Liu, S. Wei, and S. Yin, “An ultra-low power binarized convolutional neural network-based speech recognition processor with on-chip self-learning,” IEEE Transactions on Circuits and Systems I: Regular Papers, vol. 66, no. 12, pp. 4648–4661, 2019.
+[126] G. Zhou, N. Mou, Y. Fan, Q. Pi, W. Bian, C. Zhou, X. Zhu, and K. Gai, “Deep interest evolution network for click-through rate prediction,” in Proceedings of the AAAI conference on artiﬁcial intelligence, vol. 33, 2019, pp. 5941–5948.
+[127] G. Zhou, X. Zhu, C. Song, Y. Fan, H. Zhu, X. Ma, Y. Yan, J. Jin, H. Li, and K. Gai, “Deep interest network for click-through rate prediction,” in Proceedings of the 24th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining, 2018, pp. 1059–1068.
+[128] X. Zhu, S. Chen, S. Chen, and G. Yang, “Energy and delay co-aware computation ofﬂoading with deep learning in fog computing networks,” in 2019 IEEE 38th International Performance Computing and Communications Conference (IPCCC). IEEE, 2019, pp. 1–6.
+[129] B. Zoph and Q. V. Le, “Neural architecture search with reinforcement learning,” arXiv preprint arXiv:1611.01578, 2016.
+
+15
+

@@ -1,0 +1,629 @@
+LIGHTWEIGHT COMPRESSION OF NEURAL NETWORK FEATURE TENSORS FOR COLLABORATIVE INTELLIGENCE
+Robert A. Cohen, Hyomin Choi, and Ivan V. Bajic´
+School of Engineering Science, Simon Fraser University, Burnaby, BC, Canada
+
+ABSTRACT
+In collaborative intelligence applications, part of a deep neural network (DNN) is deployed on a relatively low-complexity device such as a mobile phone or edge device, and the remainder of the DNN is processed where more computing resources are available, such as in the cloud. This paper presents a novel lightweight compression technique designed speciﬁcally to code the activations of a split DNN layer, while having a low complexity suitable for edge devices and not requiring any retraining. We also present a modiﬁed entropy-constrained quantizer design algorithm optimized for clipped activations. When applied to popular object-detection and classiﬁcation DNNs, we were able to compress the 32-bit ﬂoating point activations down to 0.6 to 0.8 bits, while keeping the loss in accuracy to less than 1%. When compared to HEVC, we found that the lightweight codec consistently provided better inference accuracy, by up to 1.3%. The performance and simplicity of this lightweight compression technique makes it an attractive option for coding a layer’s activations in split neural networks for edge/cloud applications.
+Index Terms— Deep learning, collaborative intelligence, neural network compression, quantization
+1. INTRODUCTION
+With recent advances in machine learning and their efﬁcient implementations, we are beginning to see an increasingly widespread use of deep neural networks (DNNs) on small or lightweight platforms such as mobile devices, edge computing systems, and embedded platforms [1–3]. For DNNs that are too large or complex to realize entirely within a mobile or edge device, a collaborative intelligence [4] approach can be used to split the DNN between the device and the cloud. The data output at the split location is signaled to the remainder of the DNN on the cloud. Determining the ideal place to split the network can depend upon both the application and the size of the activations or feature tensors that need to be signaled [5]. The feature tensors inside a DNN may be greatly expanded in terms of size and redundancy as compared to the data originally input to the network. Therefore, data reduction or compression methods are needed in order to reduce the bandwidth of the data to be transferred.
+Existing approaches to reducing the data bandwidth between layers typically include quantization, data reorganization, pruning, and sometimes the addition of small neural networks to reduce the feature tensor dimensions. Quantization within DNNs is currently a very active area of research, not only for collaborative intelligence, but also for reducing overall complexity and memory requirements. In [6], ResNet-34 was modiﬁed to have more ﬁlters in each layer, and the weights and activations were quantized to 2 and 4 bits, respectively, while maintaining the accuracy of the unmodiﬁed network. In [7], weights, activations, and some of the gradient and
+
+back-propagation computations were quantized to 8 bits, along with a scaling modiﬁcation made to batch normalization. In [8], networks were trained with weights and activations quantized to two bits. Binary neural networks [9, 10] use only one-bit weights and activations during inference. For collaborative intelligence applications, a convolutional layer can be inserted after the split layer to signiﬁcantly reduce the dimensions of the feature tensor, followed by 8-bit quantization [4]. These methods, however, require end-toend (re)training to obtain the ﬁnal network weights and parameters. Given the complexity of the training process and availability of pretrained ﬂoating-point weights for state of the art DNNs, methods for post-training quantization have been of great interest as well. Several post-training quantization techniques [11–14] reduce the losses caused by quantization while quantizing weights and/or activations down to between 4 (or an average of 4) and 8 bits, and sometimes lower. Another method to reduce the data size is to compress tiled picture(s) of the activation tensors at the split layer using conventional image or video codecs [4, 15–18].
+In this paper, we present a lightweight compression method that is well-suited for coding the output of a split DNN in edge-based devices. This method uses simple and very coarse scalar quantization along with clipping, binarization, and entropy coding to compress the activations. No retraining of network weights is needed. It is also capable of coding to a wide range of bit-rates. We also present comparisons to compression using the HEVC screen content coding extension [19], by tiling the activation channels into pictures as was done in [16].
+In Section 2, we present the lightweight codec along with an examination of the effects of clipping. Section 3 presents experimental results, followed by conclusions in Section 4.
+2. LIGHTWEIGHT COMPRESSION OF TENSORS
+Fig. 1 illustrates how the lightweight compression method can be used in a collaborative intelligence application. Layers in a DNN include operations such as convolutions, batch normalization operations, and activation functions. If the ﬁrst several layers of a DNN are performed for example on a mobile or edge device, we would like to compress the outputs of the activation functions (feature tensors) for transmission to the platform that is performing the remaining layers of the DNN. Because the compression will be performed on an edge device, we would like to keep the complexity of the compression method relatively low, while not signiﬁcantly compromising the accuracy of the DNN model. For the lightweight compression presented here, we rely on relatively simple operations such as clipping and very coarse scalar quantization to a few representative values. To further compress the data, we convert the quantized symbols to a binarized representation for passing to an entropy coder. The compressed bitstream is sent to the cloud or another computing platform, where it is decoded and converted to a reconstructed feature tensor,
+
+978-1-7281-1331-9/20/$31.00 c 2020 IEEE
+
+Authorized licensed use limited to: KAUST. Downloaded on September 25,2022 at 11:54:30 UTC from IEEE Xplore. Restrictions apply.
+
+mAP MSQE
+
+01
+…011010… 0 1 0 1
+
+Input and initial subset of layers
+
+Clip Quantize Mobile/edge device
+
+Binarize Entropy code
+Compressed bit-stream
+
+Cloud/compute device
+
+…021…
+
+01 0 10 1
+
+Remaining layers Reconstructed Inverse Inverse Entropy
+
+and output
+
+layer
+
+quantize binarize decode
+
+Fig. 1. Lightweight compression system overview
+
+mAP: MSQE:
+
+2-level 2-level
+
+3-level 3-level
+
+4-level 4-level
+
+8-level 8-level
+
+0.7
+
+mAP with neither quantization nor clipping
+
+0.8
+
+0.6
+
+0.7
+
+0.5
+
+0.6
+
+0.4
+
+0.5 0.4
+
+0.3
+
+0.3
+
+0.2
+
+0.2
+
+0.1
+
+0.1
+
+0.0 0
+
+2
+
+4Maximum 6clip value c8max 10
+
+12 0.0
+
+Fig. 2. Effects of clipping layer 12 activations in YOLOv3
+
+which is then processed by the remaining layers of the DNN. The net effect of this process on the DNN computations is that the output of one layer is clipped and quantized; namely the layer that will be transmitted.
+For post-training quantization of activations for applications such as object detection and classiﬁcation, it is well known that uniformly quantizing 32-bit ﬂoating point activation values to 8 bits generates a small or negligible reduction in the network’s accuracy [20]. This behavior also holds true for collaborative intelligence applications with quantization applied to where the network is split. The network’s performance degrades signiﬁcantly, however, when quantizing without reﬁnements to 4 or fewer bits. For example, the Top-1 classiﬁcation accuracy of ResNet-50 [21] on the ImageNet ILSVRC2012 [22] validation data set is 75.8%, but if we cut the network at the output of layer 21 and uniformly quantize each activation value to 8 levels (3 bits), then the accuracy becomes 59.7%; a drop of 16.1%. By clipping the tensor elements prior to quantization, it is possible to eliminate this loss, without requiring any retraining of the DNN’s weights. In this section, we ﬁrst examine the effects of clipping, and then we present the lightweight compression technique which makes use of an entropy-constrained quantizer design process tailored for clipped activations.
+
+2.1. Effects of clipping
+
+Fig. 2 shows the effects that clipping and coarse quantization have on the mean Average Precision (mAP) of the YOLOv3 [23] object detection network when run on the COCO 2017 [24] validation data set (IoU = 0.5). Here, the activations at the output of layer 12 are clipped (clamped) to be between cmin = 0.0 and cmax. Each clipped activation value, denoted as xclp, is processed by an N -level quantizer as follows:
+
+Q(xclp) = round
+
+xclp − cmin · (N − 1) cmax − cmin
+
+,
+
+(1)
+
+where round(·) rounds away from zero for halfway cases. Note that unlike related literature that focuses on reduced bit-depth architectures, our N does not need to be a power of two, as the purpose of quantization is for compression and subsequent transmission or storage in a bit-stream. The mean-square quantization error (MSQE) computed between an unmodiﬁed activation x and the inverse-quantized activation is also shown in Fig. 2.
+For 3-bit quantization, i.e. 8-level quantization, peak performance is achieved over a range of cmax values between roughly
+
+3.0 and 5.0. The performance degrades when clipping extends further. As the number of quantization levels is decreased, the optimal cmax decreases, as does the range of cmax values that achieves peak performance. With 1-bit (2-level) quantization, the optimal range is quite narrow. When the quantization is not extremely coarse, e.g. 8-level (3-bit) or higher, the minimum MSQE generally coincides with the peak mAP performance. Earlier works, e.g. [12, 13] have leveraged this behavior to model the quantization error in order to select the optimal clipping range for all activations in a DNN. However, it is evident from these prior works that deviations from the models occur with extremely coarse quantization, e.g. 2-bit (4level) and below, and when the distributions of the activations are non-Gaussian. We can see in Fig. 2 that the optimal cmax for 1-bit quantization is approximately 2.0, whereas the minimum MSQE occurs near cmax = 1.75. Thus, choosing cmax based on minimizing MSQE can result in a potential loss in mAP of several percent when N is small. For the experiments presented later in this paper, we empirically select the clipping ranges in order to determine the best achievable network accuracy when compression is used.
+2.2. Modiﬁed entropy-constrained quantization for clipped activations
+Although a uniform quantizer is simple, it is not optimal for signals that are not uniformly distributed. Moreover, because there is a trade-off between network accuracy and bit-rate when compressing activations, we would like be able to compress the tensors over a range of rates or ﬁle sizes. Entropy-constrained quantization [25] and rate-distortion optimization [26] are well-known methods for compressing data subject to minimizing a Lagrangian cost function J = D+λR, where D is a distortion metric, R is a rate or size of the representation, and λ is a scalar. Thus, we can easily obtain optimal quantizers in the mean-squared sense over a range of rates by using an entropy-constrained design process. However, we showed earlier that the accuracy of a DNN is quite sensitive to the clipping range of a layer’s activation when quantized to a very low number of levels. The representative level for each bin of an 2-norm optimized quantizer corresponds to the centroid of the data quantized to that bin. For example, suppose a one-bit quantizer divides [0.0, 2.0] into two bins, [0.0, 1.0] and [1.0, 2.0], and the representative values are 0.3 and 1.5, respectively. If a layer’s activations are clipped to [0.0, 2.0], quantized, and transmitted, then the receiver would reconstruct data having only the values {0.3, 1.5}, which span a range much smaller than the initial clipping range of [0.0, 2.0]. To address this problem,
+
+Authorized licensed use limited to: KAUST. Downloaded on September 25,2022 at 11:54:30 UTC from IEEE Xplore. Restrictions apply.
+
+P(x)
+
+0.3
+
+0.2
+
+0.1
+
+0.0
+
+0
+
+20 Activation40element va6l0ue x 80
+
+100
+
+Fig. 3. Histogram of activation elements for layer 21 of ResNet-50
+
+we present a modiﬁed entropy-constrained quantizer design process to pin the reconstruction levels of the outermost bins to cmin and cmax, to ensure that the reconstructed activations span the full clipping range. The reconstruction values for the interior bins and the threshold values between bins are not pinned and are free to vary under the design algorithm.
+Using notation similar to that of [27], the conventional entropyconstrained quantizer design process for an N -level quantizer is summarized in Algorithm 1. With this process, quantizers can be designed to cover a range of rate-distortion performance points, based upon the value of the Lagrange multiplier λ. To design quantizers that work well in a lightweight compression system for clipped activations, the modiﬁed quantizer design process is shown in Algorithm 2. The main modiﬁcations are related to pinning the representative levels for the boundary bins and using codeword lengths instead of probabilities for computing rate-related terms. The boundary pinning occurs in Step 4. Here, the ﬁrst and last representative levels are always set to the minimum and maximum activation clipping values cmin and cmax, respectively. The interior levels are computed as in Step 3 of Algorithm 1. For modifying the rate terms, we replace the probability-based estimate of the number of bits used to represent a bin, log2(pn), with the known length bn of the binarized codeword used to represent the bin. In the next subsection, we discuss the binarization and subsequent entropy coding.
+
+2.3. Binarization and entropy coding
+After quantizing an activation element, an index associated with the selected representative level is coded and signaled to a bit-stream. For the types of DNNs that we are splitting, the activation values tend to be skewed toward zero, as illustrated by the histogram in Fig. 3 for the unclipped layer-21 activations of ResNet-50 when run over the ImageNet ILSVRC2012 validation data set. Given that we will be able to achieve good performance when quantizing to very few bins, a truncated unary binarization scheme [28] is well suited for this purpose. For example, the bin indices {0, 1, 2, 3} of a 2-bit (4-level) quantizer are mapped to the binarized strings {0, 10, 110, 111} respectively.
+The binarized strings must next be coded to a bit-stream. For this paper, we use Context-based Adaptive Binary Arithmetic Coding (CABAC) [28], similar to that used in H.264/AVC and HEVC. One context is used for each bit position for the binarized string. For the 2-bit example given in the previous paragraph, three contexts are used.
+3. EXPERIMENTAL RESULTS
+We applied our lightweight compression technique to activations output from the split layer of a DNN, for three different inference scenarios: YOLOv3 object detection at layer 12, VGG-16 classiﬁcation at layer 6, and ResNet-50 classiﬁcation at layer 21. The
+
+Algorithm 1 Conventional entropy-constrained quantizer design process
+Input: Training samples x ∈ {xm; m = 0, 1, . . . , M − 1}
+Number of quantizer bins N Lagrange multiplier λ Output: Quantizer representative levels
+xˆn, n ∈ {0, 1, . . . , N − 1} Quantizer decision thresholds
+tn, n ∈ {1, . . . , N − 1}
+1: Initialize the representative levels xˆn and probabilities pn for each bin, for n ∈ {0, 1, . . . , N −1} (e.g., uniform and equiprobable)
+2: Assign each training sample xm, m ∈ {0, 1, . . . , M − 1} to quantizer bin n having representative value xˆn such that the Lagrangian rate-distortion cost is minimized:
+
+arg min (xm − xˆn)2 − λ log2 pn n
+
+The subset of samples xm assigned to bin n is denoted as Bn. 3: Update the probabilities pn based on the assignment from
+Step 2, and recompute the representative levels for each bin:
+
+1
+
+xˆn
+
+=
+
+|Bn|
+
+x,
+x∈Bn
+
+n ∈ {0, 1, . . . , N − 1}
+
+where |Bn| is the number of samples assigned to bin n. 4: Based on the recomputed representative levels, recompute the
+Lagrangian cost function, and repeat Steps 2 and 3 until the reduction in the cost function is less than a threshold. 5: Compute N − 1 quantizer decision thresholds:
+
+tn
+
+=
+
+xˆn
+
++ xˆn−1 2
+
++
+
+λ log2 pn − log2 pn−1 2(xˆn − xˆn−1)
+
+,
+
+n ∈ {1, . . . , N − 1}
+
+dimensions of the activations at these layers were 52×52×256, 56×56×128, and 32×32×512, respectively. Pre-trained network weights were obtained from [29]. The software modiﬁed to run the experiments was the Darknet version of [30]. For YOLOv3 with input size 416×416, mAP (IoU = 0.5) results were obtained using the COCO 2017 validation data set, which includes about 5k images. For VGG-16 and ResNet-50, classiﬁcation accuracies were obtained using the ImageNet ILSVRC2012 validation data set, which has 50k images. For experiments using entropy-constrained quantization, the quantizer design algorithms were run on activations output when running the ﬁrst part of the network on 100 images from the data set. After clipping, quantization, and coding to a bit-stream, the activations were decoded and inverse quantized and then passed to the remainder of the neural network. The bit-streams also included side information needed by the decoder, e.g. cmin, cmax, N , and some dimensional parameters for object detection, which together comprised 24 bytes for object detection and 12 bytes for classiﬁcation networks. The clipping thresholds were empirically selected as described in Section 2.1. The size of the compressed data is reported as bits per element, i.e. the size of the bit-stream divided by the number of elements in the activation’s output feature tensor.
+The performance when using a uniform quantizer is shown in Tables 1, 2, and 3 for YOLOv3, VGG-16, and ResNet-50, respec-
+
+Authorized licensed use limited to: KAUST. Downloaded on September 25,2022 at 11:54:30 UTC from IEEE Xplore. Restrictions apply.
+
+Algorithm 2 Modiﬁed entropy-constrained quantizer design process for clipped activations
+Input: Training samples x ∈ {xm; m = 0, 1, . . . , M − 1}
+Number of quantizer bins N Codeword lengths bn, n ∈ {1, . . . , N − 1} Lagrange multiplier λ Activation clipping range [cmin, cmax] Output: Quantizer representative levels
+xˆn, n ∈ {0, 1, . . . , N − 1} Quantizer decision thresholds
+tn, n ∈ {1, . . . , N − 1}
+1: Clip (clamp) the training samples x to be within [cmin, cmax], which is the clipping range applied to the activations
+2: Initialize the representative levels xˆn for each bin, for n ∈ {0, 1, . . . , N − 1} (e.g., uniform)
+3: Assign each training sample xm, m ∈ {0, 1, . . . , M − 1} to quantizer bin n having representative value xˆn such that the Lagrangian rate-distortion cost is minimized:
+arg min (xm − xˆn)2 − λbn
+n
+The subset of samples xm assigned to bin n is denoted as Bn. 4: Recompute the representative levels for each bin:
+
+xˆ0 = cmin
+
+xˆN−1 = cmax
+
+ifN > 2 :
+
+1
+
+xˆn
+
+=
+
+|Bn|
+
+x,
+x∈Bn
+
+n ∈ {1, . . . , N − 2}
+
+where |Bn| is the number of samples assigned to bin n. 5: Based on the recomputed representative levels, recompute the
+Lagrangian cost function, and repeat Steps 3 and 4 until the reduction in the cost function is less than a threshold. 6: Compute N − 1 quantizer decision thresholds:
+
+tn
+
+=
+
+xˆn
+
++ xˆn−1 2
+
++ λ bn − bn−1 2(xˆn − xˆn−1)
+
+,
+
+n ∈ {1, . . . , N − 1}
+
+tively. For YOLOv3, no loss in performance occurred when quantizing all the way down to 16 levels (4-bit quantization). The drop in mAP was less than 1% with a 4-level (2-bit) quantizer. For VGG-16, the clipping ranges were much larger than with the other networks, because VGG-16 does not use batch normalization. The Top-1 accuracy drop with an 8-level (3-bit) quantizer was 0.3% and 1.2% with 7-level quantization. For ResNet-50, the activations could be quantized to 8 levels with no loss, and at 4 levels (2 bits), the Top1 loss was well below 1%. One-bit quantization was feasible with YOLOv3 and ResNet-50, which yielded 4.8% and 4.9% losses, respectively, with compressed sizes of 0.39 and 0.41 bits per element. We can also see that as the number of quantization levels decreased, generally the optimal clipping range decreased as well, as discussed in Section 2.1.
+Object detection and classiﬁcation performance when quantizing to between 1 and 2 bits is shown in Figs. 4–6, for lightweight compression with both uniform and modiﬁed entropy-constrained
+
+Table 1. Object detection performance for YOLOv3 with uniform
+
+quantization and lightweight compression at layer 12
+
+quantized bits
+
+quantizer bins
+
+clip min, max
+
+compressed bits/element
+
+mAP (%)
+
+unmodiﬁed (ﬂoat32)
+
+32
+
+—
+
+—
+
+—
+
+67.4
+
+4
+
+with
+
+3
+
+lightweight
+
+2
+
+compression
+
+1
+
+16
+
+-0.8, 3.5
+
+1.94
+
+67.4
+
+8
+
+-1.0, 4.0
+
+1.15
+
+66.8
+
+4
+
+-0.1, 2.5
+
+0.86
+
+66.5
+
+3
+
+-0.1, 2.7
+
+0.60
+
+66.2
+
+2
+
+0.0, 2.0
+
+0.39
+
+62.6
+
+Table 2. Classiﬁer performance for VGG-16 with uniform quantiza-
+
+tion and lightweight compression of layer 6 activations
+
+quantized bits
+
+quantizer bins
+
+clip min, max
+
+compressed bits/element
+
+Top-1 accuracy
+(%)
+
+Top-5 accuracy
+(%)
+
+unmodiﬁed (ﬂoat32)
+
+32
+
+—
+
+—
+
+—
+
+70.4 89.8
+
+4
+
+with
+
+3
+
+lightweight
+
+compression
+
+2
+
+16 0, 2600 2.33
+
+8
+
+0, 2400
+
+2.41
+
+7
+
+0, 2200
+
+1.57
+
+6
+
+0, 2000
+
+1.48
+
+5
+
+0, 1800
+
+1.36
+
+4
+
+0, 1600
+
+1.20
+
+70.2 89.7 70.1 89.6 69.2 89.1 68.6 88.7 67.8 88.2 66.1 87.2
+
+quantization. Fig. 4 also shows the YOLOv3 performance with a conventional entropy-constrained quantizer that does not pin the outermost reconstruction levels. Here, with 2-bit quantization, the modiﬁed method performed about 0.7% better than with the conventional method, with additional gains at lower rates. Fig. 4 also shows that the entropy-constrained quantizer’s ability to cover a range of rates enables us to improve the 1-bit performance by about 1%. For the Top-1 and Top-5 accuracies of ResNet-50, Figs. 5 and 6 show that the modiﬁed quantizer design algorithm also allows us to obtain improved accuracies for 3- and 4-level (2-bit) quantizers. The relative behaviors among corresponding performance curves for Top-1 and Top-5 accuracies are consistent, with lower losses for Top-5. The range of achievable compressed bit-stream sizes for all these experiments with quantization to 2 and fewer bits was between about 0.3 to 1.0 bits per tensor element.
+Figs. 4–6 also show the performance when coding the activations using the HM16.20 [31] implementation of the HEVC screen content coding extension (HEVC-SCC). HEVC-SCC includes tools that help with the coding of non-camera-captured pictures. As shown in [16], when activation channels are arranged to form a picture, they contain much high-frequency content. HEVC-SCC
+
+Table 3. Classiﬁer performance for ResNet-50 with uniform quanti-
+
+zation and lightweight compression at layer 21
+
+quantized bits
+
+quantizer bins
+
+clip min, max
+
+compressed bits/element
+
+Top-1 accuracy
+(%)
+
+Top-5 accuracy
+(%)
+
+unmodiﬁed (ﬂoat32)
+
+32
+
+—
+
+—
+
+—
+
+75.8 92.9
+
+3
+with lightweight compression 2
+1
+
+8
+
+0, 14
+
+1.23
+
+75.8 92.9
+
+7
+
+0, 12
+
+1.22
+
+75.7 92.9
+
+6
+
+0, 12
+
+1.09
+
+75.6 92.8
+
+5
+
+0, 12
+
+0.94
+
+75.5 92.8
+
+4
+
+0, 10
+
+0.86
+
+75.2 92.7
+
+2
+
+0, 7
+
+0.41
+
+70.9 90.4
+
+Authorized licensed use limited to: KAUST. Downloaded on September 25,2022 at 11:54:30 UTC from IEEE Xplore. Restrictions apply.
+
+mAP (%)
+
+68
+
+mAP with neither quantization nor clipping
+
+66
+
+64
+
+2-level (1-bit) entropy-constrained
+
+62
+
+2-level (1-bit) uniform 3-level entropy-constrained
+
+3-level uniform
+
+60
+
+4-level (2-bit) entropy constrained 4-level (2-bit) uniform
+
+58
+
+4w-iltehvoeult(b2o-buint)deanrytrobpinypcionnnsintrgained HEVC SCC
+
+56
+
+HalEloVwCeSdCoCnwailtlhtrtarnasnfsofromrmblsokcipk sizes
+0.3 0.4 B0i.t5s per 0a.c6tivatio0n.7eleme0.n8t 0.9 1.0 1.1
+
+Top-5 Accuracy (%)
+
+93.0
+
+Accuracy with neither quantization nor clipping
+
+92.5
+
+92.0
+
+91.5 91.0 90.5
+
+22--lleevveell ((11--bbiitt)) eunntifroorpmy-constrained 33--lleevveell eunntifroorpmy-constrained
+
+90.0
+
+44--lleevveell ((22--bbiitt)) eunntifroorpmy constrained
+
+89.5 89.0
+
+HHalEEloVVwCCeSSdCCoCCnwailtlhtrtarnasnfsofromrmblsokcipk sizes
+0.3 0.4 B0i.t5s per 0a.c6tivatio0n.7elem0e.n8t 0.9 1.0 1.1
+
+Fig. 4. Object-detection mAP for YOLOv3 using lightweight compression at layer 12 with modiﬁed entropy-constrained quantization
+
+76
+
+Accuracy with neither quantization nor clipping
+
+75
+
+Top-1 Accuracy (%)
+
+74
+
+2-level (1-bit) entropy-constrained
+
+73
+
+2-level (1-bit) uniform
+
+3-level entropy-constrained
+
+72
+
+3-level uniform
+
+71
+
+4-level (2-bit) entropy constrained 4-level (2-bit) uniform
+
+70 69
+
+HEVC SCC HalEloVwCeSdCoCnwailtlhtrtarnasnfsofromrmblsokcipk sizes
+0.3 0.4 B0i.t5s per 0a.c6tivatio0n.7eleme0.n8t 0.9 1.0 1.1
+
+Fig. 5. Top-1 accuracy for ResNet-50 using lightweight compression at layer 6 with modiﬁed entropy-constrained quantization
+
+includes a transform skip (TS) mode that is available for all transform block sizes, so we show results when enabling TS for 4×4 blocks only, and for TS enabled over all block sizes. Each set of activation channels were quantized to 8 bits and mosaicked into an 832×832 picture for YOLOv3 and 1024×512 for ResNet-50. Given the ﬁneness of the quantizer, clipping was not necessary. The mosaicked activations for the validation set were coded by HEVCSCC as an all-Intra sequence of monochrome (4:0:0) 8-bit pictures. Even with the improved performance with TS on all block sizes, the lightweight compression outperformed HEVC-SCC by up to 1.3%, depending upon rate. If we compare the operations needed by the lightweight codec to that reported for HEVC [32], we can see that the lightweight codec is well over 90% less complex than HEVC, as we are only performing clipping, scalar quantization, binarization of only a few symbols, and entropy coding.
+4. CONCLUSIONS
+We presented an efﬁcient post-training lightweight compression method for collaborative intelligence applications, suitable for when an edge device compresses the output of a split DNN and transmits it to the cloud, where the remainder of the DNN is processed. The codec only requires clipping, coarse quantization, binarization, and entropy coding to compress feature tensors, so is well over 90% less complex than existing image or video codecs such as HEVC that are typically used for picture compression. We also presented an
+
+Fig. 6. Top-5 accuracy for ResNet-50 using lightweight compression at layer 21 with modiﬁed entropy-constrained quantization
+entropy-constrained quantizer design process tailored speciﬁcally for clipped activations. With this lightweight lossy coding technique, we were able to quantize the 32-bit ﬂoating point activations at a split DNN layer to fewer than 2 bits per element and then compress them further to 0.6 to 0.8 bits per element, while keeping the network accuracy loss to less than 1%. When coding the activations using HEVC, we showed that the lightweight codec yielded accuracies of up to 1.3% higher than HEVC, depending upon the rate. The performance and simplicity of this lightweight compression technique makes it an attractive option for coding activations for edge/cloud DNN applications.
+5. REFERENCES
+[1] J. Chen and X. Ran, “Deep learning with edge computing: A review,” Proceedings of the IEEE, vol. 107, no. 8, pp. 1655– 1674, Aug. 2019.
+[2] N. D. Lane and P. Warden, “The deep (learning) transformation of mobile and embedded computing,” Computer, vol. 51, no. 5, pp. 12–16, May 2018.
+[3] M. Tan, B. Chen, R. Pang, V. Vasudevan, and Q. V. Le, “Mnasnet: Platform-aware neural architecture search for mobile,” 2019 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 2815–2823, June 2018.
+[4] A. E. Eshratifar, A. Esmaili, and M. Pedram, “Towards collaborative intelligence friendly architectures for deep learning,” 20th Int. Symposium Quality Electronic Design (ISQED), pp. 14–19, Mar. 2019.
+[5] Y. Kang, J. Hauswald, C. Gao, A. Rovinski, T. N. Mudge, J. Mars, and L. Tang, “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge,” in ASPLOS ’17, Apr. 2017.
+[6] A. Mishra, E. Nurvitadhi, J. J. Cook, and D. Marr, “WRPN: Wide reduced-precision networks,” in 6th Int. Conf. on Learning Representations (ICLR), May 2018.
+[7] R. Banner, I. Hubara, E. Hoffer, and D. Soudry, “Scalable methods for 8-bit training of neural networks,” in Proc. 32nd Int. Conf. Neural Information Processing Systems (NeurIPS), Dec. 2018, pp. 5151–5159.
+[8] J. Choi, S. Venkataramani, V. Srinivasan, K. Gopalakrishnan, Z. Wang, and P. Chuang, “Accurate and efﬁcient 2-bit quantized neural networks,” in Proc. 2nd SysML Conf., Mar. 2019.
+
+Authorized licensed use limited to: KAUST. Downloaded on September 25,2022 at 11:54:30 UTC from IEEE Xplore. Restrictions apply.
+
+[9] I. Hubara, M. Courbariaux, D. Soudry, R. El-Yaniv, and Y. Bengio, “Binarized neural networks,” in Proc. 30th Int. Conf. Neural Information Processing Systems (NIPS), Dec. 2016, pp. 4114–4122.
+[10] M. Rastegari, V. Ordonez, J. Redmon, and A. Farhadi, “XNOR-Net: ImageNet classiﬁcation using binary convolutional neural networks,” in 14th European Conf. on Computer Vision (ECCV), Oct. 2016, pp. 525–542.
+[11] R. Zhao, Y. Hu, J. Dotzel, C. D. Sa, and Z. Zhang, “Improving neural network quantization without retraining using outlier channel splitting,” in Proc. 36th Int. Conf. on Machine Learning, ICML 2019, June 2019, pp. 7543–7552.
+[12] R. Banner, Y. Nahshan, E. Hoffer, and D. Soudry, “ACIQ: Analytical clipping for integer quantization of neural networks,” [Online]: https://openreview.net/forum?id= B1x33sC9KQ, Sept. 2018.
+[13] R. Banner, Y. Nahshan, E. Hoffer, and D. Soudry, “Posttraining 4-bit quantization of convolution networks for rapiddeployment,” in Proc. 33rd Int. Conf. Neural Information Processing Systems (NeurIPS), May 2019, pp. 7950–7958.
+[14] R. Krishnamoorthi, “Quantizing deep convolutional networks for efﬁcient inference: A whitepaper,” arXiv abs/1806.08342, June 2018.
+[15] H. Choi and I. V. Bajic´, “Deep feature compression for collaborative object detection,” Proc. 25th IEEE Int. Conf. Image Processing (ICIP), pp. 3743–3747, Oct. 2018.
+[16] H. Choi and I. V. Bajic´, “Near-lossless deep feature compression for collaborative intelligence,” IEEE 20th Int. Workshop on Multimedia Signal Processing (MMSP), Aug. 2018.
+[17] A. E. Eshratifar, A. Esmaili, and M. Pedram, “BottleNet: A deep learning architecture for intelligent mobile cloud computing services,” in Proc. IEEE/ACM Int. Symposium Low Power Electronics and Design (ISLPED), July 2019.
+[18] H. Choi, R. A. Cohen, and I. V. Bajic´, “Back-and-forth prediction for deep tensor compression,” Proc. 45th IEEE Int. Conf. Acoustics, Speech, and Signal Processing (ICASSP), May 2020, in press.
+[19] J. Xu, R. Joshi, and R. A. Cohen, “Overview of the emerging HEVC screen content coding extension,” IEEE Trans. Circuits Syst. Video Technol., vol. 26, no. 1, pp. 50–62, Jan. 2016.
+
+[20] V. Vanhoucke, A. Senior, and M. Z. Mao, “Improving the speed of neural networks on CPUs,” in Deep Learning and Unsupervised Feature Learning Workshop, NIPS, Dec. 2011.
+[21] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” IEEE Conf. Computer Vision and Pattern Recognition (CVPR), pp. 770–778, June 2016.
+[22] O. Russakovsky et al., “ImageNet Large Scale Visual Recognition Challenge,” Int. J. Comput. Vision, vol. 115, no. 3, pp. 211–252, Dec. 2015.
+[23] J. Redmon and A. Farhadi, “YOLOv3: An incremental improvement,” arXiv preprint arXiv:1804.02767, Apr. 2018.
+[24] T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan, P. Dolla´r, and C. L. Zitnick, “Microsoft COCO: Common objects in context,” in European Conf. on Computer Vision (ECCV), Sept. 2014.
+[25] P. A. Chou, T. Lookabaugh, and R. M. Gray, “Entropyconstrained vector quantization,” IEEE Trans. Acoust., Speech, Signal Process., vol. 37, no. 1, pp. 31–42, Jan. 1989.
+[26] G. J. Sullivan and T. Wiegand, “Rate-distortion optimization for video compression,” IEEE Signal Processing Magazine, vol. 15, no. 6, pp. 74–90, Nov. 1998.
+[27] B. Girod, “Quantization,” EE398A Image and Video Compression, [Online]: https://web.stanford.edu/class/ee398a/ handouts/lectures/05-Quantization.pdf.
+[28] D. Marpe, H. Schwarz, and T. Wiegand, “Context-based adaptive binary arithmetic coding in the H.264/AVC video compression standard,” IEEE Trans. Circuits Syst. Video Technol., vol. 13, no. 7, pp. 620–636, July 2003.
+[29] J. Redmon, “Darknet: Open source neural networks in C,” [Online]: https://pjreddie.com/darknet.
+[30] Unknown, “darknet,” [Online]: https://github.com/AlexeyAB/ darknet.
+[31] “HEVC reference software (HM 16.20),” http://hevc.hhi. fraunhofer.de/svn/svn HEVCSoftware/tags/HM-16.20+ SCM-8.8, Accessed: 2019-12-12.
+[32] F. Bossen, B. Bross, K. Suhring, and D. Flynn, “HEVC complexity and implementation analysis,” IEEE Trans. Circuits Syst. Video Technol., vol. 22, no. 12, pp. 1685–1696, Dec. 2012.
+
+Authorized licensed use limited to: KAUST. Downloaded on September 25,2022 at 11:54:30 UTC from IEEE Xplore. Restrictions apply.
+

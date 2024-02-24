@@ -1,0 +1,1093 @@
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+4499
+
+HiTDL: High-Throughput Deep Learning Inference at the Hybrid Mobile Edge
+
+Jing Wu , Lin Wang , Qiangyu Pei , Xingqi Cui, Fangming Liu , Senior Member, IEEE, and Tingting Yang, Member, IEEE
+
+Abstract—Deep neural networks (DNNs) have become a critical component for inference in modern mobile applications, but the efﬁcient provisioning of DNNs is non-trivial. Existing mobile- and server-based approaches compromise either the inference accuracy or latency. Instead, a hybrid approach can reap the beneﬁts of the two by splitting the DNN at an appropriate layer and running the two parts separately on the mobile and the server respectively. Nevertheless, the DNN throughput in the hybrid approach has not been carefully examined, which is particularly important for edge servers where limited compute resources are shared among multiple DNNs. This article presents HiTDL, a runtime framework for managing multiple DNNs provisioned following the hybrid approach at the edge. HiTDL’s mission is to improve edge resource efﬁciency by optimizing the combined throughput of all co-located DNNs, while still guaranteeing their SLAs. To this end, HiTDL ﬁrst builds comprehensive performance models for DNN inference latency and throughout with respect to multiple factors including resource availability, DNN partition plan, and cross-DNN interference. HiTDL then uses these models to generate a set of candidate partition plans with SLA guarantees for each DNN. Finally, HiTDL makes global throughput-optimal resource allocation decisions by selecting partition plans from the candidate set for each DNN via solving a fairness-aware multiple-choice knapsack problem. Experimental results based on a prototype implementation show that HiTDL improves the overall throughput of the edge by 4:3Â compared with the state-of-the-art.
+Index Terms—Deep learning inference, edge computing, resource allocation, systems for machine learning
+Ç
+
+1 INTRODUCTION
+THE rapid development of artiﬁcial intelligence has rendered deep learning (DL) into a promising solution for audio or video processing in modern mobile applications. Applications like Google Assistant or Apple AR typically employ pre-trained deep neural networks (DNNs) to perform inference tasks such as speech recognition [1], natural language processing [2], [3], and object recognition [4], [5], [6], [7]. Inference tasks take audio or image data as input and use DNNs to generate predictions. Thanks to its remarkable accuracy, DL has become the de facto approach for inference in mobile applications.
+However, DNNs are hard to deploy in the mobile environment due to their intensive computation requirements.
+ Jing Wu, Qiangyu Pei, Xingqi Cui, and Fangming Liu are with the National Engineering Research Center for Big Data Technology and System, Services Computing Technology and System Lab, Cluster and Grid Computing Lab, School of Computer Science and Technology, Huazhong University of Science and Technology, Wuhan 430074, China. E-mail: {wujinghust, peiqiangyu, xingqicui}@hust.edu.cn, fangminghk@gmail.com.
+ Lin Wang is with the VU Amsterdam, 1081 HV Amsterdam, The Netherlands, and also with the TU Darmstadt, 64289 Darmstadt, Germany. E-mail: lin.wang@vu.nl.
+ Tingting Yang is with the Peng Cheng Laboratory, Shenzhen 518066, China. E-mail: yangtt@pcl.ac.cn.
+Manuscript received 20 March 2021; revised 27 July 2022; accepted 27 July 2022. Date of publication 1 August 2022; date of current version 23 August 2022. This work was supported in part by the NSFC under Grants 61761136014 and 61520106005, in part by National Key Research & Development (R&D) Plan under Grant 2017YFB1001703. The work of Lin Wang was supported in part by DFG Collaborative Research Center 1053 MAKI B2. (Corresponding author: Fangming Liu.) Recommended for acceptance by D. Talia. Digital Object Identiﬁer no. 10.1109/TPDS.2022.3195664
+
+In general, there are three approaches for DNN deployment: mobile-only, server-only, and hybrid. The mobile-only approach relies on the mobile devices’ local processing and energy power to deal with inference tasks. Due to the limitation in computation capacity and energy, mobile devices fail to support the computation-intensity state-of-the-art models, e.g., for speech recognition and natural language processing [8], [9]. Alternatively, there are pre-trained models offered by embedded devices-oriented frameworks, e.g., TensorFlow Lite1, which optimize models by quantization, pruning, etc. [10], [11]. However, these optimizations are at the expense of accuracy[12]. The server-only approach leverages the more abundant server resources (with more powerful CPUs and sometimes also equipped with GPUs or other accelerators [13]) to run full-size DNNs with high accuracy by sending the raw input data to a cloud or edge server. However, the raw input data (such as images or audio/video clips) can be large in size, and sending it over the (wireless) network can introduce signiﬁcant latency as well as performance variations [14], [15]. The hybrid approach aims to reap the beneﬁts of the former two by partitioning the fullsize DNN into two parts and run them on the mobile and the server respectively [8], [14], [16], [17], [18], [19]. The mobile and the server exchange intermediate data for the DNN layer at the partition point. Through adapting the partition point, the hybrid approach can ensure minimal inference latency under dynamic network conditions. With the rapid penetration of edge platforms, the hybrid approach has become a promising solution for mobile DNN inference [14], which we call the hybrid mobile edge.
+1. https://www.tensorﬂow.org/lite
+
+1045-9219 © 2022 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission. See ht_tps://www.ieee.org/publications/rights/index.html for more information.
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+4500
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+DNN workload on the shared, resource-limited edge will be
+
+reduced. (2) Pushing more DNN computation to the edge
+
+would help with the SLA guarantee as the DNN runs much
+
+faster on the edge. Since the limited edge resources are
+
+shared among multiple DNNs, HiTDL needs to harmonize
+
+such reconciliations for all co-located DNNs.
+
+To achieve the above goals, HiTDL ﬁrst builds perfor-
+
+mance prediction models by proﬁling the throughput and
+
+latency of different DNNs, as well as their co-location per-
+
+formance interference, under varying resource availabilities
+
+and partition points. Based on these performance models,
+
+Fig. 1. Deep learning inference at the hybrid mobile edge.
+
+HiTDL then generates a bag of candidate partition plans that can meet the SLA for each DNN under the current net-
+
+work bandwidth condition. A partition plan consists of the
+
+Despite its high promise, provisioning DNNs at the DNN partition point and the amount of computing resour-
+
+hybrid mobile edge is challenging. An overview of the prob- ces allocated to the (partial) DNN instance to run on the
+
+lem is shown in Fig. 1. The DNN for a mobile application is edge. Finally, HiTDL holistically decides the resource allo-
+
+partitioned between the mobile device and the edge, where cation for all DNNs to achieve the maximum overall system
+
+the ﬁrst few DNN layers before the partition point run on throughput, which is measured by a utility function deﬁned
+
+the mobile device and rest layers run on the edge. The edge as a weighted sum of the throughputs of all the DNNs run-
+
+is shared among multiple mobile devices and each of the ning on the edge. The weight can be used to encode the pri-
+
+(partial) DNNs running on the edge is allocated a certain ority of each DNN. More speciﬁcally, HiTDL optimizes the
+
+amount of resources for running its instance(s). On the one utility function by making joint decisions for the partition
+
+hand, DNN-powered mobile applications typically impose plan and the resources allocated for each DNN based on
+
+strict service-level agreements (SLAs) such as constrained solving a variant of the fairness-aware multiple-choice
+
+end-to-end inference latency to ensure good user experi- knapsack problem (MCKP).
+
+ence [8], [20], [21], [22], [23]. This requires to search for Overall, this paper makes the following contributions:
+
+proper DNN-speciﬁc conﬁgurations (e.g., the DNN partition point and the server resource allocation) under dynamic network conditions. On the other hand, achieving high system throughput, deﬁned as the number of served inference requests per unit time, is complicated due to the following intertwined factors: (1) Multiple DNNs share the limited edge resources which have to be allocated holistically for all co-located DNNs with fairness considered. (2) Applications running these DNNs have different priorities, e.g., missioncritical applications must be prioritized over entertainment applications when facing resource contention. (3) The colocation of DNNs on the same edge platform leads to inherently complex performance interference, which needs to be considered when guaranteeing SLAs.
+Numerous management frameworks for deep learning inference exist today, including Clipper [24], GrandSLAm [22], InferLine [23], and ALERT [25]. However, these solutions mainly focus on the data center environment so far. A recent line of studies explore how to achieve high inference throughput via dynamic request batching and resource scaling (including device selection and horizontal scaling) for DNN inference serving pipelines [22], [23]. The hybrid mobile edge involves network dynamics which imposes unique challenges and requires speciﬁc treatment [8].
+In this paper, we propose HiTDL (High Throughput Deep Learning)—a runtime framework for DNN provisioning at the hybrid mobile edge. HiTDL aims to achieve the optimal overall system throughput by making informed decisions on DNN partitioning and resource allocation, con-
+
+1) We design a new runtime framework to enable adaptive DNN provisioning at the hybrid mobile edge to achieve edge resource efﬁciency.
+2) We build an accurate model for DNN performance prediction by performing comprehensive analysis on DNN throughput, latency, and co-location performance interference with respect to resource availability and DNN partition point.
+3) We propose an efﬁcient algorithm for joint DNN partitioning and edge resource allocation for hybrid DNN provisioning under limited edge resources, maximizing the system throughput while achieving SLA, priority, and fairness goals.
+4) We implement HiTDL on a system prototype and carry out extensive performance evaluation. Our experimental results show that HiTDL can improve the overall edge throughput by 4.3Â compared with the state-of-the-art solutions.
+The rest of the paper is organized as follows: Section 2 presents the background and our motivation. Section 3 discusses our system design. Section 4 introduces our DNN performance prediction model for inference latency and throughput. Sections 5 and 6 describe our problem formulation and algorithms for DNN partitioning and for collaborative resource allocation among multiple DNNs. Section 7 describes our implementation details and discusses our evaluation results. Section 8 represents related work. Finally, Section 9 concludes the paper.
+
+sidering priority, fairness, and performance interference,
+
+while guaranteeing the SLAs of the DNNs. In essence, HiTDL strikes to reconcile the following conﬂicting relation-
+
+2
+
+BACKGROUND AND MOTIVATION
+
+ships: (1) Pushing more DNN computation to the mobile This section introduces the background and discusses the
+
+would improve the overall system throughput since the motivation of our work.
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+WU ET AL.: HITDL: HIGH-THROUGHPUT DEEP LEARNING INFERENCE AT THE HYBRID MOBILE EDGE
+
+4501
+
+2.1 Deep Learning
+
+DL has become an important component in many mobile applications. DL has been employed in intelligent personal
+
+assistant applications such as Google Now and Microsoft Cortana to provide intelligence by performing tasks like speech recognition [1], image and video processing [4], [5],
+
+[6], and natural language understanding [2], [3]. The proliferation of DL largely attributes to the signiﬁcantly enhanced processing capability (e.g., more powerful CPUs and
+
+domain-speciﬁc accelerators like GPUs and TPUs) over the last year together with the sophistication of learning algorithms. Additionally, open-source frameworks (e.g., Tensor-
+
+Fig. 2. (a) Inference latency under CPU and GPU: both can satisfy the SLA. (b) The aggregate inference throughput of the CPU-based instances is 85% of that of the GPU-based instance.
+
+ﬂow [26], Caffe [27], Pytorch [28], and Keras [29]) and publicly available well-processed datasets (e.g., LibriSpeech [30], ImageNet [31], and WordNet [32]) greatly simplify the development pipeline of DL algorithms as well as their deployment in production environments.
+DL relies on DNNs which are typically structured in layers with different layers serving different purposes including convolutional, fully connected, and pooling. A DNN needs to be trained with labeled data before it can be used for inference. To attain high accuracy, DNNs usually contain a large number of layers [3] and are trained on large datasets. Both DNN training and inference are computation intensive. Efﬁcient DNN training has been extensively stud-
+
+aggregate throughput achieved by the CPU is 85% of that of the GPU. On the cost side, it is worth noting that the price of the CPU is around ten times lower than that of the GPU. Even with a cloud platform like Amazon EC2, the cost of a CPU-based instance is only half of that of a GPU-based instance when achieving the same inference throughput [41]. In essence, CPU achieves better cost efﬁciency given that both the CPU and GPU can satisfy the application SLA requirement. Therefore, in this work, we focus more on CPU-based DNN inference. Nevertheless, the proposed solution can be migrated to GPU-based scenarios as discussed in Section 6.4.
+
+ied [33], [34], [35], [36], [37], [38] and we focus on DNN infer-
+
+ence in this paper. DNN-based mobile applications typically 2.3 Inference Performance: Latency versus
+
+impose strict SLA requirements such as constrained end-to-
+
+Throughput
+
+end latency [8], [22], [39]. For example, a digital assistance As discussed, the hybrid approach for DNN inference parti-
+
+service like Amazon Alexa typically require the end-to-end tions the DNN into two parts and deploys these parts across
+
+latency to be bounded within 200–300ms [23].
+
+the mobile and the edge respectively. This is inspired by the
+
+2.2 Inference Device Selection: CPU versus GPU
+For the majority of DNNs, GPUs can normally provide lower inference latency and higher throughput. However, the cost of GPUs is also higher in general. While GPUs are nowadays widely used for both DNN training and inference, it is generally preferable to use CPUs for cost efﬁciency, as long as CPUs can provide sufﬁcient performance to meet the application requirements (e.g., meeting the SLA of the application). In addition, CPUs suffer low utilization in the edge environment, e.g., 74% VMs in Alibaba ENS [41] have less than 10% CPU utilization at average [42]. Such a high level of CPU under-utilization offers ample opportunity for cost optimization. Consequently, a central question to ask is how to select between CPUs and GPUs for the inference task of a speciﬁc application.
+To verify this point we conduct a performance comparison between a CPU (Intel(R) Xeon(R) E5-2678 v3 2.50GHz) and a GPU (Nvidia Geforce RTX 2080 Ti) when running the Inception-v3 [40] model2 —a popular model for image classiﬁcation—with its SLA set to 200ms. The CPU contains 12 cores, where we use two cores to provision a model instance and run in total six instances. For the GPU case, we run one model instance with the GPU. Fig. 2a shows the inference latency where the GPU-based model instance runs twice faster than the CPU-based model instances. However, both cases can meet the application SLA. Fig. 2b shows that the
+
+fact that intermediate data may be smaller than the raw input and thus, the network delay can be reduced [8], [16], [17]. However, the selection of the partition point, i.e., the DNN layer to split, is critical as partial processing, which happens on the mobile, is typically much slower than on the edge. Neurosurgeon shows that hybrid deployment of DNNs can achieve a speedup of 3:1Â on average and up to 40:7Â over the mobile-only and cloud-only approaches under varying network conditions [16].
+There are multiple factors that can affect the overall inference latency, particularly the network condition, the DNN partition point, and the type and amount of allocated edge resources. While the former two have been explored by prior work [16], [17], [19], the question of how the amount of allocated edge resources affects the overall inference latency has not been carefully examined. Furthermore, they directly assume that there are sufﬁcient resources at the edge, which are monopolized by a speciﬁc DNN. However, the resources are limited and shared/multiplexed among multiple DNNs. We take Inception-v3 [40] as an example again, and explore the inference latency with respect to the network bandwidth, the DNN partition point, and the amount of edge resources.
+Fig. 3a shows that under the bandwidth of 83.4 Mbps (i.e., at the 50% percentile of a real-world WiFi network trace), there are three feasible partition plans, corresponding to different numbers of CPU cores and different partition points. However, when the bandwidth decreases to 78.3
+
+2. The source code of Inception-v3 is given in https://github.com/ Mbps (i.e., at the 20% percentile), only the partition plan
+tensorﬂow/models/blob/master/research/slim/ nets/inception_v3.py with the partition point of layer seven and the CPU core
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+4502
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+monopolizes the server. Fig. 4b shows clear performance
+
+interference. As a result, quantifying such interference is
+
+critical in guaranteeing the SLA of the DNN.
+
+Overall, edge resource allocation with the goal of maxi-
+
+mizing the overall throughput is a complex problem that
+
+requires taking into account all the factors we have dis-
+
+cussed. To show this complexity, we perform experiments
+
+with three DNNs, namely Inception-v3, ResNet-50 [42], and
+
+Fig. 3. (a) Inference latency and (b) throughput under varying network bandwidths, when partitioned at different layers and with different numbers of CPU cores. The solid line stands for the SLA (i.e., 200ms), and
+
+MobileNet-v1 [43] which compete for the CPU cores on a single edge server. We propose two resource allocation strategies as Plan 1 and Plan 2, which are detailed in Table 1.
+
+the bandwidth 83.4 Mbps and 78.3 Mbps are at the 50% percentile and Note that all the models can meet their SLAs (details in Sec-
+
+the 20% percentile of a real-world WiFi network trace, separately.
+
+tion 7.1) under the two plans. As Fig. 4c shows, adjusting
+
+the resource allocation can improve the overall throughput number of four is feasible. Hence, deciding the partition of the edge server by 1.7Â. point and the edge resources requires exploring the com-
+
+plex relationship between DNN partitioning and resource allocation under dynamic network conditions. The DNN
+
+3
+
+SYSTEM DESIGN
+
+inference throughput, as another crucial performance met- In this section, we present the architecture and key compo-
+
+ric to show if the allocated resources to DNNs are efﬁciently nents of HiTDL – a runtime framework for adaptive DNN
+
+utilized, should also be explored. We evaluate the inference inference for the hybrid mobile edge. The goal of HiTDL is
+
+throughput of Inception-v3 at layer four and seven while to maximize the overall throughput while guaranteeing allocated with two or four CPU cores, respectively3. Fig. 3b application-speciﬁc SLAs, i.e., bounded end-to-end latency.
+
+shows that, without increasing the number of CPU cores,
+
+only adjusting the partition point from layer four to layer 3.1 Overview
+
+seven can improve the throughput signiﬁcantly. Therefore, it is a challenge but also an opportunity to examine the compound impact of the network bandwidth, partition point, and allocated edge resources to improve the DNN inference performance.
+At the hybrid mobile edge, DNN models require sufﬁcient edge resources to guarantee SLAs. In general, the more edge resources a DNN receives, the faster the inference can run and the higher inference throughput the DNN can achieve. However, we ﬁnd that the beneﬁt of edge resources on reducing inference latency and increasing inference throughout declines marginally. Based on this ﬁnding, we claim that with a ﬁxed amount of edge resources, it is more beneﬁcial to have multiple small DNN instances than to have one large DNN instance given the small DNN instance can already satisfy the SLA. This is conﬁrmed by the results shown in Fig. 4a. As we can see, with in total 8 CPU cores, having four 2-core Inception-v3 instances (each partitioned at layer seven under the bandwidth of
+
+HiTDL consists of ﬁve major modules: mobile manager, model optimizer (MO), resource allocator (RA), model adapter (MA) and model zoo. Mobile manager collects information from all the connected mobile devices: computing capability, demanded DNN type, inference latency, and the estimated bandwidth to the edge server periodically. Using such information together with the detailed DNN architecture information from the model zoo, MO proﬁles the DNN inference performance and generates all feasible DNN partition plans that can guarantee the SLA of the application behind the DNN. RA takes all the feasible partition plans from all requested DNNs as input. It then picks speciﬁc partition plans for each DNN, and allocates resources according to each selected partition plan with the objective of maximizing the total system throughput. Finally, MA follows the model partition and resource allocation decisions to conﬁgure the mobile and the edge server and deploy the DNNs across the two ends.
+
+83.4 Mbps) improves the inference throughput by over 1:6Â compared with having only one 8-core instance while both instance types ensure the SLA.
+
+3.2 Model Optimizer
+MO is responsible for generating all the feasible partition plans for each DNN. A partition plan includes three compo-
+
+2.4 Edge Resource Sharing
+The server resources at the edge are usually shared by multiple DNNs. Co-locating DNN instances on the same edge server improves the resource utilization, but it leads to performance interference which affects the inference latency. We measure the inference latency of Inception-v3 under different numbers of CPU cores while co-locating with other models4 and normalize it to the latency when Inception-v3
+
+nents: the partition point (DNN layer), required edge server resources to guarantee SLA, and the achievable inference throughput. Guaranteeing the SLA is a challenging task due to at least the following two reasons: (1) A DNN usually has tens of layers and the partition point can be selected from any of the layers. (2) A variety of factors including network bandwidth, resource availability, and the cross-DNN interference can inﬂuence the decision making as we discussed in Section 2. Moreover, our goal is to achieve the maximum
+
+inference throughput while guaranteeing the SLA and the
+
+3. Layer four and layer seven of Inception-v3 are MaxPool_3a_3x3 throughput is also conditioned by all these factors. Overall,
+
+and MaxPool_5a_3x3 respectively, the shape of which are ð73; 73; 64Þ and ð35; 35; 192Þ, respectively.
+4. We increase the number of CPU cores for Inception-v3 and let
+
+the search space of the partition point is huge, and considering all these factors in resource allocation will result in
+
+another DNN instance take the rest cores.
+
+exponential time complexity.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+WU ET AL.: HITDL: HIGH-THROUGHPUT DEEP LEARNING INFERENCE AT THE HYBRID MOBILE EDGE
+
+4503
+
+Fig. 4. (a) Small DNN instances (with less CPU cores) are preferred over large ones; (b) Co-locating DNNs leads to performance interference; (c) Resource allocation makes a huge difference to the overall throughput of the edge server.
+
+MO explores the partition plan space efﬁciently and gen- 4 DNN INFERENCE PERFORMANCE ANALYSIS
+
+erates a small set of feasible partition plans which can guarantee the application SLA. To this end, MO adopts a proﬁling-based method motivated by the fact that performance metrics like inference latency and throughput of DNN inference are predictable [16], [17], [22]. In particular, we build performance models for both DNN inference latency and throughput with respect to three factors: partition point, resource availability, and cross-DNN interfer-
+
+In this section, we provide an in-depth analysis of the performance of DNN inference with respect to inference latency and throughput. We explore the impact of three factors: resource availability, partition point, and cross-DNN performance interference, on the DNN inference performance. Based on our ﬁndings, we build prediction models for estimating the DNN inference latency and throughput.
+
+ence (Section 4). Based on these prediction models and insights, MO examines all partition points that are possible to achieve the SLA and ﬁnds out the minimum amount of resources to satisfy the SLA for each partition point (Section 5). These partition points and their corresponding resource allocation constitute the ﬁnal feasible partition plans, which will be uploaded to RA for the global resource allocation on the edge server.
+
+4.1 Exploring Performance Behavior
+Resource Availability. We choose three popular DNNs: Inception-v3, ResNet-50, and MobileNet-v1, and measure the inference latency of these DNNs when varying the number of CPU cores from 1 to 8. Fig. 7a depicts the result, where we can see that the inference latency decreases as the DNN gets more CPU cores. However, the latency improvement becomes marginal when sufﬁcient CPU cores are supple-
+
+3.3 Resource Allocator
+RA decides how to assign resources to all the co-located DNNs with the objective of achieving the highest overall system throughput. In particular, RA has to select the most suitable partition plans for each DNN from the set of all feasible partition plans (including the partition point and the demanded resources) generated by the MO as detailed above, and then determine the number of instances for each DNN. In this process, if the mobile-only execution is feasible, RA will select it as the ﬁnal partition plan to improve the overall throughput. On the other hand, RA needs to prioritize the mission-critical DNNs when facing resource contention; meanwhile, it has to follow fairness constraints so that no DNN, especially of low priority, will be starved. We observe that this optimization problem can be transformed into a variant of the multiple-choice knapsack problem (MCKP) [44], which is well studied and the optimal solution can be obtained efﬁciently with branch-and-bound based methods [45], [46]. We will detail the problem formulation, transformation, as well as the solution in Section 6.
+
+mented. The inference latency will ﬁnally converge to a ﬁxed value which is determined by the ratio of the non-parallelizable component in the DNN.
+Partition Point. Model partitioning is an effective way of reducing DNN inference latency [8], [16], [17]. The general practice is to partition the DNN into two parts and run them on the mobile and the server, respectively. Thus, it is important to understand the latency of the partial DNN that runs on the server under varying resources, which requires to build a prediction model for the DNN at every layer. This process is not scalable since it has to be done for every DNN considering that the DNN may contain a large number of layers. We argue that a single performance model can be used to predict the latency of a partial DNN by taking the ratio of the computing workload of the partial DNN to that of the full DNN. To verify this argument, we conduct experiments using again the three DNNs (i.e., Inception-v3, ResNet-50, and MobileNet-v1) and compare the ratio between the latency of the DNN righthand layers after the partition point (which will be run on the edge server) to that of the whole DNN under varying numbers of CPU cores. Fig. 6 shows the result where we can see that the
+
+TABLE 1 System Conﬁguration Details in Two Resource Allocation Plans
+
+latency ratio is relatively stable under any resource conditions. As a result, we can simply build a performance prediction model for the full DNN and apply such a ratio at
+
+Plan 1
+
+Plan 2
+
+different layers to obtain the predicted latency of the partial
+
+Layer #cores #instance
+
+Inc. Res. Mob. Inc. Res. Mob. DNNs resulted from the DNN partitioning at these layers.
+
+0
+
+2
+
+2
+
+4
+
+7 1
+
+7 4
+
+9 5
+
+8 1
+
+Cross-DNN Interference. As we discussed in Section 2, the co-location of DNN instances on the same edge server leads
+
+1
+
+2
+
+2
+
+1
+
+1
+
+3
+
+to considerable performance interference, which is detrimen-
+
+tal for SLA guarantees. We ﬁrst examine the impact of the
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+4504
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+amount of resources given to the DNN relative to that given to the co-located DNNs. In particular, we measure the inference latency of Inception-v3, ResNet-50, and MobileNet-v1 when their allocated CPU cores increase from one to eight, while the other cores are occupied by another DNN. We normalize the inference latency of the considered DNN to the inference latency when the DNN monopolizes the edge server with the same number of CPU cores. As Fig. 7b shows, the increase in inference latency due to co-location interference decreases marginally when allocating relatively more resources to the considered DNN. This can be explained by the fact that when more CPU cores are used, the average load of each CPU core is reduced, thus reducing the possibility of resource contention with co-located DNNs. Note that the amount of consumed memory is no more than 1GB [47], which the edge server can easily handle with its sufﬁcient memory resources (128GB in our case).
+We also explore the performance interference with respect to the number and the type of co-located DNN instances. As Fig. 7c shows, the inference latency of Inception-v3, under different numbers of CPU cores, is quite stable when varying the number of co-located DNN instances which occupy the rest of cores. Meanwhile, we also vary the type of the co-located DNN instances, and the variation in the inference latency is negligible (less than 2ms).
+
+4.2 Performance Modeling
+Based on the above performance analysis, we model the DNN inference latency with respect to the three factors: resource availability, partition point, and cross-DNN interference. The notation is given in Table 2.
+Resource Availability. Inspired by Fig. 7a, we use a secondorder polynomial to model the full DNN inference latency with respect to the number of allocated CPU cores in the absence of cross-DNN interference. The inference latency L of a DNN when allocated n CPU cores is given by
+
+LðnÞ ¼ c0 þ c1=n þ c2=n2;
+
+(1)
+
+occupy the rest C À n CPU cores, where C is the total number of available CPU cores on the edge server. We then employ a polynomial to model interference ratio I which can be obtained through regression as well. In a nutshell, the DNN inference latency under performance interference can be expressed by
+
+Lðn; kÞ ¼ LðnÞ Á SðkÞ Á IðnÞ:
+
+(4)
+
+Given the inference latency, the inference throughput of the DNN can be calculated as
+
+Hðn; kÞ ¼ 1=Lðn; kÞ:
+
+(5)
+
+5 DNN PARTITION PLANS GENERATION
+
+A feasible partition plan for a DNN needs to meet the SLA, i.e., the end-to-end inference latency, when deployed at the hybrid mobile edge. The end-to-end latency is measured as the duration from the time an inference request is sent to the edge to the time the inference result is returned to the mobile. In the hybrid DNN deployment, a DNN with K layers is divided into two parts at the partition point k. The layers ½1; k will run on the mobile, while the rest layers (i.e., layers ½k þ 1; K) will run on the edge server. The end-toend latency is comprised of the execution time on both the mobile and the edge server, plus the network transmission delay as well as possible queuing delay in the pipeline.
+We now formally analyze the end-to-end inference latency of a DNN. We denote by LM ðkÞ the execution time of the ﬁrst k layers of the DNN on the mobile and by LEðn; kÞ the execution time of the rest K À k layers of the DNN on the edge server under the conﬁguration hn; ki where n is the number of CPU cores. We use T U and T D to denote the upload and download transmission delay, respectively. The upload transmission delay can be computed as
+
+T U ¼ dðkÞ=BU ;
+
+(6)
+
+where c0; c1 and c2 are constants which can be obtained by where dðkÞ represents the volume of the intermediate data performing a regression analysis on the proﬁled numbers when the DNN is partitioned at layer k. BU is the upload
+
+for each DNN.
+
+bandwidth of the mobile measured at runtime. The down-
+
+Partition Point. As Fig. 6 depicts, the latency ratio of a load transmission delay is calculated as
+
+DNN is determined by its partition point irrespective of the number of allocated CPU cores. As a result, for each DNN
+
+T D ¼ O=BD;
+
+(7)
+
+we measure the latency ratio SðkÞ at each partition layer k ofﬂine and derive the inference latency of the partial DNN when partitioned at layer k under n CPU cores as
+
+where O is the output size of the DNN and BD is the download bandwidth of the mobile measured at runtime.
+The edge server holds a queue for each DNN which buf-
+
+Lðn; kÞ ¼ LðnÞ Á SðkÞ:
+
+(2) fers the incoming requests issued by the mobile devices
+
+before they are processed, as shown in Fig. 5. We use T Q to
+
+Cross-DNN Interference. From Figs. 7b and 7c we can observe denote the queuing delay which can be calculated as
+
+that the number of CPU cores allocated to a DNN dominates the severity of performance interference, rather than
+
+T Q ¼ ðj À 1ÞLEðn; kÞ;
+
+(8)
+
+the number or the type of co-located DNN instances. Therefore, we use the interference ratio I to quantify the crossDNN interference which is calculated as
+
+IðnÞ ¼ L^ðn; kÞ=Lðn; kÞ;
+
+(3)
+
+where j represents that the current request is the j-th in the queue. This is because there are already j À 1 requests waiting in the queue, and only when all of them have been processed, each of which corresponds to the execution
+
+time of LEðn; kÞ, can the j-th request be served. Therefore, where L^ðn; kÞ is the DNN inference latency when the DNN the overall time that request j spends at the edge server is
+
+is assigned with n CPU cores and the co-located DNNs T Q þ LEðn; kÞ. To prevent the requests from queuing too
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+WU ET AL.: HITDL: HIGH-THROUGHPUT DEEP LEARNING INFERENCE AT THE HYBRID MOBILE EDGE
+
+4505
+
+Fig. 5. HiTDL architecture and workﬂow.
+
+long and thus violating the SLA, we limit the total queue length q as
+
+q R=LEðn; kÞ;
+
+(9)
+
+Fig. 6. Latency ratio of the partial DNN (righthand part) compared with that of the full DNN. The lines include results obtained under CPU cores from 1 through 8.
+
+where R is the combined request arrival rate of the DNN and 1=LEðn; kÞ represents the DNN inference throughput.
+Combining all the above analysis, the end-to-end DNN
+inference latency can be expressed by
+
+T ðn; kÞ ¼ LM ðkÞ þ T U þ T Q þ LEðn; kÞ þ T D:
+
+(10)
+
+To meet SLA requirement, the end-to-end latency T ðn; kÞ under any feasible conﬁguration hn; ki should satisfy
+
+T ðn; kÞ SLA:
+
+(11)
+
+Here, we explore how to ﬁgure out all the feasible partition plans. To this end, we take two general steps in a greedy manner: 1) Filter — Depending on the current network bandwidth we ﬁlter out all the partition points where the sum of the mobile inference latency and the upload latency has already exceeded SLA (line 3-4 in Algorithm 1). 2) Evaluate — For any partition point reserved from step (1) we evaluate its demanded resources that can ensure SLA (line 5-8 in Algorithm 1). More speciﬁcally, we take the inspiration from the insights discussed in Section 2 that the inference throughput beneﬁts more by creating more small instances rather than one big instance. We gradually increase the number of CPU cores until the SLA has been satisﬁed, and then stop searching and check another partition point. The above greedy strategy ensures all feasible partition plans are allocated with the smallest possible number of CPU cores.
+
+6 RESOURCE ALLOCATION
+In this section, we discuss the global resource allocation problem in HiTDL. As we discussed, each feasible partition plan for the co-located DNNs has different resource demands and results in different inference throughputs. RA (a core component in HiTDL as shown in Fig. 5) needs to take all the feasible partition plans of all DNNs into account to conduct resource allocation, with the goal of maximizing the overall throughput of the edge server. RA also needs to reconcile model priority and fairness. To address such a challenge, we ﬁrst design a utility function to quantify the system throughput weighted by the DNN priority systematically. Then, we transform the global resource allocation problem, which consists of selecting speciﬁc partition plans and determining the number of instances for each DNN, into a variant of the classic multiple-choice knapsack problem (MCKP). Finally, we employ a branch-and-bound algorithm to solve the problem.
+
+6.1 Problem Formulation
+Utility Function. DNNs are deployed as instances running on the edge server to offer the inference service to mobile users. Each instance occupies a certain number of CPU cores n and deploys a copy of a speciﬁc DNN model partitioned at k. We deﬁne the following utility Uðn; kÞ to evaluate the inference throughput of an instance as
+
+Uðn; kÞ ¼ w Â Hðn; kÞ=minfR; 1=T U g;
+
+(12)
+
+Fig. 7. (a) DNN Inference latency with respect to the number of allocated CPU cores; (b) Normalized DNN inference latency under interference; (c) Inference latency under varying numbers of co-located DNN instances and allocated CPU cores.
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+4506
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+Notation
+
+TABLE 2 Parameter Deﬁnition of HiTDL
+Description
+
+available resources on the edge server. Equation (15) ensures that the amount of resources allocated to each DNN follows the fairness requirement.
+
+C b
+
+total number of available CPU cores fairness
+
+6.2 Problem Transformation and Solution
+
+k
+
+partition point
+
+As formulated above, HiTDL needs to select speciﬁc parti-
+
+n LðnÞ SðkÞ IðnÞ Lðn; kÞ
+LM ðkÞ; LEðn; kÞ
+TU;TD TQ T ðn; kÞ Hðn; kÞ Uðn; kÞ
+
+number of allocated CPU cores complete inference latency partial inference latency ratio interference ratio partial inference latency
+mobile/edge inference latency
+upload/download latency queueing latency end-to-end inference latency inference throughout resource utility
+
+tion plans for the DNNs while allocating them with appropriate resources such that the overall throughput can be maximized with SLA guarantee. This process is quite similar to the classic multi-choice knapsack problem (MCKP) regardless of certain differences. Particularly, MCKP is a knapsack problem, where the items, having speciﬁc weights together with values, are sorted into different classes. The goal of MCKP is to select one item from each class to put into the knapsack such that the total value of the selected items is maximized while the total weight does not exceed
+
+the knapsack’s capacity. As for HiTDL, the feasible partition
+
+where Hðn; kÞ and 1=T U are the expected DNN inference throughout and the network throughput, respectively. Parameter w is the relative priority of the DNN and R is the request rate (measured as requests per second or RPS) at which each mobile device issues requests. The denominator stands for the maximum number of requests that the instance has to process for each mobile device. There exists a large volume of research like tracking and result reusing [48], [49] to reduce the number of requests that the mobile ofﬂoads to the edge. Thus, R is generally smaller than 1=T U in real-world scenarios. Hðn; kÞ=minfR; 1=T U g deﬁnes the number of mobile devices that the instance can serve simultaneously, representing the efﬁciency of the instance. The utility of a speciﬁc DNN is calculated by summing up the utility of all its instances. The overall utility of the edge server corresponds to the sum of the utilities of all its co-located DNNs. Note that the utility integrates both the throughput of each DNN and its relative priority. Therefore, the goal of RA, as maximizing the overall throughput of the edge server, can now be transformed into maximizing the utility of the edge server.
+This objective of the resource allocation is to allocate the
+
+plans for each DNN model can be regarded as the sorted items in different classes, each class for a DNN.
+However, there exist differences between HiTDL and MCKP. Speciﬁcally, HiTDL allows to select multiple feasible plans for each model and create multiple instances for each plan. This means that we need to release the constraint of MCKP by allowing to select and replicate speciﬁc items from each class, instead of one unique item. Besides, HiTDL needs to ensure fairness and priority while allocating resource, which can be transformed into the constraints as the maximal weights and selection order of the items from each class, respectively.
+The above transformation enables HiTDL with the feasible algorithms for MCKP. In particular, the branch-andbound (BB) algorithm, as an exact algorithm, has been widely used to solve MCKP [44], [45], [46]. BB divides the huge solution space into a series of subspaces to enumerate all possible solutions. Meanwhile, it utilizes pruning rules to evaluate the upper and the lower bound of each subspace and remove the regions that can not lead to a better solution so as to accelerate the exploration for the optimal solution.
+
+limited resources (i.e., CPU cores) of the edge server to DNNs to maximize the overall utility with SLA, priority, and fairness constraints. The problem can be formulated as
+
+Algorithm 1. HiTDL
+Input: C: total number of available CPU cores F : b fairness, B: bandwidth
+
+max subject to
+
+X X XMiMiIj¼¼¼i 111X X ni;j IjIjÁ¼¼ii x11Uni;jii;ðjnÁ ixC;ji;b;jk;i;j8ÞCiÁ;;xi;j
+
+M: number of DNN models
+
+(13)
+
+K ¼ fKiji 2 ½1; Mg: number of model layers
+
+(14)
+
+D ¼ fdjiji 2 ½1; M; j 2 ½1; Kig: volume of intermediate data
+
+(15)
+
+S ¼ fSiji 2 ½1; Mg: SLA requirements Output: hZ0; Xi: partition plans and number of instances
+
+Tiðni;j; ki;jÞ Si; 8j;
+
+(16) 1: Z ;
+
+xi;j 2 Z; 8i; 8j:
+
+(17)
+
+/* Find feasible partition plans 2: for i 2 ½1; M do
+
+*/
+
+where M is the total number of co-located DNNs and C is the total number of CPU cores on the edge server, respectively. Ii is the number of feasible partition plans for DNN i, and xi;j stands for the number of instances for DNN i which implement partition plan j. b 2 ð0; 1 expresses the degree
+
+3: for k 2 ½0; Ki do
+
+4:
+
+if LMi ðkÞ þ dki =B < Si then
+
+5:
+
+for n 2 ½1; bC do
+
+6:
+
+if Tiðn; kÞ Si then
+
+7:
+
+Z½i .append(ðk; nÞ)
+
+8:
+
+break
+
+of fairness while allocating resources. For example, setting b
+
+/* Conduct MCKP-based allocation
+
+*/
+
+to one means the least fairness and any DNN can monopo- 9: Z0; X MCKP(C; b; Z)
+
+lize all the CPU cores. Equation (14) limits that the total 10: return hZ0; Xi
+
+number of allocated resources can not exceed the total
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+WU ET AL.: HITDL: HIGH-THROUGHPUT DEEP LEARNING INFERENCE AT THE HYBRID MOBILE EDGE
+
+4507
+
+6.3 Diverse Network Conditions
+
+We implement ﬁve DNN models in our prototype,
+
+HiTDL may face the scenario where the users access the namely Inception-v3, ResNet-50, and MobileNet-v1, Efﬁ-
+
+same DNN but experience different network bandwidth. To cientNet-B0 [52], and Conv-TasNet [53]. The ﬁrst three mod-
+
+solve the issue, we can intuitively create separate DNN els involve the comparison in overall performance in
+
+instances for each user, depending on their individual band- Section 7.2. Then, EfﬁcientNet-B0 and Conv-TasNet are
+
+width. However, this may result in a large number of het- introduced additionally to verify the system’s scalability in
+
+erogeneous DNN instances, which can not be efﬁciently Section 7.6. The mobile-only latencies of these models (with-
+
+shared among users, thus deteriorating resource utility. As out interference) are 0.221s, 0.192s, 0.164s, 0.241ms, and
+
+an alternative, we propose a threshold-based policy. Speciﬁ- 0.407ms, respectively. We set SLA as 90% of each model’s
+
+cally, it adopts the lowest bandwidth of the users to allocate mobile-only latency [8]. It is worth noting that due to the
+
+resource (i.e., DNN instances) when their difference in inﬂuence of the factors like available mobile resources and
+
+bandwidth is no more than a speciﬁc threshold; otherwise, cross-application interference, the practical mobile inference
+
+separate instances are created accordingly. This threshold- latency may differ from the original measurement. To solve
+
+based policy allows the users to share instances at the this issue, HiTDL makes Mobile Manager (a core module
+
+expense of over-allocation, especially for the users in good detailed in Section 3) monitor and report the performance
+
+network conditions. HiTDL thus requires to carefully set its deviation to the ones stored in Model Zoo (a core module)
+
+threshold to achieve a high utility.
+
+periodically to calibrate the stored model information.
+
+HiTDL has hyper-parameters as fairness and priority.
+
+6.4 Extension to GPU
+
+Particularly, the fairness deﬁnes the maximal ratio of CPU
+
+While HiTDL focuses on the allocation of CPU cores among concurrent DNNs, it can be similarly transferred to GPU resource allocation. In the GPU case, we can leverage CUDA Multi-Process Services (i.e., MPS) to slice the GPU computing resource, i.e., Streaming Multiprocessors (SMs) of GPUs, into identical blocks [50], [51]. Then, a block can be treated as the basic computing unit like a CPU core to involve in proﬁling the inference performance of DNNs and conducting the multi-plan partition as well as the MCKPbased allocation.
+
+cores that each model can obtain. It should make the system approach the “absolutely” fair allocation as close as possible and meanwhile leave a reasonable space to improve the overall utility. On the other hand, the priority should promise the mission-critical inference tasks with sufﬁcient CPU cores when facing resource contention. In this work, we set the priority based on the DNNs’ top-1 accuracy [54], which will be extended to more dimensions, such as the popularity and the computation intensity of inference tasks in the future. Depending on the above principles, we set the fairness as 0.45, and the priority of Inception-v3, ResNet-50,
+
+7 EVALUATION
+We have implemented a system prototype for HiTDL, based on which we have conducted extensive experiments to validate the performance of HiTDL under various conditions.
+
+and MobileNet-v1 as 0.4, 0.4, and 0.2 while evaluating the overall performance. When investigating the scalability, the fairness is set as 0.4 while the priority of Inception-v3, ResNet-50, and MobileNet-v1, EfﬁcientNet-B0, and ConvTasNet conﬁgured as 0.1, 0.4, 0.1, 0.3, and 0.1, respectively.
+
+In addition, we use the Linux tc utility to simulate the real-
+
+7.1 Implementation and Setup
+
+world network traces, namely WiFi and 5G [55] shown in
+
+Our system prototype uses a server equipped with Intel(R) Fig. 8a (bottom) and Fig. 8b (bottom), during evaluating
+
+Xeon(R) E5-2678 v3 2.50GHz CPU with 12 physical CPU HiTDL’s overall performance.
+
+cores, running Ubuntu 16.04.4, as the edge server. To verify
+
+the scalability, we use another server equipped with a Intel 7.2 Overall Performance Comparison
+
+(R) Xeon(R) Platinum 8269CY 2.50GHz CPU with 26 physi- We ﬁrst compare HiTDL with six baselines in the aspects of
+
+cal CPU cores. Since the system involves many mobile devi- the total utility and the resource allocation decisions under
+
+ces, we use Raspberry Pi 4 and Jetson Nano as the mobile real-world network traces. The baselines are composed by
+
+device. To increase heterogeneity, we also use a separate combining different DNN partitioning methods with differ-
+
+server with less powerful CPUs, running Ubuntu 16.04.4, to ent resource allocation strategies. We consider three other
+
+emulate mobile devices. The DNN runtime is TensorFlow DNN partitioning methods. The efﬁciency-based method parti-
+
+v1.14 in Python 3.7. For controlling the number of CPUs for tions the DNN at the layer that achieves the highest efﬁciency
+
+each DNN, we conﬁgure the option intra_op_paralle- (deﬁned by the utility per unit resources). The Neuro-
+
+lism_threads in TensorFlow, which regulates the size of surgeon [16] method ﬁgures out the layer that ensures the
+
+the thread pool used to accelerate the DNN operations. We DNN with the minimal end-to-end inference latency, and the
+
+implement each DNN instance as a separate subprocess input-based method ofﬂoads the inference entirely to the edge
+
+while HiTDL runs in the main process, which controls the server. HiTDL adopts a multi-plan partitioning method that
+
+lifecycle (e.g., starting and termination) of DNN instances. ﬁgures out all the feasible partition plans. For resource alloca-
+
+The mobile device establishes a TCP connection to the edge tion, we consider a weighted allocation strategy that allocates
+
+server for exchanging the intermediate data. Besides, the resources proportionally to the DNN’s priority.
+
+mobile device depends on the partition decision from the Utility. Figs. 8a and 8b show the utility of HiTDL, Efﬁ-
+
+edge server to initiate its partial DNN. In order to hide the ciency-MCKP, and Efﬁciency-Weighted under real-world
+
+network communication latency of this process, we let the WiFi and 5G traces, respectively. Input-MCKP, Neuro-
+
+mobile device execute the current partial DNN while listen- surgeon-MCKP, Input-Weighted, and Neurosurgeon-
+
+ing for the new decision.
+
+Weighted obtain constant utility as 6.54, 4.55, 4.85, and
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+4508
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+Fig. 9. Efﬁciency of each model under real-world WiFi traces (shown in Fig. 8a (bottom)).
+
+Weighted, Input-MCKP, Neurosurgeon-Weighted, and Ne-
+
+urosurgeon-MCKP, keep the same allocation to each model
+
+along the whole time slots, which are detailed in Table 3
+
+where Inc., ResN., and Mob. stand for Inception-v3,
+
+ResNet-50, and MobileNet-v1, respectively. The others
+
+depict in Figs. 10a and 10b. We can see that under both the
+
+WiFi and the 5G scenario, the weighted-based baselines
+
+allocate more resources to Inception-v3 and ResNet-50 due
+
+to their higher priority. In contrast, HiTDL, which depends
+
+on the MCKP-based allocation, allocates more resources to
+
+the DNNs of high efﬁciency like MobileNet-v1. Meanwhile,
+
+Fig. 8. Utility comparison between HiTDL and baselines under real network traces as WiFi (a) and 5G (b).
+
+the partitioning method also has an impact on resource allocation. The baselines (i.e., solid green line and dashed blue line) that adopt the efﬁciency-based partitioning experience
+
+more variations than other partitioning methods. The rea-
+
+3.30 under WiFi traces. Their utility varies under 5G traces son is that efﬁciency-based baselines only consider one par-
+
+but does not exceed 5.13, 3.55, 3.85, and 2.11, respectively.
+
+tition plan for each model. Although this plan own the
+
+We can see that HiTDL achieves the highest utility. This highest efﬁciency, it calls for more CPU cores in general.
+
+is because different from the other three partition methods, When the system is unable to allocate sufﬁcient CPU cores
+
+multi-plan partitioning dynamically ﬁgures out all the feasi- to create an instance for a model (e.g., Inception-v3) due to
+
+ble partition plans, rather than one speciﬁc plan. All these the constraint of fairness, the number of its allocated cores
+
+feasible plans are evaluated by MCKP-based allocation goes down to zero. In contrast, HiTDL adopts the multi-
+
+comprehensively with the goal of maximizing the overall plan partitioning, which not only includes the plans that the
+
+utility. Both the adaptivity of partition and the holism of efﬁciency-based partitioning selects but also has other can-
+
+allocation make HiTDL always outperform Efﬁciency- didates. When the system fails to support the plan of the
+
+MCKP, and meanwhile achieve the utility improvement of highest efﬁciency, HiTDL can offer other feasible choices.
+
+around 2.2Â, 3.17Â, 1.69Â, and 4.3Â on average, when com- This increases the possibility of getting resources and
+
+pared with Input-MCKP, Neurosurgeon-MCKP, Efﬁciency- improves the overall utility.
+
+Weighted, Input-Weighted, and Neurosurgeon-Weighted
+
+Latency Distribution. We now assess the latency distribu-
+
+under WiFi, respectively. This improvement is even ampli- tion of HiTDL and the baselines under WiFi and 5G. We can
+
+ﬁed under 5G due to the increase in bandwidth.
+
+see from Figs. 11a and 11b that HiTDL has larger inference
+
+The utility achieved by HiTDL experiences more varia- latency than baselines due to the fact that HiTDL targets at
+
+tions, especially when MobileNet-v1’s bandwidth varies maximizing the overall utility of the edge server instead of
+
+signiﬁcantly. Through breaking down the overall utility, we minimizing inference latency. Although HiTDL suffers lon-
+
+ﬁnd that HiTDL prefers to allocate more resources to Mobi- ger latency, its SLA violation keeps at a reasonable low
+
+leNet-v1 due to its high efﬁciency (measured by utility per level, i.e., 0.08, 0.09, and 0.002 for Inception-v3, ResNet-50,
+
+core). This makes MobileNet-v1 dominate the overall utility. and MobileNet-v1, respectively.
+
+Furthermore, the efﬁciency is affected by the network band-
+
+width, and the decrease in bandwidth deteriorates the efﬁciency, thus reducing the overall utility (explained in Section 7.4) and vice versa. Particularly, Fig. 9 illustrates the efﬁciency of each DNN under the real-world WiFi traces (shown in Fig. 8a (bottom) ). We can see that MobileNet-v1
+
+TABLE 3 Resource Allocation of Input-Weighted, Input-MCKP,
+Neurosurgeon-Weighted, Neurosurgeon-MCKP Under Real Network Traces
+
+experiences more ﬂuctuations due to its severe variation in
+
+Input
+
+Neurosurgeon
+
+bandwidth, e.g., at timestamp 31 and timestamp 35.
+
+Inc. Res. Mob. Inc. Res.
+
+Resource Allocation.We now investigate the detailed resource allocation to each DNN when running under real
+
+Weighted MCKP
+
+4 4
+
+4 2
+
+3 5
+
+5
+
+5
+
+5
+
+0
+
+network bandwidth traces. The baselines, namely Input-
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+Mob.
+0 5
+
+WU ET AL.: HITDL: HIGH-THROUGHPUT DEEP LEARNING INFERENCE AT THE HYBRID MOBILE EDGE
+
+4509
+
+Fig. 10. Resource allocation under WiFi (a) and 5G (b).
+
+Runtime Overhead and Efﬁciency. We evaluate the time cost and the memory consumption of HiTDL, relying on python module time5 and perf,6 respectively. Speciﬁcally, the average time cost in evaluating three DNN models involved partition and allocation is 36ms. Meanwhile, the runtime memory consumption is no more than 2.38MB.
+7.3 Performance Model
+This section investigates the prediction accuracy (measured by relative error) in inference latency of HiTDL and Neurosurgeon. For a fair comparison, we extend Neurosurgeon to consider the impact of available resources (i.e., CPU cores), by limiting, instead of monopolizing, the CPU cores allocated to the DNNs on the server. To understand how Neurosurgeon performs under varying resources, we build performance prediction models for Neurosurgeon as follows: We ﬁrst analyze the types (e.g., Conv and Pooling) and the detailed settings (e.g., kernel size) of DNN layers, and then proﬁle the per-layer execution time under a varying number of CPU cores, to generate the training dataset for the performance prediction model. To achieve high prediction accuracy, we train a speciﬁc prediction model for each given number of CPU cores, with 80% of the corresponding dataset for training and 20% for testing.
+Table 4 shows each DNN’s average relative errors in partial latency under different numbers of CPU cores (ranging from 1 to 8). We can see that Neurosurgeon suffers higher relative errors by up to 11.6Â when compared with HiTDL. The main reason is that the prediction model for Neurosurgeon works at a per-layer granularity, ignoring the fact
+
+Fig. 11. Inference latency distribution under WiFi (a) and 5G (b). The dashed vertical lines represents the SLA of each DNN.
+that the DNN runtime frameworks typically apply optimizations on the execution of the DNN layers on the server [17]. This leads to that the predicted execution time is often higher than the actual execution time for the DNN layers, causing high prediction errors. In contrast, the prediction model of HiTDL works at the granularity of possible DNN segments (DNN layers that will be run together, either on the mobile device or on the edge server), taking into account the inter-layer optimizations by the DNN runtime frameworks and thus achieving higher prediction accuracy when compared with Neurosurgeon.
+On the other hand, each performance model has prediction errors inevitably. Moreover, these errors will be ampliﬁed in modern DNNs (e.g., Inception-v3 and EfﬁcientNetB0), especially when adopting the per-layer prediction as done by Neurosurgeon. The reason is that the DNN layers have high similarity in both the type and parameters, e.g., 55.1% of the layers in Inception-v3 share the same structures. When the prediction error for a layer type that appears in the DNN frequently is high, this error will show
+TABLE 4 Average Relative Errors of HiTDL and Neurosurgeon
+When Predicting DNN Inference Latency
+Inc. Res. Mob. Eff. Conv.
+
+Neurosurgeon 0.41 0.25
+
+0.7
+
+0.46
+
+5. https://docs.python.org/3/library/time.html
+
+HiTDL
+
+0.06 0.06 0.06 0.05
+
+6. https://man7.org/linux/man-pages/man1/perf.1.html
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+0.07 0.05
+
+4510
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+Fig. 12. Partition performance of Inception-v3 under varying SLA factors, network bandwidths, and fairness values. The y-axis is the layer index and the value at each coordinate stands for different performance metrics.
+
+up in all the layers of the same type, thus resulting in poor CPU cores on reducing the inference latency declines margin-
+
+overall prediction accuracy. To mitigate this issue, one ally. The edge’s limited resource fails to support DNNs to
+
+could utilize more advanced (but more complex) functions achieve too short inference latency, making the partition
+
+while considering more impacting factors to ﬁt the predic- infeasible. When the bandwidth gets higher, the constraints
+
+tion model. In the extreme case, one could even maintain a in inference latency are relaxed and the number of demanded
+
+table containing the execution time for the high-frequency CPU cores decreases, which makes the previous infeasible
+
+layer under varying resources, to improve overall predic- partitions, owing to the lack of resources, become feasible.
+
+tion accuracy. However, these two optimizations either lead On the other hand, we can see from Fig. 12c (right) that the
+
+to additional manual efforts for decomposing the DNN, efﬁciency beneﬁts from the increase in network bandwidth
+
+preparing training datasets, training prediction models, due to more sufﬁcient time budget left for the edge and vice
+
+etc., or suffer from low generality and thus poor scalability. versa. Meanwhile, the efﬁciency is higher when partitioned
+
+In contrast, HiTDL treats each layer as a part of the whole at a later layer given speciﬁc bandwidth and CPU cores. This
+
+DNN (DNN segment) regardless of their speciﬁc layer type is because partitioning at later layers corresponds to less
+
+or parameters (detailed in Section 4), which simpliﬁes the computation on the edge server, and improves the inference
+
+building of the prediction models effectively, without throughput of the DNN. The increase in throughput given
+
+sacriﬁcing prediction accuracy.
+
+ﬁxed CPU cores can effectively improve the efﬁciency.
+
+SLA. To assess the impact of SLA, denoted as SLA factor,
+
+7.4 Model Partitioning
+
+we vary it from 0.4 to 1. We can see from Fig. 12a (left) that
+
+In this section, we dive into the multi-plan partitioning the number of feasible partition plans increases with the
+
+method used by HiTDL and analyze how network band- increase of the SLA. Similar to the increase of network, a
+
+width, fairness, and SLA affect the partition performance in higher SLA means looser constraints in edge inference
+
+partition point, demanded CPU cores, and efﬁciency. To latency as well as fewer demands in CPU cores. This allows
+
+simplify exposition, the SLA for each model is abstracted as the resource-limited edge server to support more partition
+
+a ratio to its individual mobile-only latency and is marked plans. Note that feasible partitions for Inception-v3 take
+
+as the SLA factor. We investigate the partition performance place at several speciﬁc layers (i.e., Layer 0, 4, and 7), which
+
+of Inception-v3, ResNet-50 and MobileNet-v3. We only are generally of small volume in intermediate data to reap
+
+present the results of Inception-v3, and the other two mod- lower network latency.
+
+els show similar trends. Fig. 12 depicts the results where the
+
+Fairness. We investigate the impact of fairness on DNN
+
+sub-ﬁgures share the same axes, the y-axis is the layer index, partition performance by varying it from 0.15 to 1. As
+
+the x-axis represents different factors, and the coordinate Fig. 12a (right) shows, higher fairness values enable more
+
+stands for different performance metrics. Moreover, only feasible partition plans. This is because fairness deﬁnes the
+
+when the value of the coordinate is nonzero (e.g., dark maximal number of CPU cores that one DNN can occupy.
+
+green blocks in Fig. 12a) is its corresponding layer (i.e., the When it is set with a small value, the partition plans which
+
+y-axis of the coordinate) a feasible partition. Its demanded require more cores than the upper bound become infeasible
+
+CPU cores and efﬁciency refer to the value that locates at due to the lack of resources. Note that the partition point
+
+the same coordinate in Figs. 12b and 12c, respectively.
+
+has no direct correlation with the number of CPU cores.
+
+Network. We evaluate the impact of the network band- Later partition points correspond to less computation on the
+
+width on DNN partitioning with respect to the partition edge server but lower allowable inference latency, which
+
+layer, the number of CPU cores, and efﬁciency, respectively. means the edge server needs to ﬁnish a light task quickly.
+
+Fig. 12a (middle) shows that the number of feasible partition This tradeoff between computation and inference latency
+
+plans (i.e., the number of dark green blocks given each spe- makes it unable to conclude that later partition layers corre-
+
+ciﬁc bandwidth) increases with the increase of the network spond to less demanded cores and vice versa. The results
+
+bandwidth. This is because, given a partition layer, a lower shown in Fig. 12b (right) support the argument that the
+
+bandwidth makes a larger network latency and leaves less demanded CPU cores of Inception-v3 at layer 4 is more
+
+time for the DNN execution on the edge server, which leads than that of layer 7, and meanwhile, the input layer corre-
+
+to increased demands in CPU cores. However, the impact of sponds to the least cores among all feasible layers.
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+WU ET AL.: HITDL: HIGH-THROUGHPUT DEEP LEARNING INFERENCE AT THE HYBRID MOBILE EDGE
+
+4511
+
+Fig. 13. System utility under varying SLA factors, network bandwidth conditions, and fairness values.
+7.5 Resource Allocation
+We now focus on the MCKP-based resource allocation in cooperation with multi-plan partitioning (explained in Section 7.4), and examine how SLA factor, fairness, network bandwidth, and DNN priority affect the allocation performance, namely the system utility and the detailed resource allocation to each DNN. During this process, we vary a speciﬁc factor while controlling the others to the default value as Section 7.1.
+Utility. We can see from Fig. 13 that the MCKP-based allocation is able to react to the relaxation of the constraints in SLA, network bandwidth, and fairness to continuously improve the overall utility.
+DNN Allocation. Excessively restricting SLAs makes the system fail to allocate any resources to some DNNs due to their lack of feasible partition plans (e.g., Inception-v3 and ResNet-50 under SLA factor of 0.3 in Fig. 14 (left)). Fairness makes its impact by limiting the maximal number of CPU cores that can be allocated to a DNN. With the fairness increasing, both the number and the efﬁciency of feasible plans get increased. The MCKP-based allocation senses the improvement and takes actions to allocate more resources to the models of higher efﬁciency to improve the overall utility. Speciﬁcally, We can be seen from Fig. 14 (right) that HiTDL keeps increasing the number of CPU cores allocated to MobileNet-v3, due to its higher efﬁciency.
+The network bandwidth affects resource allocation by affecting the feasible partition plan. A higher network bandwidth brings more feasible partition plans, especially the ones with high efﬁciency along with more demanded cores.
+
+Fig. 15. (a) System utility and (b) the number of allocated CPU cores to Inception-v3 (I), ResNet-50 (R) as well as MobileNet-v3 (M) under varying DNN priority. The x-axis and the y-axis for each subplot stand for the priority of Inception-v3 (PI ) and ResNet-50 (PR), and the priority for MobileNet-v1 is calculated as 1 À PI À PR.
+The MCKP-based allocation reacts to the improvement in efﬁciency and adjusts resource allocations accordingly.
+We now focus on how the DNN priority affects the resource allocation. As Fig. 15b shows, the number of CPU cores allocated to a model increases with the increase of the model’s priority as expected. Note that the number of CPU cores allocated to each DNN becomes zero when the sum of Inception-v3 priority and ResNet-50 priority exceeds 1, which renders an invalid conﬁguration.
+Diverse Network Conditions. We now focus on the scenario where the users access the same DNN but experience different network bandwidth. Speciﬁcally, we explore the detailed allocation for two users, one of whom experiences a ﬁxed bandwidth as 80Mbps while the other faces varying bandwidths. Fig. 16 illustrates the proportion of CPU cores (12 in total) allocated to the latter. We can see that the allocation is affected by the DNN type, network bandwidth, and threshold simultaneously. For example, HiTDL cuts down on its allocation to the user when the user suffers bad network conditions (e.g., at 60Mbps and 65Mbps), aiming at maximizing the overall utility. Meanwhile, the increase in bandwidth may also incur resource reduction (e.g., when the user accesses ResNet50 at 95Mbps) because of the marginal impact of resources on improving utility (explained in Section 4).
+7.6 Scalability
+We investigate the scalability of HiTDL when dealing with more DNNs while running on a server with a higher number of CPU cores. Here, we introduce two additional models
+
+Fig. 16. Proportion of CPU cores (12 in total) allocated to the user when
+
+she faces varying bandwidths while accessing the same DNN with
+
+Fig. 14. Resource allocation under varying SLA factors, network band- another user. Speciﬁcally, the latter has a ﬁxed bandwidth as 80Mbps.
+
+width conditions, and fairness values.
+
+Note that 1 means the two users share instances.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+4512
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+8.2 DNN Partitioning
+
+Recently, DNN partitioning has been extensively studied [8], [10], [14], [16], [17], [18], [19], [62], [63]. Some works focus on the training of DNNs in a distributed environment. To opti-
+
+mize data parallel in NLP training, Kim et al. propose Paral-
+
+lax, a data parallel training system for DNN leveraging the sparsity of model parameters [62]. Focusing on large-scale DNN models, Wang et al. presents Tofu, a system that parti-
+
+tion the dataﬂow graph of large DNN models across GPU
+
+Fig. 17. Average utility (normalized by HiTDL) of baselines under different network conditions (i.e., WiFi and 5G).
+as EfﬁcientNet-B0 and Conv-TasNet, besides Inception-v3, ResNet-50, and MobileNet-v1. All of these involved DNNs co-run on a server equipped with 26 physical CPU cores. The detailed setup (i.e., fairness and priority) of the experiment is given in Section 7.1.
+Fig. 17 depicts the average utility of the baselines normalized by HiTDL. We can see that HiTDL outperforms the baselines up to 100Â under both the WiFi and the 5G network traces. Meanwhile, due to the effect of multi-plan partition, HiTDL achieves the improvement by up to 8% when compared with Efﬁciency-MCKP. What’s more, this improvement can be further ampliﬁed when conﬁguring ResNet-50 with higher priority. For example, when setting ResNet-50 with the priority as 0.6 and the others with 0.1, together with the fairness as 0.35, the improvement goes by up to 25%.
+8 RELATED WORK
+8.1 Edge-Based DNN Inference
+
+devices to speed up the training [18]. Others aims to optimize DNN inference on mobile devices. Neurosurgeon [16] is the ﬁrst work to partition DNN, which proﬁles inference latency of each layer with respect to its categories like fully-connected, convolutional, or pooling. mLayer is an on-device inference system that achieves high inference efﬁciency by DNN layer partitioning and distribution between mobile CPU and mobile GPU [10]. Eshratifar et al. utilize an ILPbased method to obtain the optimal partition point for achieving the minimum latency or energy consumption [17]. Hu et al. propose DADS, a DNN partition scheme that can minimize the overall delay of a request or maximize the throughput [19]. P Hsu et al. pay attention to these modern DNNs partitioning and container-based deployment for sliced DNN models to minimize the inference latency [14]. Recently, early-exits, as a new mechanism to decrease inference latency, has been introduced to DNN partitioning [64], [65]. SPINN further improves the inference latency via compressing the ofﬂoaded data and make early-exist decisions based on the complexity of the input [8]. In contrast, we study the problem of resource allocation for co-locating DNNs on the edge server with DNN partitioning and our goal is to achieve SLA guarantee and high throughput simultaneously.
+
+There have been many studies on improving the performance of mobile inference with an edge computing plat-
+form [21], [39], [56], [57], [58], [59], [60], [61]. Liu et al. 9 CONCLUSION
+
+propose an edge assisted object recognition system that jointly achieves high accuracy and low processing time by using dynamic RoI encoding, rendering pipeline decoupling, and fast object tracking [39]. Cachier is also an edge caching system for object recognition applications, which employs an adaptation engine to reduce the recognition delay by exploiting object spatiotemporal locality and adjusting the cache size dynamically [56]. Precog further extends the idea and not only uses edge servers but also leverages mobile devices to implement prefetching and caching on the device [57]. However, these are feature-based inference and do not employ DNNs. Guo et al. present FoggyCache, a computation reuse system that utilizes the computation results across devices at the edge by designing a
+
+HiTDL demonstrates how to provision multiple DNNs following the hybrid deployment approach over limited resources at the edge. HiTDL’s goal is to achieve high aggregate throughput of all co-located DNNs while guaranteeing the SLAs of all the DNNs. HiTDL achieves its goal by building performance predication models for DNN inference throughput and latency with respect to a set of factors, generating a set of candidate partition plans for each DNN, and allocating resources by selecting speciﬁc feasible partition plans from the candidate set via solving a fairness-aware multiple-choice knapsack problem. Experimental results conﬁrm the effectiveness of HiTDL, where HiTDL outperforms baseline solutions by 4:3Â in throughput.
+
+two-level cache to reduce the redundant computation [58]. Guo et al. also take into consideration the ﬁne-grained input similarity and achieve approximately deduplicate computation across applications [59]. Based on the partial-DNN
+
+REFERENCES
+[1] G. Cong, B. Kingsbury, C.-C. Yang, and T. Liu, “Fast training of deep neural networks for speech recognition,” in Proc. IEEE Int. Conf. Acoust. Speech Signal Process., 2020, pp. 6884–6888.
+
+sharing among applications, Jiang et al. propose Mainstream [2] A. Vaswani et al., “Attention is all you need,” in Proc. Int. Conf.
+
+to achieve improments on aggregate application quality [60]. Wang et al. propose an adaptation-based strategy which explores applications’ behavior to ﬁlter frames and adjust
+
+Neural Inf. Process. Syst., 2017, pp. 5998–6008. [3] A. Radford et al., “Language models are unsupervised multitask
+learners,” OpenAI Blog, vol. 1, no. 8, 2019, Art. no. 9. [4] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “ImageNet classiﬁ-
+
+the number of concurrent instances within the edge so as to maximize the overall utility [21]. None of these works target the DNN resource sharing on edge servers following the
+
+cation with deep convolutional neural networks,” in Proc. Int. Conf. Neural Inf. Process. Syst., 2012, pp. 1106–1114. [5] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proc. IEEE Conf. Comput. Vis. Pattern Recog-
+
+hybrid DNN provisioning approach.
+
+nit., 2016, pp. 770–778.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+WU ET AL.: HITDL: HIGH-THROUGHPUT DEEP LEARNING INFERENCE AT THE HYBRID MOBILE EDGE
+
+4513
+
+[6] C. Szegedy, S. Ioffe, V. Vanhoucke, and A. A. Alemi, “Inception-v4, inception-ResNet and the impact of residual connections on learning,” in Proc. AAAI Conf. Artif. Intell., 2017, pp. 4278–4284.
+[7] V. Nigade, L. Wang, and H. Bal, “Clownﬁsh: Edge and cloud symbiosis for video stream analytics,” in Proc. IEEE/ACM Symp. Edge Comput., 2020, pp. 55–69.
+[8] S. Laskaridis, S. I. Venieris, M. Almeida, I. Leontiadis, and N. D. Lane, “SPINN: Synergistic progressive inference of neural networks over device and cloud,” in Proc. 26th Annu. Int. Conf. Mobile Comput. Netw., 2020, pp. 37:1–37:15.
+[9] A. Banitalebi-Dehkordi, N. Vedula, J. Pei, F. Xia, L. Wang, and Y. Zhang, “Auto-split: A general framework of collaborative edgecloud AI,” in Proc. 27th ACM SIGKDD Conf. Knowl. Discov. Data Mining, 2021, pp. 2543–2553.
+[10] Y. Kim, J. Kim, D. Chae, D. Kim, and J. Kim, “mLayer: Low latency on-device inference using cooperative single-layer acceleration and processor-friendly quantization,” in Proc. 14th EuroSys Conf., 2019, Art. no. 45.
+[11] W. Niu, P. Zhao, Z. Zhan, X. Lin, Y. Wang, and B. Ren, “Towards real-time DNN inference on mobile platforms with model pruning and compiler optimization,” in Proc. Int. Joint Conf. Artif. Intell., 2020, pp. 5306–5308.
+[12] 2020. [Online]. Available: https://www.tensorﬂow.org/lite/ guide/hosted_models
+[13] Y. Chen, J. He, X. Zhang, C. Hao, and D. Chen, “Cloud-DNN: An open framework for mapping DNN models to cloud FPGAs,” in Proc. ACM/SIGDA Int. Symp. Field-Programmable Gate Arrays, 2019, pp. 73–82.
+[14] K. Hsu, K. Bhardwaj, and A. Gavrilovska, “Couper: DNN model slicing for visual analytics containers at the edge,” in Proc. 4th ACM/IEEE Symp. Edge Comput., 2019, pp. 179–194.
+[15] B. Zhang, X. Jin, S. Ratnasamy, J. Wawrzynek, and E. A. Lee, “AWStream: Adaptive wide-area streaming analytics,” in Proc. Conf. ACM Special Int. Group Data Commun., 2018, pp. 236–252.
+[16] Y. Kang et al., “Neurosurgeon: Collaborative intelligence between the cloud and mobile edge,” in Proc. 22nd Int. Conf. Archit. Support Program. Lang. Operating Syst., 2017, pp. 615–629.
+[17] A. E. Eshratifar, M. S. Abrishami, and M. Pedram, “JointDNN: An efﬁcient training and inference engine for intelligent mobile cloud computing services,” 2018, arXiv: 1801.08618.
+[18] M. Wang, C. Huang, and J. Li, “Supporting very large models using automatic dataﬂow graph partitioning,” in Proc. 14th EuroSys Conf., 2019, pp. 26:1–26:17.
+[19] C. Hu, W. Bao, D. Wang, and F. Liu, “Dynamic adaptive DNN surgery for inference acceleration on the edge,” in Proc. IEEE Conf. Comput. Commun., 2019, pp. 1423–1431.
+[20] J. Schwab, A. Hill, and Y. Jararweh, “Edge computing ecosystem support for 5G applications optimization,” in Proc. 21st Int. Workshop Mobile Comput. Syst. Appl., 2020, Art. no. 103.
+[21] J. Wang, Z. Feng, S. A. George, R. Iyengar, P. Pillai, and M. Satyanarayanan, “Towards scalable edge-native applications,” in Proc. 4th ACM/IEEE Symp. Edge Comput., 2019, pp. 152–165.
+[22] R. S. Kannan, L. Subramanian, A. Raju, J. Ahn, J. Mars, and L. Tang, “GrandSLAm: Guaranteeing SLAs for jobs in microservices execution frameworks,” in Proc. 14th EuroSys Conf., 2019, pp. 34:1–34:16.
+[23] D. Crankshaw et al., “InferLine: Latency-aware provisioning and scaling for prediction serving pipelines,” in Proc. 11th ACM Symp. Cloud Comput., 2020, pp. 477–491.
+[24] D. Crankshaw, X. Wang, G. Zhou, M. J. Franklin, J. E. Gonzalez, and I. Stoica, “Clipper: A low-latency online prediction serving system,” in Proc. USENIX Symp. Netw. Syst. Des. Implementation, 2017, pp. 613–627.
+[25] C. Wan, M. H. Santriaji, E. Rogers, H. Hoffmann, M. Maire, and S. Lu, “ALERT: Accurate learning for energy and timeliness,” in Proc. USENIX Conf. Usenix Annu. Tech. Conf., 2020, pp. 353–369.
+[26] 2020. [Online]. Available: https://www.tensorﬂow.org/ [27] 2020. [Online]. Available: https://github.com/BVLC/caffe [28] 2020. [Online]. Available: https://github.com/pytorch/pytorch [29] 2020. [Online]. Available: https://github.com/keras-team/keras [30] 2020. [Online]. Available: http://www.openslr.org/12/ [31] 2020. [Online]. Available: http://www.image-net.org/ [32] 2020. [Online]. Available: https://wordnet.princeton.edu/ [33] F. Xu, Y. Qin, L. Chen, Z. Zhou, and F. Liu, “DNN: Achieving pre-
+dictable distributed DNN training with serverless architectures,” IEEE Trans. Comput., vol. 71, no. 2, pp. 450–463, Feb. 2022.
+
+[34] Q. Chen, Z. Zheng, C. Hu, D. Wang, and F. Liu, “Data-driven task allocation for multi-task transfer learning on the edge,” in Proc. IEEE 39th Int. Conf. Distrib. Comput. Syst., 2019, pp. 1040–1050.
+[35] H. Zheng, F. Xu, L. Chen, Z. Zhou, and F. Liu, “Cynthia: Cost-efﬁcient cloud resource provisioning for predictable distributed deep neural network training,” in Proc. 48th Int. Conf. Parallel Process., 2019, pp. 86:1–86:11.
+[36] Q. Chen, Z. Zheng, C. Hu, D. Wang, and F. Liu, “On-edge multitask transfer learning: Model and practice with data-driven task allocation,” IEEE Trans. Parallel Distrib. Syst., vol. 31, no. 6, pp. 1357–1371, Jan. 2020.
+[37] Y. Huang et al., “GPipe: Efﬁcient training of giant neural networks using pipeline parallelism,” in Proc. 33rd Int. Conf. Neural Inf. Process. Syst., 2019, pp. 103–112.
+[38] D. Narayanan et al., “PipeDream: Generalized pipeline parallelism for DNN training,” in Proc. 27th ACM Symp. Operating Syst. Princ., 2019, pp. 1–15.
+[39] L. Liu, H. Li, and M. Gruteser, “Edge assisted real-time object detection for mobile augmented reality,” in Proc. 25th Annu. Int. Conf. Mobile Comput. Netw., 2019, pp. 25:1–25:16.
+[40] C. Szegedy, V. Vanhoucke, S. Ioffe, J. Shlens, and Z. Wojna, “Rethinking the inception architecture for computer vision,” 2015, arXiv:1512.00567.
+[41] C. Zhang, M. Yu, W. Wang, and F. Yan, “MArk: Exploiting cloud services for cost-effective, SLO-aware machine learning inference serving,” in Proc. USENIX Conf. Usenix Annu. Tech. Conf., 2019, pp. 1049–1062. [Online]. Available: https://www.usenix.org/ conference/atc19/presentation/zhang-chengliang
+[42] K. He, X. Zhang, S. Ren, and J. Sun, “Identity mappings in deep residual networks,” 2016, arXiv:1603.05027.
+[43] A. G. Howard et al., “MobileNets: Efﬁcient convolutional neural networks for mobile vision applications,” 2017, arXiv: 1704.04861.
+[44] C. Cotta and J. M. Troya, “A hybrid genetic algorithm for the 0–1 multiple knapsack problem,” in Artif. Neural Nets Genet. Algorithms. Vienna, Austria: Springer, 1998, pp. 250–254.
+[45] M. Visee, J. Teghem, M. Pirlot, and E. Ulungu, “Two-phases method and branch and bound procedures to solve the bi–objective knapsack problem,” J. Glob. Optim., vol. 12, no. 2, pp. 139–155, 1998.
+[46] S. Martello and P. Toth, “A bound and bound algorithm for the zero-one multiple knapsack problem,” Discrete Appl. Math., vol. 3, no. 4, pp. 275–288, 1981. [Online]. Available: http://www. sciencedirect.com/science/article/pii/0166218X81900056
+[47] P. Yu and M. Chowdhury, “Fine-grained GPU sharing primitives for deep learning applications,” in Proc. Mach. Learn. Syst., 2020, pp. 98–111.
+[48] S. Naderiparizi, P. Zhang, M. Philipose, B. Priyantha, J. Liu, and D. Ganesan, “Glimpse: A programmable early-discard camera architecture for continuous mobile vision,” in Proc. 15th Annu. Int. Conf. Mobile Syst. Appl. Serv., 2017, pp. 292–305.
+[49] L. Xie, X. Zhang, and Z. Guo, “CLS: A cross-user learning based system for improving QoE in 360-degree video adaptive streaming,” in Proc. 26th ACM Int. Conf. Multimedia, 2018, pp. 564–572.
+[50] A. Dhakal, S. G. Kulkarni, and K. K. Ramakrishnan, “GSLICE: Controlled spatial sharing of GPUs for a scalable inference platform,” in Proc. 11th ACM Symp. Cloud Comput., 2020, pp. 492–506.
+[51] 2020. [Online]. Available: https://docs.nvidia.com/deploy/pdf/ CUDA_Multi_Process_Service_Overview.pdf
+[52] M. Tan and Q. V. Le, “EfﬁcientNet: Rethinking model scaling for convolutional neural networks,” 2019, arXiv: 1905.11946.
+[53] Y. Luo and N. Mesgarani, “TasNet: Surpassing ideal time-frequency masking for speech separation,” 2018, arXiv: 1809.07454.
+[54] 2020. [Online]. Available: https://github.com/tensorﬂow/models/ tree/master/research/slim
+[55] D. Raca, D. Leahy, C. J. Sreenan, and J. J. Quinlan, “Beyond throughput, the next generation: A 5G dataset with channel and context metrics,” in Proc. 11th ACM Multimedia Syst. Conf., 2020, pp. 303–308.
+[56] U. Drolia, K. Guo, J. Tan, R. Gandhi, and P. Narasimhan, “Cachier: Edge-caching for recognition applications,” in Proc. IEEE 37th Int. Conf. Distrib. Comput. Syst., 2017, pp. 276–286.
+[57] U. Drolia, K. Guo, and P. Narasimhan, “Precog: Prefetching for image recognition applications at the edge,” in Proc. 2nd ACM/ IEEE Symp. Edge Comput., 2017, pp. 17:1–17:13.
+[58] P. Guo, B. Hu, R. Li, and W. Hu, “FoggyCache: Cross-device approximate computation reuse,” in Proc. 24th Annu. Int. Conf. Mobile Comput. Netw., 2018, pp. 19–34.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+
+4514
+
+IEEE TRANSACTIONS ON PARALLEL AND DISTRIBUTED SYSTEMS, VOL. 33, NO. 12, DECEMBER 2022
+
+[59] P. Guo and W. Hu, “Potluck: Cross-application approximate deduplication for computation-intensive mobile applications,” in Proc. 23rd Int. Conf. Archit. Support Program. Lang. Operating Syst., 2018, pp. 271–284.
+[60] A. H. Jiang et al., “Mainstream: Dynamic stem-sharing for multitenant video processing,” in Proc. USENIX Conf. Usenix Annu. Tech. Conf., 2018, pp. 29–42.
+[61] L. Zhou, M. H. Samavatian, A. Bacha, S. Majumdar, and R. Teodorescu, “Adaptive parallel execution of deep neural networks on heterogeneous edge devices,” in Proc. 4th ACM/IEEE Symp. Edge Comput., 2019, pp. 195–208.
+[62] S. Kim et al., “Parallax: Sparsity-aware data parallel training of deep neural networks,” in Proc. 14th EuroSys Conf., 2019, pp. 43:1–43:15.
+[63] W. Shi, Y. Hou, S. Zhou, Z. Niu, Y. Zhang, and L. Geng, “Improving device-edge cooperative inference of deep learning via 2-step pruning,” in Proc. IEEE Conf. Comput. Commun. Workshops, 2019, pp. 1–6.
+[64] S. Teerapittayanon, B. McDanel, and H. T. Kung, “BranchyNet: Fast inference via early exiting from deep neural networks,” in Proc. 23rd Int. Conf. Pattern Recognit., 2016, pp. 2464–2469.
+[65] S. Teerapittayanon, B. McDanel, and H. T. Kung, “Distributed deep neural networks over the cloud, the edge and end devices,” in Proc. IEEE 37th Int. Conf. Distrib. Comput. Syst., 2017, pp. 328–339.
+
+Qiangyu Pei received the BS degree in physics from the Huazhong University of Science and Technology, China, in 2019. He is currently working toward the PhD degree in the School of Computer Science and Technology, Huazhong University of Science and Technology, China. His research interests include edge computing, green computing, and deep learning.
+Xingqi Cui is currently working toward the undergraduate degree with the School of Computer Science and Technology, Huazhong University of Science and Technology, China. His research interests include edge computing and distributed computing systems.
+
+Jing Wu received the MS degree from the School of Computer Science and Engineering, Northeastern University, Shenyang, China, in 2018. She is currently working toward the PhD degree in the School of Computer Science and Technology, Huazhong University of Science and Technology, China. Her research interests include edge computing, augmented reality, and deep learning.
+Lin Wang received the PhD degree in computer science with distinction from the Institute of Computing Technology, Chinese Academy of Sciences. He is an assistant professor with VU Amsterdam, The Netherlands and an adjunct professor with TU Darmstadt, Germany. He has been a visiting researcher with IMDEA Networks Institute, Spain, from 2012-2014, a research associate with SnT Luxembourg from 2015-2016, and a group leader with TU Darmstadt, Germany from 2016-2018. His research interests broadly span distributed systems and networking with topics including edge AI inference, edge operating systems, and in-network computing. He received the Athene Young Investigator award from TU Darmstadt in 2018 and has been a PI of the Collaborative Research Center MAKI for future Internet in Germany.
+
+Fangming Liu (Senior Member, IEEE) received the BEng degree from Tsinghua University, Beijing, and the PhD degree from the Hong Kong University of Science and Technology, Hong Kong. He is currently a full professor with the Huazhong University of Science and Technology, Wuhan, China. His research interests include cloud computing and edge computing, datacenter and green computing, SDN/NFV/5G, and applied ML/AI. He received the National Natural Science Fund (NSFC) for Excellent Young Scholars, and the National Program Special Support for Top-Notch Young Professionals. He is a recipient of the Best Paper Award of IEEE/ACM IWQoS 2019, ACM e-Energy 2018, and IEEE GLOBECOM 2011, the First Class Prize of Natural Science of Ministry of Education in China, as well as the Second Class Prize of National Natural Science Award in China.
+Tingting Yang (Member, IEEE) received the BSc and PhD degrees from Dalian Maritime University, China, in 2004 and 2010, respectively. She is currently a professor with Peng Cheng Laboratory. Her research interests include the areas of space-air-ground-sea integrated networks, network AI, and edge intelligence.
+
+" For more information on this or any other computing topic, please visit our Digital Library at www.computer.org/csdl.
+
+Authorized licensed use limited to: KAUST. Downloaded on January 30,2024 at 12:34:45 UTC from IEEE Xplore. Restrictions apply.
+

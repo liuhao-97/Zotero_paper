@@ -1,0 +1,918 @@
+Journal of Communications and Information Networks, Vol.7, No.2, Jun. 2022
+
+Research paper
+
+Resource-Constrained Edge AI with Early Exit Prediction
+Rongkang Dong, Yuyi Mao, Jun Zhang
+
+Abstract—By leveraging the data sample diversity, the early-exit network recently emerges as a prominent neural network architecture to accelerate the deep learning inference process. However, intermediate classiﬁers of the early exits introduce additional computation overhead, which is unfavorable for resource-constrained edge artiﬁcial intelligence (AI). In this paper, we propose an early exit prediction mechanism to reduce the on-device computation overhead in a device-edge co-inference system supported by early-exit networks. Speciﬁcally, we design a low-complexity module, namely the exit predictor, to guide some distinctly “hard” samples to bypass the computation of the early exits. Besides, considering the varying communication bandwidth, we extend the early exit prediction mechanism for latency-aware edge inference, which adapts the prediction thresholds of the exit predictor and the conﬁdence thresholds of the early-exit network via a few simple regression models. Extensive experiment results demonstrate the effectiveness of the exit predictor in achieving a better tradeoff between accuracy and on-device computation overhead for early-exit networks. Besides, compared with the baseline methods, the proposed method for latency-aware edge inference attains higher inference accuracy under different bandwidth conditions.
+Keywords—artiﬁcial intelligence (AI), edge AI, deviceedge cooperative inference, early-exit network, early exit prediction
+Manuscript received Apr. 20, 2022; revised May 15, 2022; accepted Jun. 10, 2022. This work is supported in part by a start-up fund of the Hong Kong Polytechnic University under Grant P0038174. The associate editor coordinating the review of this paper and approving it for publication was L. Q. Fu.
+R. K. Dong, Y. Y. Mao. Department of Electronic and Information Engineering, The Hong Kong Polytechnic University, Hong Kong 999077, China (e-mail: rongkang.dong@connect.polyu.hk; yuyi-eie.mao@polyu.edu.hk).
+J. Zhang. Department of Electronic and Computer Engineering, The Hong Kong University of Science and Technology, Hong Kong 999077, China (email: eejzhang@ust.hk).
+
+I. INTRODUCTION
+With the great demand for Internet of things (IoT) applications to embrace the ﬁfth generation (5G) era, the number of connected devices (e.g., smartphones, surveillance cameras, and unmanned vehicles) has seen a dramatic increase over the past decade, which results in a vast volume of data being generated at the wireless networks[1]. Such massive data along with the recent success of deep learning has hastened numerous intelligent mobile applications such as vehicle detection and virtual reality[2,3]. However, in order to advance the state-of-the-art accuracy performance, a deep neural network (DNN) typically has tens or even hundreds of network layers, leading to signiﬁcant computational cost and memory consumption. As a result, it is hard to deploy the whole DNN on resource-constrained devices. Although the high transmission rate offered by the next generation wireless networks allows mobile devices to ofﬂoad inference tasks to a powerful cloud server, the long communication latency caused by data transmission in the public network prohibits real-time responsiveness[4].
+Edge inference, which deploys mini-servers for computation at the edge of wireless networks (a.k.a. edge servers), is a complementary solution of cloud inference to provide low-latency artiﬁcial intelligence (AI) services[4,5]. Two typical edge inference modes are depicted in Fig. 1. In particular, edge-only inference refers to the scenario that an edge device (e.g., a smartphone) transfers the raw inference input data to an edge server for remote inference and retrieves the inference results thereafter (Fig. 1(a)). Due to the limited wireless resources and the potentially large size of the inference input, the transmission latency may be too high, especially for applications with tight latency budgets (e.g., autonomous driving[6]). Device-edge co-inference is a more agile paradigm that can alleviate this problem. In this edge inference mode, an edge device ﬁrst extracts a compact intermediate feature by executing the front layers of a backbone DNN, which is then ofﬂoaded to the edge server for further processing of the remaining layers[7] (Fig. 1(b)). By making the most use of the computational resources at both the edge device and edge server, device-edge co-inference effectively
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+Resource-Constrained Edge AI with Early Exit Prediction
+
+123
+
+Image
+Edge device
+(a)
+
+Lion 0.01 Giraffe..0. .90
+Edge server
+Result (Giraffe)
+
+Feature
+
+Lion 0.01 Giraffe 0.90
+...
+
+Edge device
+
+Edge server Result (Giraffe)
+
+(b)
+Fig. 1 Two typical edge inference modes: (a) Edge-only inference; (b) device-edge co-inference
+
+Conv 1 Conv 2 Conv 3 Conv 4 Conv 13 FC 1 FC 2 FC 3
+
+VGG16-BN ...
+
+Exit 3 “Hard”
+
+Conv Conv Conv FC Exit 1
+“Easy”
+
+Conv Conv FC
+Exit 2
+“Easy”
+
+Fig. 2 An early-exit network with the VGG16-BN[15] as backbone. For conciseness, some convolutional layers shown in the ﬁgure may also contain a batch normalization (BN) layer, a nonlinear layer, and a pooling layer
+
+trims the communication overhead, thus becoming an ideal solution for resource-constrained edge inference[8-11].
+To enable more efﬁcient device-edge co-inference, the early-exit (EE) network, which takes advantages of the data sample diversity, has gained increasing interest[8,12-14]. Specifically, an early-exit network can be derived by inserting a few intermediate classiﬁers along with the depth of a backbone network, e.g., VGG16-BN[15] as shown in Fig. 2. As such, the “easy” data samples can be inferred by the intermediate classiﬁers with sufﬁcient conﬁdence, leaving the “hard” data samples to be processed by all the layers in the main branch. It was shown in Ref. [12] that the early exit mech-
+
+95%
+
+90%
+
+85%
+
+Accuracy
+
+80%
+
+75%
+
+70% 0
+
+Light Regular
+
+50
+
+100
+
+150
+
+200
+
+MFLOPs
+
+Fig. 3 The relationship between the inference accuracy and computation complexity (measured by million ﬂoating-point operations (MFLOPs)) of the early-exit network shown in Fig. 2 with regular-size and light intermediate classiﬁers on the CIFAR10 dataset. The regular-size intermediate classiﬁers follow the design in Fig. 2 and the light intermediate classiﬁers consist of a fully-connected layer after the pooling operation for each exit[17]. The inference accuracy and computation complexity tradeoff is adjusted by tuning the conﬁdence thresholds of the early-exit network, as will be elaborated in section II, i.e., λ1, λ2 ∈ [0.2, 0.9] with a step size of 0.1
+
+anism can achieve a 5.4×/1.5×/1.9× CPU speedup for the LeNet/AlexNet/ResNet. Early-exit networks can also reduce the communication overhead in device-edge co-inference systems because the “easy” samples can be inferred from the early exits deployed on-device without being processed by the server-based network. However, depending on the backbone architecture and the insertion position, an intermediate classiﬁer normally contains at least one convolutional layer and one fully-connected (FC) layer[12,14,16], which introduces substantial computation overhead. Despite the computation complexity of early-exit networks can be reduced by using light intermediate classiﬁers (such as those in Ref. [17]), it comes at a price of severe accuracy degradation, especially for data samples with their inference processes being early terminated. To illustrate this issue, we show the relationship between the inference accuracy and computation complexity of a VGG16BN-based early-exit network in Fig. 3. The result shows that the early-exit network with regular-size intermediate classiﬁers generally requires a lower computation cost for a given accuracy requirement, compared to that with light intermediate classiﬁers (except with a very low accuracy requirement, i.e., < 70%). This is because the light intermediate classiﬁers fail to terminate the inference process with enough conﬁdence and thus more samples have to be processed by all the backbone layers in order to attain high accuracy.
+To reduce the computation overhead brought by the early exits, in this paper, we advocate developing a low-complexity early exit prediction mechanism, named exit predictor (EP), for resource-constrained edge AI. Our basic idea is that notable on-device computation can be saved by skipping appropriate early exits for some distinctly “hard” data samples.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+124
+
+Journal of Communications and Information Networks
+
+A. Related Works and Motivations
+Collaborative inference, as shown in Fig. 1(b), is an effective inference model for resource-constrained edge AI[7]. In particular, NeuroSurgeon[10] ﬁrst proposed to partition a DNN model between an edge device and a cloud server, and it attempted to ﬁnd an optimal model partition point considering both the latency and energy performance. To reduce the storage and accelerate the co-inference process, mixedprecision DNN models are adopted for collaborative inference in Ref. [18]. However, DNN partitioning may result in increased communication overhead because of the in-layer data ampliﬁcation phenomenon[19], and therefore intermediate feature compression techniques were also exploited to achieve communication-efﬁcient device-edge co-inference[19-21].
+The early-exit network architecture can reduce both the computation and transmission cost of device-edge coinference[12,22], which avoids all inference data to be processed by every backbone layer. Early-exit networks can also be used in device-edge-cloud collaborative inference systems[8], where the inference model is divided into three partitions over the distributed computing hierarchy. Besides, Li et al. introduced the edgent framework in Ref. [14], which optimizes the latency of device-edge co-inference under static and dynamic bandwidth conditions through adaptive DNN partitioning and right-sizing. Similarly, synergistic progressive inference of neural network (SPINN)[23] optimizes the early-exit policy and model partition point of an early-exit network for cooperative edge inference under dynamic network conditions. Nevertheless, while many prior investigations on early-exit networks focused on improving the model accuracy[24,25] and efﬁciency when being deployed in the edge computing environments[14,23], few studies tackled the additional computational overhead brought by intermediate classiﬁers[16]. Although the signiﬁcant computation overhead of intermediate classiﬁers has received some most recent attentions, existing solutions either use light intermediate classiﬁers with severe performance degradation[17], or reuse the predictions of the preceding intermediate classiﬁers for later ones to gain a better accuracy-time tradeoff[26]. However, the “hard” samples may still need to be processed by all the intermediate classiﬁers.
+B. Contributions
+In this paper, we consider a device-edge co-inference system supported by early-exit networks and propose a lowcomplexity early exit prediction mechanism to improve the on-device computation efﬁciency. Our major contributions are summarized as follows:
+• We design an innovative early exit prediction mechanism, named EP, as an effective means to reduce the ondevice computation overhead in device-edge co-inference systems supported by early-exit networks. To make the EP
+
+with low computation cost, depthwise separable convolution is applied to design its network architecture, meanwhile, the squeeze-and-excitation and channel concatenation operations are adopted to improve the performance.
+• We extend the EP for latency-aware edge inference under different communication bandwidths. To avoid training multiple EPs for each different bandwidth conditions, we propose to retain just one EP, and adapt its hyper-parameters, namely the prediction thresholds, together with the conﬁdence thresholds of the early-exit network via a few simple regression models.
+• We conduct an extensive performance evaluation for the proposed methods on image classiﬁcation tasks. The experiment results show that the EP helps reduce the on-device computation overhead remarkably with little accuracy loss or no accuracy loss. For latency-aware edge inference, the proposed method achieves better accuracy compared with other baselines under different bandwidth conditions.
+C. Organization The rest of this paper is organized as follows. In sec-
+tion II, we introduce a device-edge co-inference system supported by early-exit networks and deﬁne the design problem for on-device computation overhead reduction. We develop an early exit prediction mechanism in section III and extend our investigation to latency-aware edge inference with varying communication bandwidth in section IV. Experimental results are presented in section V and conclusions are drawn in section VI.
+II. SYSTEM MODEL AND DESIGN PROBLEM
+In this section, we ﬁrst introduce the device-edge coinference system supported by early-exit networks. Then, we deﬁne the design problem to reduce the on-device computation overhead of the considered edge inference system.
+A. Device-edge Co-inference with Early-exit Networks We consider a device-edge co-inference system empow-
+ered by an early-exit network as shown in Fig. 4. The earlyexit network is derived from a backbone network by inserting N − 1 early exits (i.e., N exits in total), which is partitioned between an edge device and the edge server as the on-device and server-based networks, respectively. Each early exit contains an intermediate classiﬁer, which may consist of multiple network layers, followed by a fully-connected layer and a soft-max layer[12]. For convenience, the term “intermediate classiﬁer” is used interchangeably with “early exit” in the remainder of this paper. We assume that the edge server is wellresourced, i.e., the computation latency at the edge server is negligible compared with those of on-device computation and intermediate feature transmission, and thus all the N − 1 early
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+Resource-Constrained Edge AI with Early Exit Prediction
+
+125
+
+Layer 1 Layer (M − 1)
+Layer M Layer (M + 1)
+Exit N Girrafe
+
+c1  l
+
+cN−1  N−1
+
+c1
+
+c1 < l cN−1 cN−1 < N−1
+
+Exit 1
+
+Exit (N − 1)
+
+Intermediate feature
+
+Server-based network
+
+...
+
+...
+
+x
+
+On-device network
+
+Fig. 4 A device-edge co-inference system empowered by an early-exit network with N − 1 early exits
+
+exits are deployed on the edge device. Accordingly, the model partition point is chosen as the insertion position of the last early exit.
+Each inference data (e.g., an image) is processed sequentially by the N − 1 early exits until an inference result with sufﬁcient conﬁdence is obtained. It is also possible that none of the early exits is able to obtain a reliable inference result, and in this case, the intermediate feature computed by the ondevice network is forwarded to the edge server and the inference result is then determined by the last (Nth) exit. We denote the feedforward operation from the input layer to the nth exit as fn(·), and the output of the nth intermediate classiﬁer before the soft-max layer can thus be expressed as follows:
+
+zn = fn(x; θn) ∈ RP, n = 1, 2, · · · , N − 1,
+
+(1)
+
+where x is the input data, θn encapsulates the network parameters from the input layer to the layer before the soft-max operation in the nth exit, and P represents the number of categories in the classiﬁcation task (e.g., P = 10 in the CIFAR10 image classiﬁcation task). Following most prior studies on early-exit networks, we use the top-1 probability[23] as the conﬁdence score of the intermediate inference results, which can be written as follows:
+
+cn = max(softmax(zn)), n = 1, 2, · · · , N − 1, (2) where softmax(zn) {eznp / ∑Pq=1 ezqn }Pp=1 and znp denotes the pth dimension in vector zn. If the conﬁdence score cn is no smaller than a pre-determined conﬁdence threshold λn ∈ (0, 1), the intermediate inference result is deemed with sufﬁcient conﬁdence and the inference process of x is terminated at the nth early exit. Otherwise, the feature computed by the backbone layer right before the nth early exit is fed to the next backbone layer for further processing. We note that there is no need to set a conﬁdence threshold for the last exit as the inference process has to be terminated at the edge server if none of the N − 1 early exits with cn λn, n = 1, 2, · · · , N − 1.
+
+B. Design Problem In the considered device-edge co-inference system, the av-
+erage on-device computation, which is measured by the num-
+
+ber of FLOPs1, can be expressed as follows:
+
+N−1
+
+n−1
+
+∑ ∏ (Ol1 + Oe1 ) + Ep(x)
+
+(Oln + Oen ) 1ci<λi , (3)
+
+n=2
+
+i=1
+
+where p(x) denotes the input data distribution and 1E is an indicator function that equals 1 if event E happens and 0 if otherwise. Besides, Oen denotes the number of FLOPs required to compute the nth intermediate classiﬁer and Oln gives the number of FLOPs required to compute the backbone layers between the (n − 1)th and nth early exit (n = 0 represents the input layer). For the example in Fig. 2, Ol2 is the number of FLOPs required to compute the “Conv 2” and “Conv 3” layers, and Oe2 is the number of FLOPs required to compute the two convolutional layers and one fully-connected layer in Exit 2.
+It is clear from (3) that those samples being terminated by the nth exit need to be processed by all the n − 1 preceding intermediate classiﬁers. Therefore, many of the on-device computations spent on the ﬁrst few early exits are wasted if a large number of input samples are terminated by the deeper exits. In the next section, we develop an early exit prediction mechanism to reduce the on-device computation overhead by wisely skipping the processing of some early exits.
+
+III. THE PROPOSED EARLY EXIT PREDICTION MECHANISM
+In this section, we develop an early exit prediction mechanism, named EP, to save the on-device computation for resource-constrained edge inference. To justify our motivation, we consider an instance of the early-exit network shown in Fig. 2 with both of the two conﬁdence thresholds set as 0.9, corresponding to the point in Fig. 3 with the highest accuracy. For the CIFAR10 test set with 10 000 images, 66.62%, 19.81%, and 13.57% of the input samples are output from the
+
+1The FLOPs of different neural network models can be conveniently obtained in the PyTorch environment by using the “FLOPs counter for convolutional networks in PyTorch framework” package.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+126
+
+Journal of Communications and Information Networks
+
+three exits, respectively, leading to 79.64 MFLOPs (including 42.44 MFLOPs on-device). Ideally, if there is an oracle to direct the samples output from the appropriate exit, the required number of FLOPs to process this test set can be reduced to 72.13 MFLOPs (including 34.93 MFLOPs on-device).
+The EP shall determine whether some early exits can be skipped without being computed for the particular input samples. Our idea is actually similar to those in Refs. [27,28], which aim at selecting the inference network for each input sample via a lightweight neural network, so that some “easy” samples can be processed by the low-complexity models. However, the methods developed in Refs. [27,28] are not readily applicable to early-exit networks. On one hand, the lightweight neural network developed in Ref. [27] directly learns the top-1 probabilities for inference model selection. But as this is a complex multivariate regression task, large discrepancies between the predicted and ground-truth values may be incurred. Also, Ref. [28] proposed to learn the sample complexity for selection between two inference models with mild and aggressive pruning, respectively, which, however, cannot be used for early-exit networks with three or even more early exits.
+A. Early Exit Prediction Mechanism
+Since the inference results are obtained from the last exit if all the intermediate classiﬁers fail to derive sufﬁciently conﬁdent results, the proposed EP derives N − 1 prediction scores sn, n = 1, · · · , N − 1 as indicators on whether an early exit should be computed or not. Fig. 5 shows the working mechanism of the EP, which is also deployed on the device. Specifically, before being fed to the early-exit network, each input sample x is ﬁrst processed by the EP to generate the prediction scores {sn}’s for all the N − 1 early exits. During the inference process, if sn is no smaller than a predeﬁned prediction threshold γn, the intermediate feature computed by the backbone layers is processed by the intermediate classiﬁer in the nth early exit. Otherwise, the nth early exit is skipped and the intermediate feature is passed to the next backbone layer. Nonetheless, for a sample computed by the nth early exit, whether the inference process is actually terminated is still governed by the relationship between the conﬁdence score cn and the conﬁdence threshold λn, as elaborated in section II.A. The inference procedures of early-exit networks aided by the EP are summarized in Algorithm 1.
+As a result, the average on-device computation with the proposed early exit prediction mechanism can be written in the following expression:
+
+OEP + Ol1 + Ep(x) Oe1 1s1 γ1 +
+
+N−1
+
+n−1
+
+∑ ∏ (Oln + Oen 1sn γn )
+
+1 − 1si γi 1ci λi ,
+
+(4)
+
+n=2
+
+i=1
+
+s1
+
+...
+
+Backbone
+
+layer m
+
+x Exit predictor sn
+
+sn  n Early exit n cn
+
+...
+
+sN−1
+
+sn < n
+
+cn < n
+
+Backbone layer m + 1
+
+cn  n
+
+Fig. 5 Working mechanism of the EP
+
+Algorithm 1 Inference with early-exit networks aided by the EP
+
+Input: x, λn, γn, n = 1, · · · , N − 1.
+
+1: Compute the predictor scores {sn}’s for input x using the EP.
+
+2: Compute the on-device backbone layers for input x before the ﬁrst early
+
+exit.
+
+3: for n = 1 to N − 1 do
+
+4: if sn γn then
+
+5:
+
+Compute the nth early exit and obtain the conﬁdence cn.
+
+6:
+
+if cn λn then
+
+7:
+
+Return the inference result obtained from the nth early exit and
+
+terminate the inference process.
+
+8:
+
+else
+
+9:
+
+Proceed to the next backbone layer.
+
+10:
+
+end if
+
+11: else
+
+12:
+
+Bypass the nth early exit and proceed to the next backbone layer.
+
+13: end if
+
+14: end for
+
+15: Transmit the intermediate feature to the edge server for the processing of
+
+the server-based network.
+
+16: Return the inference result obtained from the last exit.
+
+where OEP denotes the number of FLOPs required to compute the EP. Since the processing of the EP is compulsory for every sample, the EP should have a low computational complexity in order not to compromise its advantages of skipping the early exits.
+B. Network Architecture
+To implement the EP with a lightweight neural network, we formulate the task of generating the N − 1 prediction scores {sn}’s as N − 1 binary classiﬁcation tasks, where sn can be interpreted as the likelihood that the conﬁdence score cn is no smaller than the pre-deﬁned conﬁdence threshold λn.
+Fig. 6 shows the proposed network architecture of the EP, and its computational cost and storage requirement mainly come from the convolutional layers and FC layers. In order to reduce the size of convolutional layers, we replace the traditional convolution with the depth-wise separable convolution that consists of sequential depth-wise convolution and point-wise convolution[29-31], except for the ﬁrst convolutional layer. In our experimental results as shown in section V, the
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+Resource-Constrained Edge AI with Early Exit Prediction
+
+127
+
+x Conv layer
+
+Downsample
+
+Dw Conv layer Cat and SE
+Pw Conv layer
+
+Stride 1 Stride 2
+
+Downsample
+
+Dw Conv layer Cat and SE
+Pw Conv layer
+
+Downsample
+
+Dw Conv layer Cat and SE
+Pw Conv layer
+
+FC layer FC layer
+zEP Sigmoid
+
+Scores s1,…, sN−1
+Fig. 6 Network architecture of the EP (“Cat.” stands for channel concatenation and “SE” refers to the squeeze-and-excitation operation. “Dw” and “Pw” are the abbreviations of “depth-wise” and “point-wise” respectively. The blue blocks are layers with stride 1 and the yellow blocks are layers with stride 2. The green blocks are the fully-connected layers)
+
+strides of the ﬁrst convolutional layer and the depth-wise convolutional layers are chosen as 2, which reduce the height and width of input features by half. In this way, the computational complexity of the EP can be signiﬁcantly reduced. To boost the performance of the EP, we concatenate the input and output feature channels[32] of the depth-wise convolutional layers before the squeeze-and-excitation operation[33], and max pooling is adopted as the downsample operation for channel concatenation. The number of channels output from the ﬁrst convolutional layer is 16 and those output from the three point-wise convolutional layers are 32, 64, and 128, respectively. The last FC layer is cascaded with a Sigmoid function to convert each output dimension to a prediction score from 0 to 1.
+
+C. Training Procedures
+The EP imitates the behavior of a pretrained early-exit network. The conﬁdence thresholds for the N − 1 early exits also need to be determined before training the EP. In particular, the early-exit network is trained by optimizing the following loss
+
+function on a training dataset {xb, yb}Bb=1:
+
+1B N
+
+∑ ∑ LEE B b=1 n=1 wnl(yˆn,b, yb; θEE),
+
+(5)
+
+where θEE denotes the network parameters, wn is the weight of the nth exit, yˆn,b softmax(zn,b), and zn,b is the output of the nth exit for the bth training sample before the soft-max layer as given by (1). Besides, the labels {yb}’s are encoded in one-hot format and l (yˆ, y) − ∑Pp=1 yplnyˆp denotes the cross entropy function.
+Once the early-exit network is trained, we can collect the
+data to train the EP. Therefore, the training objective of the EP
+is designed as follows:
+
+1 B N−1
+
+∑ ∑ LEP B b=1 n=1 lBCE(sn,b, u(cn,b − λn); θEP),
+
+(6)
+
+where lBCE(yˆ, y) − (ylnyˆ + (1 − y)ln(1 − yˆ)) is the binary cross entropy loss and θEP represents the network parameters of the EP. The value of sn,b is constrained within 0 to 1 by a Sigmoid function, i.e., the last layer of the EP, as follows:
+
+1
+
+sn,b = 1 + e−zEPn,b
+
+(7)
+
+with zEPn,b denoting the nth element of zEPb , and
+
+zEPb = fEP(xb; θEP) ∈ RN−1
+
+(8)
+
+as the output of the EP of the training sample xb before the Sigmoid function. We note that in (6), u(·) is the unit step function and thus u(cn,b − λn) given below is the target binary label of sample xb:
+
+u(cn,b − λn) = 1, cn,b λn, n = 1, 2, · · · , N − 1. (9) 0, cn,b < λn,
+
+When training the EP, each sample is ﬁrst processed by the early-exit network and the conﬁdence scores {cn,b}’s corresponding to the N − 1 early exits are generated. Then, the pre-deﬁned conﬁdence thresholds are applied to obtain binary labels as shown in (9). Hence, the training objective can be optimized via the back-propagation algorithm[34].
+
+IV. LATENCY-AWARE EARLY EXIT PREDICTION
+Although the EP developed in section III is able to reduce the amount of on-device computations, it fails to optimize the critical end-to-end inference latency, which consists of not only the on-device computation latency, but also the transmission latency. This section extends the EP to scenarios with varying communication bandwidth, striving for the best tradeoff between the accuracy and latency performance.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+128
+
+Journal of Communications and Information Networks
+
+To reduce the transmission latency, we compress the intermediate feature prior to transmission[9]. Also, when the communication bandwidth is low, it is desirable to keep more samples with their inference processes being terminated by the early exits on the device, which can be achieved by tuning the conﬁdence thresholds[23,35]. Therefore, the device-edge co-inference system seeks to maximize the inference accuracy subject to an average inference latency requirement τ, which can be formulated as follows:
+
+max
+θEP ,λ,γ
+s.t.
+
+Accuracy θˆEE, θEP, λ, γ Ep(x) Latency(x, θˆEE, θEP, λ, γ)
+
+(10) τ, (10a)
+
+where θˆEE denotes the pretrained parameters of the early-exit network including the feature encoder and decoder, θEP denotes the parameters of the EP, and λ and γ encapsulate the N −1 conﬁdence thresholds and prediction thresholds, respectively. The latency for each sample depends on both the device computation speed rcomp and communication bandwidth rcomm, and can be calculated according to the following expression:
+
+Latency x, θˆEE, θEP, λ, γ =
+
+Odevice(x, θˆEE, θEP, λ, γ) + D x, θˆEE, θEP, λ, γ , (11)
+
+rcomp
+
+rcomm
+
+where Odevice (·) denotes the on-device computation and D (·) is the compressed feature size. Speciﬁcally, we follow the idea of Bottlenet++[19] by adopting an autoencoder to compress the intermediate feature before transmission, which is decompressed at the edge server before being processed by the server-based network. We also truncate the feature bitwidth to attain further communication overhead reduction. The training procedures of the early-exit network with the autoencoder and quantizer are summarized below.
+• We ﬁrst pretrain the early-exit network θEE in an end-toend manner as discussed in section III.C.
+• An autoencoder is inserted at the selected model partition point, and it is trained with the server-based network while freezing the on-device network. In this way, the autoencoder causes no effect on the early exits.
+• We ﬁne-tune the server-based network after adding the quantization module to increase the accuracy of the last exit. Since the quantization model cannot be back-propagated, the parameters of the on-device network and the feature encoder are frozen in this step.
+When the conﬁdence thresholds are adjusted according to the communication bandwidth, the EP needs to be adapted accordingly as it is trained with a given set of {λn}’s. A straightforward solution is to train an EP for each possible communication bandwidth. However, deploying a large number of EPs shall result in signiﬁcant memory footprint, which is not
+
+Tab. 1 Backbone model accuracy and computation complexity
+
+Dataset CIFAR10
+CIFAR100
+
+Backbone AlexNet VGG16-BN ResNet44 AlexNet VGG16-BN ResNet44
+
+Accuracy 85.95% 94.04% 93.91% 60.32% 72.70% 72.21%
+
+MFLOPs 62.88 333.08 98.52 63.25 333.45 98.52
+
+desirable for resource-constrained edge AI. As a result, we propose to retain just one EP, which imitates the early-exit network with the highest accuracy2, and adapts the prediction thresholds and conﬁdence thresholds to the communication bandwidth. To determine the threshold values under different bandwidth conditions, a few simple regression models (each is made up of two FC layers) are trained, which are facilitated by recording the optimal combinations of the threshold values, i.e., λ and γ, for (10) with both θˆEE and θEP ﬁxed on multiple small sets of discrete communication bandwidth values of the test set3.
+
+V. EXPERIMENTAL RESULTS
+In this section, we evaluate the performance of the proposed early exit prediction mechanism through numerical experiments.
+A. Experimental Setup
+We conduct the experiments with three backbone DNN architectures, including the AlexNet4, VGG16-BN[15], and ResNet44[37] on the CIFAR10 and CIFAR100 datasets[38]. The two datasets contain 50 000 training samples and 10 000 test samples, which are 32 × 32 color images from 10 and 100 categories, respectively. All our experiments are implemented with the PyTorch library[39]. Tab. 1 shows the model accuracy and the computation complexity of the three backbone networks on the two datasets.
+Two early exits are inserted into the on-device network, and the weights in the training objective (5) for the three exits are set as 0.2, 0.3, and 0.5, respectively. We adopt intermediate classiﬁers with relatively low computational complexity compared to the backbone networks[16]. Speciﬁcally, we assign
+
+2We perform a multi-dimensional grid search on the conﬁdence thresholds to obtain an early-exit network with the highest accuracy on the test set, and train the EP using the procedures in section III.C on the training set.
+3The number of regression models to be trained and the sets of bandwidth values used for training the regression models are hyper-parameters that need to be tuned in practice.
+4Consider the kernel size and stride of the original AlexNet[36] may be too large for 32×32 images, we use a modiﬁed AlexNet architecture with smaller kernel size and stride.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+Resource-Constrained Edge AI with Early Exit Prediction
+
+129
+
+more convolutional layers to the intermediate classiﬁers for a deeper backbone network, and the second early exit is lighter in computation than the ﬁrst one. Since AlexNet is not deep, we insert two intermediate classiﬁers with 2 and 1 convolutional layer(s) respectively, followed by a max-pooling layer and an FC layer, which are placed after the ﬁrst and second convolutional layer in the backbone network respectively. Besides, for VGG16-BN, the ﬁrst intermediate classiﬁer consists of 3 convolutional layers and 1 FC layer, which is inserted after the ﬁrst convolutional layer in the backbone. The second intermediate classiﬁer consists of 2 convolutional layers and 1 FC layer, and it is inserted after the third convolutional layer in the backbone. In addition, as ResNet44 applies the short connection structure, the early exits should avoid being inserted inside a residual block (RB). Hence, we insert the ﬁrst intermediate classiﬁer with 2 RBs, 1 max-pooling layer, and 1 FC layer after the ﬁrst RB in the backbone, and the second early exit consists of 1 RB, 1 max-pooling layer, and 1 FC layer after the eighth RB in the backbone. Tab. 3 in Appendix A) and Tab. 5 in Appendix B) respectively show the output feature size of each layer/RB in the early exits and the amount of computations required to process each part of the on-device network. We use stochastic gradient descent with a batch size of 128 and a weight decay of 0.000 5 to train the early-exit networks. Cosine annealing is applied with an initial learning rate of 0.1 and an end learning rate of 0.000 1 at the 200th epoch. The total number of training epochs is 220. The hyper-parameter setting of training the EP is similar to that of the early-exit networks except with a weight decay of 0.000 2.
+B. On-device Computation Savings
+We evaluate the performance of the EP in terms of classiﬁcation accuracy and average on-device computation for each inference data sample. For comparisons, the original earlyexit network, as well as a ﬁlter pruning[40] method which removes the ﬁlters according to their l2-norm values, are adopted as baselines. Since the edge server is well-resourced, ﬁlter pruning only applies to the on-device network (except the last FC layer to avoid drastic accuracy degradation).
+In the experiments, we adjust the conﬁdence thresholds of the early exits to achieve a different tradeoff between accuracy and on-device computation overhead, and the results are shown in Fig. 7. In general, compared with the original early-exit networks, the proposed EP can greatly reduce the on-device computation without much impairing the classiﬁcation accuracy. Also, we observe that although the ﬁlter pruning method is able to save some on-device computations, it suffers from notable accuracy degradation. In other words, the proposed EP is more suitable for scenarios with stringent accuracy requirements. As the values of the conﬁdence thresholds become lower, the inference processes of
+
+more samples are terminated by the ﬁrst early exit, leading to smaller on-device computation and reduced inference accuracy. Thus, fewer samples are able to skip the ﬁrst early exit so that the on-device computation saving brought by the EP becomes less signiﬁcant. There is an interesting observation from the results of the early-exit networks with the AlexNet and VGG16-BN backbones that the accuracy drops even with high on-device computation overhead, i.e., large values of the conﬁdence thresholds, which can be explained by the overthinking of early-exit networks[41]. Fig. 8 further shows the performance of the ﬁlter pruning method with different pruning ratios. We ﬁnd that the proposed early exit prediction mechanism still substantially outperforms the ﬁlter pruning method.
+Ablation Studies: We ﬁrst examine the performance of different EP architectures on the CIFAR100 dataset, as shown in Tab. 2, including the proposed design in Fig. 6 (“ours”), the proposed design in Fig. 6 without the channel concatenation and the squeeze-and-excitation operations (“w/o Cat. and SE”), the network architecture consists of only two FC layers (“FCs only”), and the LeNet[42]. From this set of results, we ﬁnd all the considered network architectures achieve similar classiﬁcation accuracy, while the proposed network architecture for the EP always results in the lowest on-device computation overhead. We further test the EP for early-exit networks with three early exits. We choose the ResNet44 as the backbone, which is deeper than AlexNet and VGG16-BN so that more early exits can be inserted. Tab. 4 in Appendix A) and Tab. 6 in Appendix B) respectively show the output feature size of each residual block in the early exits and the amount of computations required to process each part of the on-device network. The classiﬁcation accuracy versus the ondevice computation overhead is shown in Fig. 9, from which, we can still observe signiﬁcant improvements achieved by the EP compared with the original early-exit networks.
+C. Latency and Accuracy under Different Communication Bandwidths
+The experiments in this section are based on the VGG16BN backbone and the CIFAR100 dataset. The architecture of the feature encoder and decoder are adopted from Ref. [19] by substituting the Sigmoid function in the encoder with a ReLU function, which reduces the height and width of each channel by half, and the number of channels to 1/4. Besides, the quantization operation converts the bit-width from 32 to 8. Therefore, the feature compression ratio is given by 64, resulting in less than 0.5% accuracy degradation. We choose the Raspberry Pi 3 as the edge device, which offers a computation speed of 3.62 GFLOPS. The latency requirement is set to 30 ms. We train 3 regression models respectively for the bandwidth intervals 0.1∼1 Mbit/s, 1∼10 Mbit/s, and 1∼100 Mbit/s in this experiment. The sets of com-
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+130
+
+Journal of Communications and Information Networks
+
+Accuracy
+
+86.6%
+
+86.5%
+
+86.4% 93.0%
+
+EE Filter pruning EE + EP (ours)
+9.0 9.5 10.0 10.5 11.0 11.5 12.0 On-device computation (MFLOPs) (a)
+EE Filter pruning EE + EP (ours)
+
+92.5%
+
+92.0%
+
+91.5%
+
+Accuracy
+
+Accuracy
+
+94.6% 94.4%
+
+EE Filter pruning EE + EP (ours)
+
+94.2%
+
+94.0%
+
+93.8%
+
+93.6%
+
+93.4% 40
+
+45
+
+50
+
+55
+
+60
+
+65
+
+On-device computation (MFLOPs)
+
+(b)
+
+60.5%
+
+EE Filter pruning EE + EP (ours)
+
+60.0%
+
+59.5%
+
+Accuracy
+
+32 34 36 38 40 42 44 46 48 On-device computation (MFLOPs)
+(c)
+
+9.0 9.5 10.0 10.5 11.0 11.5 On-device computation (MFLOPs)
+(d)
+
+74.4%
+
+72.5%
+
+74.2% 74.0%
+
+72.0%
+
+Accuracy
+
+Accuracy
+
+73.8% 73.6%
+
+71.5%
+
+73.4% 73.2%
+
+EE Filter pruning EE + EP (ours)
+60.0 62.5 65.0 67.5 70.0 72.5 75.0 77.5 On-device computation (MFLOPs) (e)
+
+71.0%
+70.5% 38
+
+EE Filter pruning EE + EP (ours)
+40 42 44 46 48 On-device computation (MFLOPs)
+(f)
+
+Fig. 7 Classiﬁcation accuracy versus on-device computation overhead. The two conﬁdence thresholds are assumed to be identical and increase with the on-device computation. The ﬁlter pruning method removes 10% of the ﬁlters with the lowest l2-norm values. The prediction thresholds γ are chosen as the ones with the lowest on-device computation while less than 2% additional samples are terminated at the last exit, i.e., cannot be terminated by the two early exits: (a) AlexNet backbone on CIFAR10 with λ1 = λ2 ∈ {0.90, 0.92, 0.94, 0.97, 0.99}; (b) VGG16-BN backbone on CIFAR10 with λ1 = λ2 ∈ {0.90, 0.95, 0.97, 0.99, 0.995}; (c) ResNet44 backbone on CIFAR10 with λ1 = λ2 ∈ {0.85, 0.88, 0.93, 0.97, 0.99}; (d) AlexNet backbone on CIFAR100 with λ1 = λ2 ∈ {0.50, 0.55, 0.60, 0.70, 0.80}; (e) VGG16-BN backbone on CIFAR100 with λ1 = λ2 ∈ {0.75, 0.80, 0.85, 0.90, 0.95}; (f) ResNet44 backbone on CIFAR100 with λ1 = λ2 ∈ {0.70, 0.75, 0.80, 0.90, 0.95}
+
+munication bandwidth values to train the three regression models are given by {0.1, 0.3, 0.5, 0.7, 1}, {1, 3, 5, 7, 10}, and {10, 30, 50, 70, 100} Mbit/s respectively. We compare the proposed method (“EE + EP (adaptive)”) in section IV with the following baselines (Feature compression is applied to all the
+
+methods for fair comparisons). • Backbone: This method uses the VGG16-BN backbone
+for device-edge co-inference. • EE (static): This method refers to the original early-exit
+network, where the conﬁdence scores of the two early exits
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+Resource-Constrained Edge AI with Early Exit Prediction
+
+131
+
+Tab. 2 Performance of EPs with different network architectures on the CIFAR100 dataset
+
+Backbone: AlexNet
+
+Backbone: VGG16-BN
+
+Backbone: ResNet44
+
+EP
+
+Accuracy On-device EP
+
+EP
+
+Accuracy On-device EP
+
+EP
+
+Accuracy On-device EP
+
+Architecture
+
+MFLOPs MFLOPs Architecture
+
+MFLOPs MFLOPs Architecture
+
+MFLOPs MFLOPs
+
+Ours
+
+60.74% 10.52
+
+0.40
+
+Ours
+
+74.39% 67.30
+
+0.40
+
+Ours
+
+72.60% 41.67
+
+0.40
+
+w/o Cat. and SE 60.66% 10.59
+
+0.29 w/o Cat. and SE 74.49% 67.65
+
+0.29 w/o Cat. and SE 72.57% 41.71
+
+0.29
+
+FCs only
+
+60.77% 11.24
+
+0.39
+
+FCs only
+
+74.51% 70.38
+
+0.39
+
+FCs only
+
+72.62% 42.71
+
+0.39
+
+LeNet
+
+60.74% 11.17
+
+0.67
+
+LeNet
+
+74.46% 68.46
+
+0.67
+
+LeNet
+
+72.61% 42.21
+
+0.67
+
+72.5%
+
+Filter pruning EE
+
+EE + EP (ours)
+
+0.05
+
+Accuracy
+
+72.0% 71.5%
+
+0.20 0.25
+
+0.15
+
+0.10
+
+0.30
+
+71.0%
+0.35
+34 36 38 40 42 44 46 48 50 On-device computation (MFLOPs)
+Fig. 8 Classiﬁcation accuracy versus on-device computation overhead for the early-exit network based on the ResNet44 backbone and the CIFAR100 dataset. The numbers in the ﬁgure indicate the pruning ratios of the ﬁlter pruning method. The two conﬁdence thresholds of the early-exit network are both set as 0.95
+
+71.6%
+
+71.4%
+
+Accuracy
+
+71.2%
+
+71.0%
+
+70.8%
+
+EE EE + EP (ours)
+
+40 42 44 46 48 50 52 54 On-device computation (MFLOPs)
+
+Fig. 9 Classiﬁcation accuracy versus on-device computation overhead on the CIFAR100 dataset. The early-exit network is constructed by inserting three early exits to the ResNet44 backbone, with weights in (5) for the four exits as 0.2, 0.2, 0.2, 0.4. In this ﬁgure, the conﬁdence thresholds are set as λ1 = λ2 = λ3 = {0.75, 0.8, 0.95}
+
+are set as 0.95 and 0.85 to achieve the best accuracy. • EE + EP (static): This method applies the EP proposed in
+section III to the early-exit network in the EE (static) method, where {γi}’s are chosen with the same criterion as in Fig. 7.
+• EE (adaptive): This method adapts the conﬁdence thresholds of an early-exit network according to the communication bandwidth to meet the latency requirement.
+
+• EE (adaptive, pruning): On top of the EE (static) method, this method further applies ﬁlter pruning to the convolutional layer in the feature encoder to reduce the number of channels to be transmitted. The pruning ratio is chosen such that the latency requirement is not violated.
+• EE + Oracle (adaptive): This is an idealized method and assumes that there is an oracle that can perfectly guide the samples to be computed by the exit that can obtain a conﬁdent inference result, i.e., cn λn. In other words, it can be regarded as a performance upper bound of the proposed EE + EP (adaptive) method.
+The latency and accuracy performance under different communication bandwidths are shown in Fig. 10. It can be observed from the ﬁgure that, when the bandwidth is low, the latency requirement can not be satisﬁed by the three static methods, despite they are able to achieve the best classiﬁcation accuracy. Compared with the early-exit network, the end-to-end inference latency of the VGG16-BN backbone is signiﬁcant higher when the communication bandwidth is low because all the samples need to be processed by the server-based network. When the communication bandwidth is high, the VGG16-BN backbone achieves lower latency compared with the early-exit network as the computation latency dominates in this regime. This result demonstrates the beneﬁts of early-exit networks for device-edge co-inference systems with insufﬁcient communication resources. Kindly note that the VGG16-BN backbone has slight accuracy degradation compared with the early exit network5. In contrast, the four adaptive methods can always meet the inference latency requirement. However, the EE (adaptive, pruning) method suffers from serious accuracy degradation as too many ﬁlters are removed from the encoded feature in order to meet the latency requirement. In the lowbandwidth regime (i.e., 0.1 to 1 Mbit/s), the proposed EE + EP (adaptive) method outperforms the EE (adaptive) baseline, which is because on-device computation latency reduction of the “easy” samples brought by the EP so that more “hard” samples can be inferred by the last exit with higher accuracy. The idealized EE + Oracle (adaptive) method achieves both latency and accuracy improvements over our proposed method because it can precisely avoid unnecessary compu-
+5Similar observations can be found in Refs. [12,24].
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+132
+
+Journal of Communications and Information Networks
+
+Latency requirement
+
+a considerable performance gap compared to the idealized
+
+Backbone EE (static)
+
+method, implying there is room for further improvement. Be-
+
+102
+
+EE + EP (static) EE (adaptive)
+
+sides, there are many future directions beyond this study. For
+
+EE (adaptive, pruning)
+
+example, it would be interesting to combine model compres-
+
+EE + Oracle (adaptive)
+
+EE + EP (adaptive)
+
+sion and layer-skipping techniques with the proposed early
+
+exit prediction mechanism, and extend our investigation to
+
+multi-device cooperative edge inference.
+
+Latency (ms)
+
+10−1
+
+100
+
+101
+
+102
+
+Communication bandwidth (Mbit/s)
+
+(a)
+
+74%
+
+73%
+
+Accuracy
+
+72% 71% 70% 10−1
+
+Backbone EE (static) EE + EP (static) EE (adaptive) EE (adaptive, pruning) EE + Oracle (adaptive) EE + EP (adaptive)
+
+100
+
+101
+
+102
+
+Communication bandwidth (Mbit/s)
+
+(b)
+
+Fig. 10 Latency and classiﬁcation accuracy under different communication bandwidths with the VGG16-BN backbone on the CIFAR100 dataset: (a) Latency versus communication bandwidth; (b) Classiﬁcation accuracy versus communication bandwidth
+
+tation. When the communication bandwidth is higher than 1 Mbit/s, all the adaptive methods converge to the highest accuracy, and with the early exit prediction mechanism, lower latency can be achieved for its strength in saving the on-device computation.
+
+VI. CONCLUSIONS
+In this paper, we considered a device-edge co-inference system empowered by early-exit networks and proposed a low-complexity early exit prediction mechanism, named EP, to improve the on-device computation efﬁciency. Assisted by learning-based feature compression, we extended the earlyexit network for latency-aware edge inference under different bandwidth conditions. Experiment results demonstrated the beneﬁts of our proposed methods in reducing the on-device computation overhead and end-to-end inference latency for resource-constrained edge AI.
+However, as can be seen from the experiment results, the proposed method for latency-aware edge inference still has
+
+APPENDIX
+
+A) Output Feature Size of the Early Exit Layers/Residual Blocks
+
+Tab. 3 Output feature size (channel×height×width) of each layer/residual block in the early exits (for early-exit networks with two intermediate classiﬁers)
+
+Backbone AlexNet VGG16-BN ResNet44
+
+Exit 1 64 × 8 × 8 64 × 8 × 8 64 × 16 × 16 32 × 16 × 16 32 × 16 × 16 16 × 32 × 32 16 × 32 × 32
+
+Exit 2 64 × 4 × 4
+128 × 8 × 8 64 × 8 × 8
+32 × 16 × 16
+
+Tab. 4 Output feature size (channel×height×width) of each residual block in the early exits (for the early-exit network with three intermediate classiﬁers in the ablation study)
+
+Backbone ResNet44
+
+Exit 1 16 × 32 × 32 16 × 32 × 32
+
+Exit 2 16 × 32 × 32
+
+Exit 3 32 × 16 × 16
+
+B) Amount of Computations Required to Process Each Part of the On-device Network
+
+Tab. 5 Amount of computations (in MFLOPs) required for each part of the on-device network (for early-exit networks with two intermediate classiﬁers)
+
+Dataset
+
+Backbone
+
+Ol1
+
+Oe1
+
+Ol2
+
+Oe2
+
+AlexNet
+
+0.49 4.75 7.11 1.78
+
+CIFAR10 VGG16-BN 1.97 16.70 56.98 14.23
+
+ResNet44 5.29 9.66 32.53 4.79
+
+AlexNet
+
+0.49 4.84 7.11 1.80
+
+CIFAR100 VGG16-BN 1.97 17.43 56.98 14.60
+
+ResNet44 5.29 10.03 32.53 4.97
+
+Tab. 6 Amount of computations (in MFLOPs) required for each part of the on-device network (for the early-exit network with three intermediate classiﬁers in the ablation study)
+
+Backbone: ResNet44, Dataset: CIFAR100
+
+Ol1
+
+Oe1
+
+Ol2
+
+Oe2
+
+Ol3
+
+Oe3
+
+5.29
+
+10.03
+
+14.4
+
+5.23
+
+18.13
+
+4.97
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+Resource-Constrained Edge AI with Early Exit Prediction
+
+133
+
+REFERENCES
+[1] CHETTRI L, BERA R. A comprehensive survey on Internet of things (IoT) toward 5G wireless systems[J]. IEEE Internet of Things Journal, 2020, 7(1): 16-32.
+[2] CHEN J, RAN X. Deep learning with edge computing: a review[J]. Proceedings of the IEEE, 2019, 107(8): 1655-1674.
+[3] ZHANG J, LETAIEF K B. Mobile edge intelligence and computing for the Internet of vehicles[J]. Proceedings of the IEEE, 2019, 108(2): 246-261.
+[4] MAO Y, YOU C, ZHANG J, et al. A survey on mobile edge computing: the communication perspective[J]. IEEE Communications Surveys and Tutorials, 2017, 19(4): 2322-2358.
+[5] SHI Y, YANG K, JIANG T, et al. Communication-efﬁcient edge AI: algorithms and systems[J]. IEEE Communications Surveys and Tutorials, 2020, 22(4): 2167-2191.
+[6] YANG B, CAO X, KAI X, et al. Edge intelligence for autonomous driving in 6G wireless system: design challenges and solutions[J]. IEEE Wireless Communications, 2021, 28(2): 40-47.
+[7] ZHOU Z, CHEN X, LI E, et al. Edge intelligence: paving the last mile of artiﬁcial intelligence with edge computing[J]. Proceedings of the IEEE, 2019, 107(8): 1738-1762.
+[8] TEERAPITTAYANON S, MCDANEL B, KUNG H T. Distributed deep neural networks over the cloud, the edge and end devices[C]// 2017 IEEE 37th International Conference on Distributed Computing Systems. Piscataway: IEEE Press, 2017: 328-339.
+[9] SHAO J, ZHANG J. Communication-computation trade-off in resource-constrained edge inference[J]. IEEE Communications Magazine, 2020, 58(12): 20-26.
+[10] KANG Y, HAUSWALD J, GAO C, et al. Neurosurgeon: collaborative intelligence between the cloud and mobile edge[J]. ACM SIGARCH Computer Architecture News, 2017, 45(1): 615-629.
+[11] ZHANG X, SHAO J, MAO Y, et al. Communication-computation efﬁcient device-edge co-inference via AutoML[C]//2021 IEEE Global Communications Conference. Piscataway: IEEE Press, 2021: 1-6.
+[12] TEERAPITTAYANON S, MCDANEL B, KUNG H T. BranchyNet: fast inference via early exiting from deep neural networks[C]//2016 23rd International Conference on Pattern Recognition. Piscataway: IEEE Press, 2016: 2464-2469.
+[13] SHAO J, ZHANG H, MAO Y, et al. Branchy-GNN: a device-edge co-inference framework for efﬁcient point cloud processing[C]//20212021 IEEE International Conference on Acoustics, Speech and Signal Processing. Piscataway: IEEE Press, 2021: 8488-8492.
+[14] LI E, ZENG L, ZHOU Z, et al. Edge AI: on-demand accelerating deep neural network inference via edge computing[J]. IEEE Transactions on Wireless Communications, 2020, 19(1): 447-457.
+[15] SIMONYAN K, ZISSERMAN A. Very deep convolutional networks for large-scale image recognition[C]//The International Conference on Learning Representations. [S.l.:s.n.], 2015: 1-14.
+[16] LASKARIDIS S, KOURIS A, LANE N D. Adaptive inference through early-exit networks: design, challenges and directions[C]//Proceedings of the 5th International Workshop on Embedded and Mobile Deep Learning. New York: ACM, 2021: 1-6.
+[17] LEROUX S, BOHEZ, S, CONINCK E D, et al. The cascading neural network: building the Internet of smart things[J]. Knowledge and Information Systems, 2017, 52: 791-814.
+[18] LI G, LIU L, WANG X, et al. Auto-tuning neural network quantization framework for collaborative inference between the cloud and edge[C]//International Conference on Artiﬁcial Neural Networks. Berlin: Springer, 2018: 402-411.
+[19] SHAO J W, ZHANG J. BottleNet++: an end-to-end approach for feature compression in device-edge co-inference systems[C]//2020 IEEE
+
+International Conference on Communications Workshops. Piscataway: IEEE Press, 2020: 1-6. [20] CHOI H, BAJI I V. Deep feature compression for collaborative object detection[C]//2018 25th IEEE International Conference on Image Processing. Piscataway: IEEE Press, 2018: 3743-3747. [21] SHAO J, MAO Y, ZHANG J. Learning task-oriented communication for edge inference: an information bottleneck approach[J]. IEEE Journal on Selected Areas in Communications, 2022, 40(1): 197-211. [22] MATSUBARA Y, LEVORATO M, RESTUCCIA F. Split computing and early exiting for deep learning applications: survey and research challenges[J]. arXiv preprint arXiv: 2103.04505, 2022. [23] LASKARIDIS S, VENIERIS I S, ALMEIDA M, et al. SPINN: synergistic progressive inference of neural networks over device and cloud[C]//Proceedings of the 26th Annual International Conference on Mobile Computing and Networking. New York: ACM, 2020: 1-15. [24] WANG M, MO J, LIN J, et al. DynExit: a dynamic early-exit strategy for deep residual networks[C]//2019 IEEE International Workshop on Signal Processing Systems. Piscataway: IEEE Press, 2019: 178-183. [25] PHUONG M, LAMPERT C H. Distillation-based training for multiexit architectures[C]//Proceedings of the IEEE/CVF International Conference on Computer Vision. Piscataway: IEEE Press, 2019: 13551364. [26] WOŁCZYK M, WO´ JCIK B, BALAZY K, et al. Zero time waste: recycling predictions in early exit neural networks[C]//Advances in Neural Information Processing Systems. New York: Curran Associates, Inc., 2021: 2516-2528. [27] SHU G, LIU W Q, ZHENG X, et al. IF-CNN: image-aware inference framework for CNN with the collaboration of mobile devices and cloud[J]. IEEE Access, 2018, 6: 68621-68633. [28] MALEKI M A, NABIPOUR M A, KAMAL M, et al. An energyefﬁcient inference method in convolutional neural networks based on dynamic adjustment of the pruning level[J]. ACM Transactions on Design Automation of Electronic Systems, 2021, 26(6): 1-20. [29] HOWARD A G, ZHU M L, CHEN B, et al. MobileNets: efﬁcient convolutional neural networks for mobile vision applications[J]. arXiv preprint arXiv: 1704.04861, 2017. [30] SANDLER M, HOWARD A G, ZHU M, et al. MobileNetV2: inverted residuals and linear bottlenecks[C]//Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition. Piscataway: IEEE Press, 2018: 4510-4520. [31] HOWARD A G, SANDLER M, CHU G, et al. Searching for MobileNetV3[C]//Proceedings of the IEEE/CVF International Conference on Computer Vision. Piscataway: IEEE Press, 2019: 1314-1324. [32] HUANG G, LIU Z, MAATEN L, et al. Densely connected convolutional networks[C]//Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition. Piscataway: IEEE Press, 2017: 47004708. [33] HU J, SHEN L, SUN G. Squeeze-and-excitation networks[C]//Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition. Piscataway: IEEE Press, 2018: 7132-7141. [34] RUMELHART, DAVID E, HINTON G, et al. Learning representations by back-propagating errors[J]. Nature, 1986, 323(6088): 533-536. [35] ZHAO Z, WANG K, LING N, et al. EdgeML: an AutoML framework for real-time deep learning on the edge[C]//Proceedings of the International Conference on Internet-of-Things Design and Implementation. New York: ACM, 2021: 1-12. [36] ALEX K, ILYA S, HINTON G E. ImageNet classiﬁcation with deep convolutional neural networks[C]//Advances in Neural Information Processing Systems. California: NIPS, 2012: 1-9. [37] HE K, ZHANG X, REN S, et al. Deep residual learning for image recognition[C]//Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition. Piscataway: IEEE Press, 2016: 770-778.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+
+134
+
+Journal of Communications and Information Networks
+
+[38] KRIZHEVSKY A. Learning multiple layers of features from tiny images[D]. Toronto: University of Toronto, 2009.
+[39] PASZKE A, GROSS S, MASSA F, et al. Pytorch: an imperative style, high-performance deep learning library[C]//33rd Conference on Neural Information Processing Systems. California: NIPS, 2019: 1-12.
+[40] LI H, KADAV A, DURDANOVIC I, et al. Pruning ﬁlters for efﬁcient ConvNets[C]//The International Conference on Learning Representations. Amsterdam: Elsevier, 2017: 1-13.
+[41] KAYA Y, HONG S, DUMITRAS T. Shallow-deep networks: understanding and mitigating network overthinking[C]//Proceedings of the 36th International Conference on Machine Learning. New York: ACM, 2019: 3301-3310.
+[42] LECUN Y, BOYYOU L, BENGIO Y, et al. Gradient-based learning applied to document recognition[J]. Proceedings of the IEEE, 1998, 86(11): 2278-2324.
+ABOUT THE AUTHORS
+Rongkang Dong received the B.Sc. degree in Applied Physics from South China University of Technology (SCUT), Guangzhou, China, in 2020. He is currently pursuing the M.Sc. degree with the Department of Electronic and Information Engineering, the Hong Kong Polytechnic University (PolyU), Hong Kong, China. During the study in PolyU, he was awarded the full studentship for the M.Sc. dissertation research. His research interests include machine learning and edge intelligence.
+Yuyi Mao [corresponding author] (Member, IEEE) received the B.Eng. degree in Information and Communication Engineering from Zhejiang University (ZJU), Hangzhou, China, in 2013, and the Ph.D. degree in Electronic and Computer Engineering from the Hong Kong University of Science and Technology (HKUST), Hong Kong, China, in 2017.
+He was a Lead Engineer with the Hong Kong Applied Science and Technology Research Institute Co.,
+
+Ltd. (ASTRI), Hong Kong, China, and a Senior Researcher with the Theory Lab, 2012 Labs, Huawei Tech. Investment Co., Ltd., Hong Kong, China. He is currently a Research Assistant Professor with the Department of Electronic and Information Engineering, the Hong Kong Polytechnic University (PolyU), Hong Kong, China. His research interests include wireless communications and networking, mobile edge computing and learning, and wireless artiﬁcial intelligence. He was the recipient of the 2021 IEEE Communications Society Best Survey Paper Award and the 2019 IEEE Communications Society and Information Theory Society Joint Paper Award. He was also recognized as an Exemplary Reviewer of the IEEE Wireless Communications Letters in 2021 and 2019, and the IEEE Transactions on Communications in 2020.
+Jun Zhang (Fellow, IEEE) received the B.Eng. degree in Electronic Engineering from the University of Science and Technology of China, Hefei, China, in 2004, the M.Phil. degree in Information Engineering from the Chinese University of Hong Kong, Hong Kong, China, in 2006, and the Ph.D. degree in Electrical and Computer Engineering from the University of Texas at Austin, Austin, USA, in 2009. He is an Associate Professor in the Department of Electronic and Computer Engineering at the Hong Kong University of Science and Technology, Hong Kong, China. His research interests include wireless communications and networking, mobile edge computing and edge AI, and cooperative AI.
+Dr. Zhang co-authored the book Fundamentals of LTE (Prentice-Hall, 2010). He is a co-recipient of several best paper awards, including the 2021 Best Survey Paper Award of the IEEE Communications Society, the 2019 IEEE Communications Society and Information Theory Society Joint Paper Award, and the 2016 Marconi Prize Paper Award in Wireless Communications. Two papers he co-authored received the Young Author Best Paper Award of the IEEE Signal Processing Society in 2016 and 2018, respectively. He also received the 2016 IEEE ComSoc Asia-Paciﬁc Best Young Researcher Award. He is an Editor of IEEE Transactions on Communications, and was an Editor of IEEE Transactions on Wireless Communications (2015-2020). He served as a MAC track co-chair for IEEE Wireless Communications and Networking Conference (WCNC) 2011 and a co-chair for the Wireless Communications Symposium of IEEE International Conference on Communications (ICC) 2021.
+
+Authorized licensed use limited to: KAUST. Downloaded on October 01,2022 at 13:49:49 UTC from IEEE Xplore. Restrictions apply.
+

@@ -1,0 +1,617 @@
+aw nas: A Modularized and Extensible NAS framework
+
+aw nas: A Modularized and Extensible NAS framework
+
+Xuefei Ning1
+
+foxdoraame@gmail.com
+
+Changcheng Tang2 Wenshuo Li1 Songyi Yang2 Tianchen Zhao2 Niansong Zhang2 Tianyi Lu2
+
+changcheng.tang@novauto.com.cn wilsonleethu@gmail.com
+patrick22414@outlook.com ztc16@buaa.edu.cn nz264@cornell.edu
+tianyi.lu@novauto.com.cn
+
+Shuang Liang12
+
+shuang.liang@novauto.com.cn
+
+Huazhong Yang1∗ Yu Wang1∗
+
+yanghz@mail.tsinghua.edu.cn yu-wang@tsinghua.edu.cn
+
+1 Department of Electronic Engineering, Tsinghua University, Beijing, China
+
+2 Novauto Co. Ltd., Beijing, China
+
+Abstract
+Neural Architecture Search (NAS) has received extensive attention due to its capability to discover neural network architectures in an automated manner. aw nas is an opensource Python framework implementing various NAS algorithms in a modularized manner. Currently, aw nas can be used to reproduce the results of mainstream NAS algorithms of various types. Also, due to the modularized design, one can simply experiment with diﬀerent NAS algorithms for various applications with aw nas (e.g., classiﬁcation, detection, text modeling, fault tolerance, adversarial robustness, hardware eﬃciency, and etc.). Codes and documentation are available at https://github.com/walkerning/aw_nas. Keywords: neural architecture search, Python, open source
+1. Introduction
+Neural Architecture Search (NAS) has received extensive attention due to its capability to discover competitive neural network architectures in an automated manner. Early NAS algorithms (Zoph and Le, 2017; Real et al., 2019) are extremely slow, since a separate training phase is needed to evaluate each architecture, and tons of candidate architectures need to be evaluated to explore the large search space. Major eﬀorts to alleviate the computational challenge of NAS lie in three aspects: 1) Better and compact search space design (Zoph et al., 2018). 2) Accelerate the evaluation of each candidate architecture (Baker et al., 2017; Elsken et al., 2018; Pham et al., 2018); 3) Improve the sample eﬃciency of search space exploration (Kandasamy et al., 2018; Ning et al., 2020c).
+Those methods that aim to accelerate architecture evaluation can be further categorized according to whether or not the separate training phase is still needed for each architecture. Early studies shorten the separate training phase of each architecture by training curve extrapolation (Baker et al., 2017), good weight initialization (Elsken et al., 2018), and so on. On the other hand, the current trending practice, parameter-sharing evaluation, is to
+∗. Corresponding authors.
+1
+
+Ning, Tang, Li, Yang, Zhao, Zhang, Lu, Liang, Yang, Wang
+
+amortize architectures’ training to the training of a shared set of parameters (Liu et al., 2018; Pham et al., 2018; Cai et al., 2020), thus avoid separately training each candidate architecture. From the aspect of improving the sample eﬃciency, a promising direction is to use predictor-based NAS methods (Kandasamy et al., 2018; Ning et al., 2020c). These methods learn a performance predictor and utilize its predictions to select architectures that are more worth evaluating.
+
+2. aw nas Description
+aw nas aims to provide a general, extensible and easy-to-use NAS framework, so that not only researchers can build and compare their methods in a more controlled setting, but nonprofessionals can also easily apply NAS techniques to their speciﬁc applications.
+
+2.1 Framework Design
+The main design principle lying behind aw nas is modularization. There are multiple actors that are working together in a NAS algorithm, and they can be categorized into well-deﬁned components based on their roles. The list of components and the aw nas supported choices for each component are summarized in Tab. 1.
+
+Table 1: aw nas supported component types
+
+Component Description
+
+Current supported types
+
+Dataset Objective
+Search space
+Controller Weights manager
+Evaluator Trainer
+
+deﬁne the dataset
+the rewards to learn the controller, and (optionally) the objectives to update the evaluator deﬁne what architectural decision to be made
+select architectures to be evaluated
+ﬁll the architectures with weights how to evaluate an architecture the orchestration of the overall NAS search ﬂow
+
+Cifar-10/100, SVHN, (Tiny-)ImageNet, PTB, VOC, COCO, TT100k classiﬁcation, detection, language, fault tolerance, adversarial robustness, hardware (latency, energy ...)
+cell-based CNN, dense cell-based CNN, cell-based RNN, NasBench-101/201, blockwise with mnasnet/mobilenet backbones random sample, simulated annealing, evolutionary, RL-learned sampler, diﬀerentiable, predictor-based supernet, diﬀerentiable supernet, morphism-based parameter-sharing evaluator (mepa), separately tune and evaluate (tune) a general workﬂow described in Sec.2.1 (simple), parallelized evaluation and async update of controller (async)
+
+2
+
+aw nas: A Modularized and Extensible NAS framework
+
+Search Space
+
+Controller
+
+controller.sample()
+
+Weights Manager
+
+Search flow (Controller update)
+Evaluator update
+
+weights_manager. assemble_candidate(rollout)
+Rollout
+Maybe update e.g., use gradient to update shared weights
+
+controller.step(rollout with reward)
+
+Arch
+
+Arch + Weight CandidateNet
+
+reward=evaluator.evaluate_rollout(rollout) objective.get_reward/get_loss/get_perfs
+evaluator.update_evaluator(controller)
+Evaluator
+(objective)
+
+Figure 1: Search workﬂow and interfaces.
+
+The interface between these components is well-deﬁned. We use a “rollout” (class awnas.rollout.base.BaseRollout) to represent the interface object between all these components. Usually, a search space deﬁnes one or more rollout types (a subclass of BaseRollout). For example, the basic cell-based search space cnn corresponds to two rollout types: 1) discrete rollouts that are used in reinforcement learning (RL) based, evolutionary based controllers, and etc. 2) diﬀerentiable rollouts that are used in gradient-based NAS.
+The search workﬂow of a NAS algorithm and some important interface methods are illustrated in Fig. 1. Speciﬁcally, one iteration of the search ﬂow goes as follows:
+1. rollout = controller.sample(): The controller is responsible for sampling candidate architectures from the search space.
+2. weights manager.assemble candidate(rollout): The weights manager ﬁlls the sampled architecture with weights.
+3. evaluator.evaluate rollout(rollout): The evaluator evaluate the rollout that contains the architecture and weights information.
+4. controler.step(rollout): The rollout that contains the reward information is used to update the controller.
+5. Optionally, some types of evaluator might need to be updated periodically by calling evaluator.update evaluator(controller), which might issue calls to controller.sample weights manager.assemble candidate too.
+Taking the ENAS (Pham et al., 2018) method as an example, the dataset and objective are of type cifar10 and classiﬁcation, respectively. The search space type cnn deﬁnes
+3
+
+Ning, Tang, Li, Yang, Zhao, Zhang, Lu, Liang, Yang, Wang
+
+Table 2: aw nas command-line utilities
+
+Subcommand
+
+Description
+
+search / mpsearch random-sample sample derive eval-arch
+train / mptrain / test gen-(ﬁnal-)sample-conﬁg
+registry
+
+(Multiprocessing) Search for architecture Random sample architectures
+Sample architectures with a controller Derive architectures with trained NAS components Eval architectures in a YAML ﬁle with an evaluator
+(Multiprocessing) Train or test an architecture Dump the sample conﬁguration for search (ﬁnal training)
+Print registry information
+
+a cell-based CNN search space. And the controller rl is a RL-learned RNN network. The weights manager supernet is a parameter-sharing based supernet. As for the evaluator mepa, with its most basic conﬁguration, just forward batches sampled from the dataset and call objective.get reward to get the rollout’s reward.
+2.2 Basic Usage
+aw nas standardize a typical NAS workﬂow into a 3-step process, i.e., search-derive-train. After the search phase that is described in Sec. 2.1, the derive utility makes architecture decision using the trained NAS components. Then, a ﬁnal training phase is conducted to train and evaluate the derived architecture. With aw nas, combining various components and run a NAS algorithm is no more than just tweaking several conﬁguration ﬁles and then run the command-line tool awnas with it. Currently, in aw nas version 0.4, the available subcommands of the awnas command-line tool are summarized in Tab. 2.
+3. Conclusion and Future Work
+We introduce aw nas, a modularized and extensible framework for NAS algorithms. By implementing various types of NAS components in a modularized way, aw nas allows users to pick up components and run a NAS algorithm easily. An uniﬁed implementation with clear interface design also makes it easier for researchers and developers to develop and compare new NAS methods.
+aw nas is still under active development. We are trying to scale it to applications with larger scales, and make it easier for nonprofessionals to build up eﬀective NAS systems targeted for their speciﬁc application scenarios.
+Acknowledgments
+This work was supported by National Key Research and Development Program of China (No. 2018YFB0105000), National Natural Science Foundation of China (No. U19B2019, 61832007), Beijing National Research Center for Information Science and Technology (BNRist). This framework also contains contributions made by students in NICS-EFC laboratory of Tsinghua University: Zixuan Zhou, Junbo Zhao, Shulin Zeng.
+4
+
+aw nas: A Modularized and Extensible NAS framework
+References
+B. Baker, O. Gupta, R. Raskar, and N. Naik. Accelerating neural architecture search using performance prediction. arXiv preprint arXiv:1705.10823, 2017.
+H. Cai, C. Gan, T. Wang, Z. Zhang, and S. Han. Once for all: Train one network and specialize it for eﬃcient deployment. In International Conference on Learning Representations, 2020.
+Y. Chen, T. Yang, X. Zhang, G. Meng, X. Xiao, and J. Sun. Detnas: Backbone search for object detection. In NeurIPS, 2019.
+T. Elsken, J. H. Metzen, and F. Hutter. Eﬃcient multi-objective neural architecture search via lamarckian evolution. In International Conference on Learning Representations, 2018.
+M. Everingham, L. Gool, C. K. Williams, J. Winn, and A. Zisserman. The pascal visual object classes (voc) challenge. International Journal of Computer Vision, 88:303–338, 2009.
+A. Howard, M. Sandler, G. Chu, L.-C. Chen, B. Chen, M. Tan, W. Wang, Y. Zhu, R. Pang, V. Vasudevan, et al. Searching for mobilenetv3. In Proceedings of the IEEE International Conference on Computer Vision, pages 1314–1324, 2019.
+K. Kandasamy, W. Neiswanger, J. Schneider, B. Poczos, and E. P. Xing. Neural architecture search with bayesian optimisation and optimal transport. In Advances in Neural Information Processing Systems, pages 2016–2025, 2018.
+W. Li, X. Ning, G. Ge, X. Chen, Y. Wang, and H. Yang. Ftt-nas: Discovering fault-tolerant neural architecture. In 2020 25th Asia and South Paciﬁc Design Automation Conference (ASP-DAC), pages 211–216, 2020.
+H. Liu, K. Simonyan, and Y. Yang. Darts: Diﬀerentiable architecture search. arXiv preprint arXiv:1806.09055, 2018.
+W. Liu, D. Anguelov, D. Erhan, C. Szegedy, S. Reed, C.-Y. Fu, and A. C. Berg. Ssd: Single shot multibox detector. In European conference on computer vision, pages 21–37. Springer, 2016.
+X. Ning, W. Li, Z. Zhou, T. Zhao, Y. Zheng, S. Liang, H. Yang, and Y. Wang. A surgery of the neural architecture evaluators, 2020a.
+X. Ning, J. Zhao, W. Li, T. Zhao, H. Yang, and Y. Wang. Multi-shot nas for discovering adversarially robust convolutional neural architectures at targeted capacities, 2020b.
+X. Ning, Y. Zheng, T. Zhao, Y. Wang, and H. Yang. A generic graph-based neural architecture encoding scheme for predictor-based nas. In European Conference on Computer Vision, 2020c.
+H. Pham, M. Y. Guan, B. Zoph, Q. V. Le, and J. Dean. Eﬃcient neural architecture search via parameter sharing. In International Conference on Machine Learning (ICML), 2018.
+5
+
+Ning, Tang, Li, Yang, Zhao, Zhang, Lu, Liang, Yang, Wang
+E. Real, A. Aggarwal, Y. Huang, and Q. V. Le. Regularized evolution for image classiﬁer architecture search. In Proceedings of the aaai conference on artiﬁcial intelligence, volume 33, pages 4780–4789, 2019.
+S. Tang, L. Feng, W. Shao, Z. Kuang, W. Zhang, and Y. Chen. Learning eﬃcient detector with semi-supervised adaptive distillation. arXiv preprint arXiv:1901.00366, 2019.
+B. Wu, X. Dai, P. Zhang, Y. Wang, F. Sun, Y. Wu, Y. Tian, P. Vajda, Y. Jia, and K. Keutzer. Fbnet: Hardware-aware eﬃcient convnet design via diﬀerentiable neural architecture search. 2019 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pages 10726–10734, 2019.
+S. Xie, H. Zheng, C. Liu, and L. Lin. SNAS: stochastic neural architecture search. In International Conference on Learning Representations, 2019. URL https://openreview. net/forum?id=rylqooRqK7.
+Y. Xu, L. Xie, X. Zhang, X. Chen, G.-J. Qi, Q. Tian, and H. Xiong. Pc-darts: Partial channel connections for memory-eﬃcient diﬀerentiable architecture search. ArXiv, abs/1907.05737, 2019.
+S. Zeng, H. Sun, Y. Xing, X. Ning, Y. Shan, X. Chen, Y. Wang, and H. zhong Yang. Black box search space proﬁling for accelerator-aware neural architecture search. 2020 25th Asia and South Paciﬁc Design Automation Conference (ASP-DAC), pages 518–523, 2020.
+T. Zhao, X. Ning, S. Yang, S. Liang, P. Lei, J. Chen, H. Yang, and Y. Wang. Bars: Joint search of cell topology and layout for accurate and eﬃcient binary architectures, 2020.
+B. Zoph and Q. V. Le. Neural architecture search with reinforcement learning. In International Conference on Learning Representations (ICLR), 2017.
+B. Zoph, V. Vasudevan, J. Shlens, and Q. V. Le. Learning transferable architectures for scalable image recognition. 2018 IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 8697–8710, 2018.
+6
+
+aw nas: A Modularized and Extensible NAS framework
+
+Appendix A. Some Reproducing Results and Our Researches
+aw nas can be used to reproduce many NAS algorithms by combining diﬀerent components and tweaking the conﬁgurations, and some representative studies are ENAS (Pham et al., 2018), DARTS (Liu et al., 2018), SNAS (Xie et al., 2019), PC-DARTS (Xu et al., 2019), FBNet (Wu et al., 2019), OFA (Cai et al., 2020), GATES (Ning et al., 2020c), DetNAS (Chen et al., 2019), and other traditional NAS methods. We hope that, by providing a uniﬁed and modularized code base, NAS algorithms can be compared in a more controlled setting. As an example, Tab. 3 shows the reproduction results of some popular parameter-sharing NAS methods.
+For more reproduction results, Fig. 2 shows the results of running OFA-based (Cai et al., 2020) search on CIFAR-10 and CIFAR-100. Due to the modularized design of aw nas, one can easily apply a methodology to new applications. Thus, based on the OFA methodology, we utilize aw nas to search for suitable backbones for object detection on the commonly-used VOC (Everingham et al., 2009) dataset, and show the results in Fig. 3. The algorithm ﬂow goes as 1) Supernet training phase: Train a supernet by calling “awnas search” without controller updates, in which the sub-networks using progressive shrinking with Adaptive Distillation. 2) Search phase: Identify the Pareto front by calling “awnas search” again without evaluator updates.
+Table 3: Some aw nas reproduced results on CIFAR-10
+
+Method
+
+Search Time Performance Params (M) FLOPs (M)
+
+ENAS (Pham et al., 2018) 06h 17m
+
+97.30%
+
+4.2
+
+DARTS (Liu et al., 2018)
+
+09h 05m
+
+97.11%
+
+2.59
+
+SNAS (Xie et al., 2019)
+
+08h 03m
+
+97.02%
+
+3.18
+
+PC-DARTS (Xu et al., 2019) 02h 57m
+
+97.43%
+
+4.26
+
+1303 826 1029 1343
+
+Top 1 acc Top 1 acc
+
+OFA classification on CIFAR-10
+
+OFA 0.8
+
+mbv3
+
+93.4
+
+OFA 1.0
+
+OFA 1.2
+
+93.2
+
+93.0
+
+92.8
+
+92.6
+
+100 125 150 175 200 225 250 275 300
+FLOPs(M)
+
+OFA classification on CIFAR-100
+74.5
+
+74.0
+
+73.5
+
+73.0
+
+72.5
+
+72.0
+
+71.5
+
+71.0
+
+OFA 1.0
+
+70.5
+
+mbv3
+
+140
+
+160
+
+180
+
+200
+
+220
+
+240
+
+FLOPs(M)
+
+Figure 2: OFA (Cai et al., 2020) classiﬁcation results on CIFAR-10 and CIFAR-100. The search space is similar to that of MobileNet-V3 (Howard et al., 2019). Sub-networks are trained using Progressive Shrinking with Knowledge Distillation and ﬁnetuned after training. 0.8, 1.0, 1.2 in the legends denote the width multiplier.
+
+7
+
+Ning, Tang, Li, Yang, Zhao, Zhang, Lu, Liang, Yang, Wang
+
+VOC mAP
+
+0.73
+
+0.72
+
+0.71
+
+0.70
+
+0.69
+
+0.68
+
+0.67
+
+0.66 w/o finetune
+
+0.65
+
+w/ finetune 30
+
+mbv3
+
+4.0
+
+4.5
+
+5.0
+
+5.5
+
+6.0
+
+6.5
+
+7.0
+
+params(M)
+
+Figure 3: OFA (Cai et al., 2020) detection result on VOC. The backbone search space is similar to that of MobileNet-V3 (Howard et al., 2019), and an SSD (Liu et al., 2016) head is used. Sub-networks are trained using Progressive Shrinking with Adaptive Distillation (Tang et al., 2019) and (optionally) ﬁnetuned after training. In the search phase, 1k architectures are randomly sampled and tested (i.e., random sample controller is used).
+
+Currently, our colleagues have been using aw nas to ﬁnish various researches: 1) Applications: NAS for robust and eﬃcient NN system at edge (Zeng et al., 2020; Li et al., 2020; Zhao et al., 2020; Ning et al., 2020b). 2) Understanding and improving NAS algorithms (Ning et al., 2020a,c).
+
+8
+
+aw nas: A Modularized and Extensible NAS framework
+
+Appendix B. Hardware Proﬁling Pipeline and Cost Prediction Models
+Hardware-aware neural architecture search is critical for real-world tasks, especially for resource-constrained scenarios and real-time applications. aw nas provides a set of tools and hardware cost models to support hardware-aware NAS. Namely, aw nas has a hardware proﬁling toolﬂow that enables primitive network generation, compilation, oﬄine proﬁling, and result parsing. The proﬁling pipeline measures the latency and energy cost of search space primitives on CPU, GPU, and FPGA platforms. From the proﬁled primitives’ hardware cost, aw nas can accurately estimate the candidate network’s latency and energy with a set of cost prediction models. Cost prediction models and hardware cost tables for CPU, GPU, and FPGA are released as hardware assets in aw nas.
+Cost prediction models are necessary because deploying all the candidate networks in NAS to a target platform is often cost-prohibitive. Moreover, the primitives’ latency and energy do not always add up to the candidate network’s latency and energy. On devices such as FPGA where neural networks are executed sequentially, the sum of the building blocks’ latency can approximate the overall network latency to a large extent. However, on platforms with massive parallelisms, such as GPUs, the summation of block latencies can signiﬁcantly deviate from the actual network latency. Energy estimation on FPGA shares the same non-linear property because the network’s power does not equal the summation of its building blocks’ power.
+
+Platform
+
+CPU
+
+GPU
+
+FPGA
+
+Device Metrics Proﬁling Tool
+
+Intel Xeon Gold 5115 Latency (ms) PyTorch
+
+RTX-2080Ti Latency (ms) PyTorch, CuDNN
+
+Xilinx ZCU102 Latency (ms) Energy (mJ) Xilinx Vitis Power Advantage Tool
+
+Table 4: Hardware platform details for cost proﬁling
+
+Three types of prediction models are currently available in aw nas: linear regression model (1-variant or 2-variant), multilayer perceptron model (MLP), and LSTM-based model. For the single-variant linear model, the model takes the summation of primitives’ latency/energy as input. For the 2-variant linear model, the input is the summation and block number. MLP model takes a vector of primitive latency as input and predicts the latency/energy for the candidate network. The structure of the LSTM model is illustrated in Fig. 5. At each time step, LSTM takes in a feature vector of block latency/energy and block conﬁguration. More speciﬁcally, the block conﬁguration consists of the input and output shape, kernel size, and stride. After all block features are processed, the ﬁnal hidden state vector is fed into a fully-connected layer, which outputs the latency/energy prediction for the candidate network.
+We conduct some experiments using aw nas’s cost prediction models for estimating CPU/GPU latency and FPGA energy in the MobileNet-V2 search space (Fig. 4). The hardware platform details are summarized in Tab. 4. We adopt the Once-For-All Cai et al. (2020) MobileNet-V2 search space design in the experiment. Speciﬁcally, a supernet with
+
+9
+
+Ning, Tang, Li, Yang, Zhao, Zhang, Lu, Liang, Yang, Wang
+
+estimated
+
+estimated
+
+Linear Regression (Latency)
+
+MLP (Latency)
+
+LSTM (Latency)
+
+estimated
+
+800
+
+600
+
+400
+
+200
+
+y=x predicted
+
+0
+
+naive add
+
+0
+
+200 mea40s0ured 600
+
+800
+
+(a) CPU latency, rRMSE=0.085
+
+Linear Regression (Latency)
+7
+
+6
+
+5
+
+4
+
+3
+
+2
+
+y=x
+
+1
+
+predicted
+
+0
+
+naive add
+
+0 1 2meas3ured4 5 6
+
+(d) GPU latency, rRMSE=0.107
+
+Linear Regression (Energy)
+
+20.0
+
+y=x
+
+17.5
+
+predicted
+
+15.0
+
+naive add
+
+12.5
+
+10.0
+
+7.5
+
+5.0
+
+2.5
+
+0.0
+measured 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0
+
+(g) FPGA energy, rRMSE=0.133
+
+estimated
+
+estimated
+
+estimated
+
+800
+
+600
+
+400
+
+200
+
+y=x predicted
+
+0
+
+naive add
+
+0
+
+200 mea40s0ured 600
+
+800
+
+(b) CPU latency, rRMSE=0.094
+
+MLP (Latency)
+7
+
+6
+
+5
+
+4
+
+3
+
+2
+
+y=x
+
+1
+
+predicted
+
+0
+
+naive add
+
+0 1 2meas3ured4 5 6
+
+(e) GPU latency, rRMSE=0.108
+
+20.0 17.5 15.0 12.5 10.0 7.5 5.0 2.5 0.0
+0.0
+
+MLP (Energy)
+y=x predicted naive add
+measured 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0
+
+(h) FPGA energy, rRMSE=0.107
+
+estimated
+
+estimated
+
+estimated
+
+800
+
+600
+
+400
+
+200
+
+y=x predicted
+
+0
+
+naive add
+
+0
+
+200 mea40s0ured 600
+
+800
+
+(c) CPU latency, rRMSE=0.101
+
+LSTM (Latency)
+7
+
+6
+
+5
+
+4
+
+3
+
+2
+
+y=x
+
+1
+
+predicted
+
+0
+
+naive add
+
+0 1 2meas3ured4 5 6
+
+(f) GPU latency, rRMSE=0.138
+
+20.0 17.5 15.0 12.5 10.0 7.5 5.0 2.5 0.0
+0.0
+
+LSTM (Energy)
+y=x predicted naive add
+measured 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0
+
+(i) FPGA energy, rRMSE=0.113
+
+Figure 4: CPU latency, GPU latency, and FPGA energy estimation using three types of prediction models (Linear regression, MLP, LSTM). For CPU latency, estimation by naively adding up block latency results in rRMSE=0.13. For GPU latency, naive addition results in rRMSE=0.253. For FPGA energy, naive addition has rRMSE=1.66. Using the prediction models, we can achieve 1.53×, 2.36×, and 15.5× better rRMSE for CPU latency, GPU latency, and FPGA energy, respectively.
+
+ﬁve stages is constructed ﬁrst (no training is needed), and candidate subnets are sampled from the supernet. Each stage in the supernet consists of numerous MobileNet-V2 inverted bottleneck blocks. When deriving candidate networks from the supernet, the number of blocks in each stage can be chosen from {2, 3, 4} For each MobileNet-V2 block, the expansion ratio can be chosen from {3, 4, 6}, and the kernel size can be chosen from {3, 5, 7}.
+Each model is trained with 2k random samples and tested on another 1k samples. Fig. 4a-4f show the prediction versus ground truth of CPU/GPU latency on test dataset,
+10
+
+aw nas: A Modularized and Extensible NAS framework
+
+h1
+
+LSTM ...
+
+ht-1
+
+ht
+
+LSTM LSTM
+
+FC
+
+Network Energy/Latency
+
+Block 1 ... Block t -1
+
+Block t
+
+Energy/Latency Energy/Latency Energy/Latency
+
+Feature
+
+Feature
+
+Feature
+
+Figure 5: LSTM latency/energy hardware cost prediction model.
+
+and Fig. 4g-4i show the prediction results for FPGA energy. Because latency/energy data of diﬀerent platforms has diﬀerent ranges, we measure the relative root-mean-square error (rRMSE) by:
+
+rRM SE =
+
+1 n ( Yi − Yˆi )2
+
+n
+i=1
+
+Yi
+
+We observe a strong correlation between the estimated cost and the ground-truth. For CPU latency, the estimation rRMSE ranges from 0.085 to 0.101, which is up to 1.53× better than naive addition. For GPU latency, the estimation rRMSE is about 2.36× better than naive addition, ranging from 0.107 to 0.138. The latency estimation results indicate that correction models are necessary, especially for massively parallel devices such as GPUs. For FPGA energy estimation, prediction models achieve up to 15.5× improvement from naive addition.
+
+11
+
